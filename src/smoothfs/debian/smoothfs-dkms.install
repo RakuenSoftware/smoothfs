@@ -1,0 +1,29 @@
+Kbuild            usr/src/smoothfs-0.1.0/
+Makefile          usr/src/smoothfs-0.1.0/
+dkms.conf         usr/src/smoothfs-0.1.0/
+acl.c             usr/src/smoothfs-0.1.0/
+compat.h          usr/src/smoothfs-0.1.0/
+dir.c             usr/src/smoothfs-0.1.0/
+export.c          usr/src/smoothfs-0.1.0/
+file.c            usr/src/smoothfs-0.1.0/
+heat.c            usr/src/smoothfs-0.1.0/
+inode.c           usr/src/smoothfs-0.1.0/
+lock.c            usr/src/smoothfs-0.1.0/
+lower.c           usr/src/smoothfs-0.1.0/
+module.c          usr/src/smoothfs-0.1.0/
+movement.c        usr/src/smoothfs-0.1.0/
+netlink.c         usr/src/smoothfs-0.1.0/
+oid.c             usr/src/smoothfs-0.1.0/
+placement.c       usr/src/smoothfs-0.1.0/
+probe.c           usr/src/smoothfs-0.1.0/
+smoothfs.h        usr/src/smoothfs-0.1.0/
+super.c           usr/src/smoothfs-0.1.0/
+uapi_smoothfs.h   usr/src/smoothfs-0.1.0/
+xattr.c           usr/src/smoothfs-0.1.0/
+
+# Phase 7.2 operator tooling. Lives under /usr/share so it's
+# documented + invokable but doesn't clutter $PATH; MOK enrollment
+# is a one-time operation per appliance.
+scripts/enroll-signing-cert.sh  usr/share/smoothfs-dkms/
+test/module_signing.sh          usr/share/smoothfs-dkms/
+test/kernel_upgrade.sh          usr/share/smoothfs-dkms/

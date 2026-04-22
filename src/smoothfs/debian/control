@@ -1,0 +1,26 @@
+Source: smoothfs-dkms
+Section: kernel
+Priority: optional
+Maintainer: RakuenSoftware <support@smoothnas.com>
+Build-Depends: debhelper-compat (= 13),
+               dh-dkms
+Standards-Version: 4.6.2
+Homepage: https://github.com/RakuenSoftware/smoothfs
+
+Package: smoothfs-dkms
+Architecture: all
+Depends: ${misc:Depends},
+         dkms (>= 2.1.1.2)
+Recommends: linux-headers-amd64 | linux-headers-arm64 | linux-headers-generic
+Description: Stacked tiering filesystem source package (DKMS)
+ smoothfs is a native Linux stacked filesystem that presents a single
+ logical namespace over an ordered set of tier backends (XFS-on-LV,
+ ZFS, ext4, btrfs) and moves files between tiers based on access-heat
+ policies. It owns no pages; reads and writes forward directly to the
+ active lower tier's file operations, and placement changes are
+ coordinated via a journaled cutover state machine exposed over
+ generic netlink.
+ .
+ This package ships the module source tree and a DKMS recipe. DKMS
+ rebuilds the kernel module against every installed kernel-headers
+ package at install time and on subsequent kernel upgrades.

@@ -1,0 +1,8 @@
+PACKAGE_NAME="smoothfs"
+PACKAGE_VERSION="#MODULE_VERSION#"
+BUILT_MODULE_NAME[0]="smoothfs"
+DEST_MODULE_LOCATION[0]="/extra"
+AUTOINSTALL="yes"
+MAKE[0]="make KDIR=/lib/modules/${kernelver}/build"
+CLEAN="make clean"
+BUILD_EXCLUSIVE_KERNEL="^(6\.(1[8-9]|[2-9][0-9])|[7-9]\.).*"

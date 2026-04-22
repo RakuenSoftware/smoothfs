@@ -1,0 +1,56 @@
+#!/usr/bin/make -f
+# Debian rules for smoothfs-samba-vfs.
+#
+# The VFS module's symbol versions are set by the `--vendor-suffix`
+# passed to Samba's waf configure, and at runtime libsmbd-base enforces
+# an exact match. We build in-tree against the Samba source
+# apt-get source pulls for us, let dh_shlibdeps pick up the resulting
+# shared-library dependencies, and pin the samba package version in
+# the binary package via dpkg-gencontrol's ${samba:Version}
+# substitution.  apt will refuse to install a mismatched pair.
+
+SAMBA_VERSION := $(shell dpkg-query -W -f='$${Version}' samba 2>/dev/null)
+
+BUILT_SO := $(CURDIR)/debian/vfs_smoothfs.so
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	@true
+
+override_dh_auto_build:
+	SMOOTHFS_VFS_OUTPUT=$(BUILT_SO) bash $(CURDIR)/build.sh
+
+override_dh_auto_test:
+	@true
+
+override_dh_auto_install:
+	install -D -m 0644 $(BUILT_SO) \
+	    debian/smoothfs-samba-vfs/usr/lib/x86_64-linux-gnu/samba/vfs/smoothfs.so
+
+override_dh_auto_clean:
+	rm -f $(BUILT_SO)
+
+override_dh_gencontrol:
+	@if [ -z "$(SAMBA_VERSION)" ]; then \
+	    echo "smoothfs-samba-vfs: samba is not installed; install it so we can pin its version" >&2; \
+	    exit 1; \
+	fi
+	dh_gencontrol -- -Vsamba:Version=$(SAMBA_VERSION)
+
+override_dh_shlibdeps:
+	# The .so links at build time against Samba's in-tree libs under
+	# /tmp/samba-<ver>/bin/shared/*.  At runtime those are resolved by
+	# Samba's own package-supplied copies — the exact-version samba
+	# dependency (via dpkg-gencontrol above) is the only
+	# backwards-compatible pin we can make against the vendor-suffixed
+	# private symbol versions.  Skip dh_shlibdeps; letting it run
+	# would either fail (private libs have no shlibs file) or inject
+	# non-sensical paths into the package metadata.
+	@true
+
+override_dh_makeshlibs:
+	# The module is a Samba-loadable shared object, not a library
+	# other code links against.  No shlibs file to emit.
+	@true

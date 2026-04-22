@@ -1,0 +1,8 @@
+smoothfs-dkms (0.1.0-1) unstable; urgency=medium
+
+  * Initial DKMS-installable package, Phase 7.0. Ships the smoothfs
+    kernel module source tree so DKMS rebuilds it against every
+    installed kernel-headers package. Module targets Linux 6.18 LTS
+    and up; BUILD_EXCLUSIVE_KERNEL in the .dkms recipe enforces that.
+
+ -- RakuenSoftware <support@smoothnas.com>  Sun, 19 Apr 2026 09:00:00 +0000

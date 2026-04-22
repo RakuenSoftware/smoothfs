@@ -1,0 +1,27 @@
+Source: smoothfs-samba-vfs
+Section: net
+Priority: optional
+Maintainer: RakuenSoftware <support@smoothnas.com>
+Build-Depends: debhelper-compat (= 13),
+               samba,
+               dpkg-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/RakuenSoftware/smoothfs
+
+Package: smoothfs-samba-vfs
+Architecture: amd64 arm64
+Depends: ${misc:Depends},
+         samba (= ${samba:Version})
+Recommends: smoothfs-dkms
+Description: Samba VFS module for smoothfs-backed SMB shares
+ vfs_smoothfs is the Samba VFS module that lets smbd cooperate with
+ smoothfs's tier-movement machinery: lease pin via `trusted.smoothfs.lease`,
+ fanotify-driven oplock break on forced cutover, SMB FileId from
+ `trusted.smoothfs.fileid`. Loaded into a share's VFS stack via
+ `vfs objects = smoothfs` in smb.conf.
+ .
+ The module links against Samba's vendor-suffixed private ABI, so the
+ binary is tied exactly to the Samba version it was built against —
+ the Depends line pins the exact running Samba's `${samba:Version}`.
+ Rebuild after any Samba upgrade; apt will refuse to install a
+ mismatched pair.

@@ -1,0 +1,34 @@
+#!/usr/bin/make -f
+# Debian rules for smoothfs-dkms.
+#
+# dh-dkms takes the module source tree and the .dkms recipe
+# (debian/smoothfs-dkms.dkms) and builds a binary package whose
+# install path is /usr/src/smoothfs-<version>/. DKMS picks it up
+# there, rebuilds against every installed kernel-headers, and
+# installs smoothfs.ko into /lib/modules/<kernel>/updates/dkms/.
+
+%:
+	dh $@ --with dkms --sourcedirectory=.
+
+override_dh_auto_configure:
+	# No configure step — out-of-tree kernel module built by DKMS
+	# against the target kernel tree at install time.
+
+override_dh_auto_build:
+	# Nothing to build at package-build time; the actual module
+	# build happens in the target's dkms run.
+
+override_dh_auto_test:
+	# Kernel tests are out-of-scope for the packaging step; see
+	# src/smoothfs/test/*.sh and go test ./...
+	# for the runtime validation suite.
+
+override_dh_auto_install:
+	# dh_dkms does the real install — don't let dh_auto_install
+	# rerun `make install` against the host kernel tree.
+
+override_dh_auto_clean:
+	# Avoid recursing into the Makefile's `clean` target at
+	# dpkg-buildpackage time (it requires kernel headers to be
+	# installed and isn't what we want anyway). dh_clean cleans
+	# debian/ itself.

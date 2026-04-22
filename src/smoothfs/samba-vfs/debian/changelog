@@ -1,0 +1,8 @@
+smoothfs-samba-vfs (0.1.0-1) unstable; urgency=medium
+
+  * Initial deb-wrapped build of the Phase 5.8 vfs_smoothfs.so.
+    debian/rules invokes build.sh with SMOOTHFS_VFS_OUTPUT pointing
+    at the package staging directory, pinning the running Samba's
+    vendor-suffix via dpkg-gencontrol substitution.
+
+ -- RakuenSoftware <support@smoothnas.com>  Sun, 19 Apr 2026 09:30:00 +0000

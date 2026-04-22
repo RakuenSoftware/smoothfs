@@ -1,0 +1,927 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * smoothfs - superblock ops and mount via fs_context.
+ *
+ * Mount syntax (Phase 1):
+ *   mount -t smoothfs -o pool=<name>,uuid=<uuid>,tiers=<path>[:<path>...]
+ *         none /mnt/<pool>
+ *
+ * The first path in 'tiers' is the fastest tier (rank 0). The placement
+ * log lives on the fastest tier per Phase 0 §0.2.
+ */
+
+#include <linux/fs.h>
+#include <linux/fs_context.h>
+#include <linux/fs_parser.h>
+#include <linux/namei.h>
+#include <linux/parser.h>
+#include <linux/rhashtable.h>
+#include <linux/slab.h>
+#include <linux/statfs.h>
+#include <linux/string.h>
+#include <linux/uuid.h>
+#include <linux/version.h>
+#include <linux/xxhash.h>
+
+#include "smoothfs.h"
+
+const struct rhashtable_params smoothfs_oid_rht_params = {
+	.head_offset = offsetof(struct smoothfs_inode_info, hash_node),
+	.key_offset  = offsetof(struct smoothfs_inode_info, oid),
+	.key_len     = SMOOTHFS_OID_LEN,
+	.automatic_shrinking = true,
+};
+
+int smoothfs_oid_map_init(struct smoothfs_sb_info *sbi)
+{
+	int err;
+
+	err = rhashtable_init(&sbi->oid_map, &smoothfs_oid_rht_params);
+	if (err)
+		return err;
+	WRITE_ONCE(sbi->oid_map_ready, true);
+	return 0;
+}
+
+void smoothfs_oid_map_destroy(struct smoothfs_sb_info *sbi)
+{
+	if (!sbi->oid_map_ready)
+		return;
+	WRITE_ONCE(sbi->oid_map_ready, false);
+	rhashtable_destroy(&sbi->oid_map);
+}
+
+int smoothfs_oid_map_insert(struct smoothfs_sb_info *sbi,
+			    struct smoothfs_inode_info *si)
+{
+	static const u8 zero_oid[SMOOTHFS_OID_LEN] = { 0 };
+
+	/* The root inode has an all-zero oid (see smoothfs_iget). Leave it
+	 * out of the rhashtable — it's never looked up by oid, and keeping
+	 * zero keys out avoids collisions with pre-xattr allocation gaps. */
+	if (memcmp(si->oid, zero_oid, SMOOTHFS_OID_LEN) == 0)
+		return 0;
+
+	return rhashtable_insert_fast(&sbi->oid_map, &si->hash_node,
+				      smoothfs_oid_rht_params);
+}
+
+void smoothfs_oid_map_remove(struct smoothfs_sb_info *sbi,
+			     struct smoothfs_inode_info *si)
+{
+	static const u8 zero_oid[SMOOTHFS_OID_LEN] = { 0 };
+
+	if (!READ_ONCE(sbi->oid_map_ready))
+		return;
+	if (memcmp(si->oid, zero_oid, SMOOTHFS_OID_LEN) == 0)
+		return;
+	rhashtable_remove_fast(&sbi->oid_map, &si->hash_node,
+			       smoothfs_oid_rht_params);
+}
+
+/* ---- (tier_idx, lower_ino) -> smoothfs ino_no cache ---- */
+
+const struct rhashtable_params smoothfs_lower_ino_rht_params = {
+	.head_offset         = offsetof(struct smoothfs_lower_ino_entry, hnode),
+	.key_offset          = offsetof(struct smoothfs_lower_ino_entry, key),
+	.key_len             = sizeof(u64),
+	.automatic_shrinking = true,
+};
+
+static __always_inline u64 smoothfs_lower_key(u8 tier_idx,
+					      unsigned long lower_ino)
+{
+	return ((u64)tier_idx << 56) | ((u64)lower_ino & ((1ULL << 56) - 1));
+}
+
+int smoothfs_lower_ino_map_init(struct smoothfs_sb_info *sbi)
+{
+	int err = rhashtable_init(&sbi->lower_ino_map,
+				  &smoothfs_lower_ino_rht_params);
+	if (err)
+		return err;
+	WRITE_ONCE(sbi->lower_ino_map_ready, true);
+	return 0;
+}
+
+static void free_lower_ino_entry(void *ptr, void *arg)
+{
+	kfree(ptr);
+}
+
+void smoothfs_lower_ino_map_destroy(struct smoothfs_sb_info *sbi)
+{
+	if (!sbi->lower_ino_map_ready)
+		return;
+	WRITE_ONCE(sbi->lower_ino_map_ready, false);
+	rhashtable_free_and_destroy(&sbi->lower_ino_map,
+				    free_lower_ino_entry, NULL);
+}
+
+u64 smoothfs_lower_ino_map_get(struct smoothfs_sb_info *sbi, u8 tier_idx,
+			       unsigned long lower_ino)
+{
+	struct smoothfs_lower_ino_entry *e;
+	u64 key = smoothfs_lower_key(tier_idx, lower_ino);
+
+	if (!READ_ONCE(sbi->lower_ino_map_ready))
+		return 0;
+
+	e = rhashtable_lookup_fast(&sbi->lower_ino_map, &key,
+				   smoothfs_lower_ino_rht_params);
+	return e ? e->ino_no : 0;
+}
+
+int smoothfs_lower_ino_map_insert(struct smoothfs_sb_info *sbi, u8 tier_idx,
+				  unsigned long lower_ino, u64 ino_no)
+{
+	struct smoothfs_lower_ino_entry *e;
+	int err;
+
+	if (!READ_ONCE(sbi->lower_ino_map_ready))
+		return 0;
+
+	e = kmalloc(sizeof(*e), GFP_KERNEL);
+	if (!e)
+		return -ENOMEM;
+	e->key    = smoothfs_lower_key(tier_idx, lower_ino);
+	e->ino_no = ino_no;
+
+	err = rhashtable_insert_fast(&sbi->lower_ino_map, &e->hnode,
+				     smoothfs_lower_ino_rht_params);
+	if (err) {
+		kfree(e);
+		/* EEXIST means another task raced us with the same lower —
+		 * harmless, the other entry has the same ino_no. */
+		if (err == -EEXIST)
+			return 0;
+	}
+	return err;
+}
+
+void smoothfs_lower_ino_map_remove(struct smoothfs_sb_info *sbi, u8 tier_idx,
+				   unsigned long lower_ino)
+{
+	struct smoothfs_lower_ino_entry *e;
+	u64 key = smoothfs_lower_key(tier_idx, lower_ino);
+
+	if (!READ_ONCE(sbi->lower_ino_map_ready))
+		return;
+
+	e = rhashtable_lookup_fast(&sbi->lower_ino_map, &key,
+				   smoothfs_lower_ino_rht_params);
+	if (!e)
+		return;
+	if (rhashtable_remove_fast(&sbi->lower_ino_map, &e->hnode,
+				   smoothfs_lower_ino_rht_params) == 0)
+		kfree(e);
+}
+
+/* ---- OID xattr writeback queue ---- */
+
+#define SMOOTHFS_OID_WB_INTERVAL_MS  50
+#define SMOOTHFS_OID_WB_HIGH_WATER   256
+
+static void smoothfs_oid_wb_worker(struct work_struct *work)
+{
+	struct smoothfs_sb_info *sbi = container_of(to_delayed_work(work),
+						     struct smoothfs_sb_info,
+						     oid_wb_work);
+	LIST_HEAD(local);
+	struct smoothfs_oid_wb_entry *e, *tmp;
+
+	spin_lock(&sbi->oid_wb_lock);
+	list_splice_init(&sbi->oid_wb_pending, &local);
+	sbi->oid_wb_pending_count = 0;
+	spin_unlock(&sbi->oid_wb_lock);
+
+	list_for_each_entry_safe(e, tmp, &local, link) {
+		struct dentry *lower = e->lower_path.dentry;
+		int err;
+
+		/* Skip if the lower dentry went negative before we got to
+		 * it — the file was unlinked after CREATE, there's nothing
+		 * to persist the OID on. */
+		if (d_really_is_positive(lower)) {
+			err = __vfs_setxattr(&nop_mnt_idmap, lower,
+					     d_inode(lower),
+					     SMOOTHFS_OID_XATTR,
+					     e->oid, SMOOTHFS_OID_LEN,
+					     XATTR_CREATE);
+			if (err && err != -EEXIST)
+				pr_warn_ratelimited("smoothfs: deferred OID xattr write failed: %d\n",
+						    err);
+		}
+		path_put(&e->lower_path);
+		kfree(e);
+	}
+}
+
+int smoothfs_oid_wb_init(struct smoothfs_sb_info *sbi)
+{
+	spin_lock_init(&sbi->oid_wb_lock);
+	INIT_LIST_HEAD(&sbi->oid_wb_pending);
+	sbi->oid_wb_pending_count = 0;
+	INIT_DELAYED_WORK(&sbi->oid_wb_work, smoothfs_oid_wb_worker);
+	sbi->oid_wb_wq = alloc_workqueue("smoothfs-oid-wb",
+					 WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
+	if (!sbi->oid_wb_wq)
+		return -ENOMEM;
+	WRITE_ONCE(sbi->oid_wb_ready, true);
+	return 0;
+}
+
+void smoothfs_oid_wb_drain(struct smoothfs_sb_info *sbi)
+{
+	if (!READ_ONCE(sbi->oid_wb_ready))
+		return;
+	/* Run the worker now if not already, then wait for completion. */
+	mod_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work, 0);
+	flush_delayed_work(&sbi->oid_wb_work);
+}
+
+void smoothfs_oid_wb_destroy(struct smoothfs_sb_info *sbi)
+{
+	if (!sbi->oid_wb_ready)
+		return;
+	WRITE_ONCE(sbi->oid_wb_ready, false);
+	cancel_delayed_work_sync(&sbi->oid_wb_work);
+	/* Drain anything that got queued between WRITE_ONCE and cancel —
+	 * sync_fs couldn't reach the workqueue after we flipped the ready
+	 * flag, so we run the worker callback directly one last time. */
+	smoothfs_oid_wb_worker(&sbi->oid_wb_work.work);
+	destroy_workqueue(sbi->oid_wb_wq);
+	sbi->oid_wb_wq = NULL;
+}
+
+int smoothfs_oid_wb_queue(struct smoothfs_sb_info *sbi,
+			  struct path *lower_path,
+			  const u8 oid[SMOOTHFS_OID_LEN])
+{
+	struct smoothfs_oid_wb_entry *e;
+	unsigned int count;
+	bool kick_now = false;
+
+	if (!READ_ONCE(sbi->oid_wb_ready)) {
+		/* Writeback isn't available — fall back to synchronous
+		 * semantics for correctness. */
+		return smoothfs_write_oid_xattr(lower_path->dentry, oid);
+	}
+
+	e = kmalloc(sizeof(*e), GFP_KERNEL);
+	if (!e)
+		return -ENOMEM;
+	e->lower_path = *lower_path;
+	path_get(&e->lower_path);
+	memcpy(e->oid, oid, SMOOTHFS_OID_LEN);
+
+	spin_lock(&sbi->oid_wb_lock);
+	list_add_tail(&e->link, &sbi->oid_wb_pending);
+	count = ++sbi->oid_wb_pending_count;
+	if (count >= SMOOTHFS_OID_WB_HIGH_WATER)
+		kick_now = true;
+	spin_unlock(&sbi->oid_wb_lock);
+
+	if (kick_now)
+		mod_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work, 0);
+	else
+		queue_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work,
+				   msecs_to_jiffies(SMOOTHFS_OID_WB_INTERVAL_MS));
+	return 0;
+}
+
+/* From module.c — slab cache backing the alloc_inode hook below. */
+extern struct kmem_cache *smoothfs_inode_cachep;
+
+static struct inode *smoothfs_alloc_inode(struct super_block *sb)
+{
+	struct smoothfs_inode_info *si;
+
+	si = alloc_inode_sb(sb, smoothfs_inode_cachep, GFP_KERNEL);
+	if (!si)
+		return NULL;
+
+	memset(si->oid, 0, SMOOTHFS_OID_LEN);
+	si->gen = 0;
+	si->current_tier = 0;
+	si->intended_tier = 0;
+	si->movement_state = SMOOTHFS_MS_PLACED;
+	si->pin_state = SMOOTHFS_PIN_NONE;
+	si->cutover_gen = 0;
+	si->transaction_seq = 0;
+	atomic_set(&si->nlink_observed, 1);
+	si->lower_path.mnt = NULL;
+	si->lower_path.dentry = NULL;
+	atomic_set(&si->open_count, 0);
+	atomic64_set(&si->read_bytes, 0);
+	atomic64_set(&si->write_bytes, 0);
+	si->last_access_ns = 0;
+	init_waitqueue_head(&si->cutover_wq);
+	si->mappings_quiesced = false;
+	si->rel_path = NULL;
+	atomic_set(&si->replay_pinned, 0);
+	INIT_LIST_HEAD(&si->sb_link);
+	return &si->vfs_inode;
+}
+
+static void smoothfs_free_inode(struct inode *inode)
+{
+	kmem_cache_free(smoothfs_inode_cachep, SMOOTHFS_I(inode));
+}
+
+static u8 smoothfs_tier_of(struct smoothfs_sb_info *sbi, struct vfsmount *mnt)
+{
+	u8 i;
+
+	for (i = 0; i < sbi->ntiers; i++)
+		if (sbi->tiers[i].lower_path.mnt == mnt)
+			return i;
+	return SMOOTHFS_MAX_TIERS;
+}
+
+static void smoothfs_evict_inode(struct inode *inode)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
+
+	truncate_inode_pages_final(&inode->i_data);
+	clear_inode(inode);
+
+	if (sbi) {
+		smoothfs_oid_map_remove(sbi, si);
+		if (si->lower_path.dentry && si->lower_path.mnt) {
+			u8 tier_idx = smoothfs_tier_of(sbi, si->lower_path.mnt);
+			if (tier_idx < SMOOTHFS_MAX_TIERS)
+				smoothfs_lower_ino_map_remove(sbi, tier_idx,
+					d_inode(si->lower_path.dentry)->i_ino);
+		}
+		down_write(&sbi->inode_lock);
+		if (!list_empty(&si->sb_link))
+			list_del_init(&si->sb_link);
+		up_write(&sbi->inode_lock);
+	}
+
+	if (si->lower_path.dentry) {
+		path_put(&si->lower_path);
+		si->lower_path.dentry = NULL;
+		si->lower_path.mnt = NULL;
+	}
+	kfree(si->rel_path);
+	si->rel_path = NULL;
+}
+
+enum smoothfs_param {
+	Opt_pool,
+	Opt_uuid,
+	Opt_tiers,
+};
+
+static const struct fs_parameter_spec smoothfs_fs_parameters[] = {
+	fsparam_string("pool",  Opt_pool),
+	fsparam_string("uuid",  Opt_uuid),
+	fsparam_string("tiers", Opt_tiers),
+	{}
+};
+
+struct smoothfs_fc_ctx {
+	char    *pool;
+	char    *uuid_str;
+	char    *tiers;     /* colon-separated lower paths */
+};
+
+static int smoothfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
+{
+	struct smoothfs_fc_ctx *ctx = fc->fs_private;
+	struct fs_parse_result result;
+	int opt;
+
+	opt = fs_parse(fc, smoothfs_fs_parameters, param, &result);
+	if (opt < 0)
+		return opt;
+
+	switch (opt) {
+	case Opt_pool:
+		kfree(ctx->pool);
+		ctx->pool = kstrdup(param->string, GFP_KERNEL);
+		if (!ctx->pool)
+			return -ENOMEM;
+		break;
+	case Opt_uuid:
+		kfree(ctx->uuid_str);
+		ctx->uuid_str = kstrdup(param->string, GFP_KERNEL);
+		if (!ctx->uuid_str)
+			return -ENOMEM;
+		break;
+	case Opt_tiers:
+		kfree(ctx->tiers);
+		ctx->tiers = kstrdup(param->string, GFP_KERNEL);
+		if (!ctx->tiers)
+			return -ENOMEM;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int smoothfs_resolve_tiers(struct smoothfs_sb_info *sbi,
+				  const char *tiers_csv)
+{
+	char *spec, *cursor, *p;
+	u8 rank = 0;
+	int err = 0;
+
+	if (!tiers_csv || !*tiers_csv)
+		return -EINVAL;
+
+	spec = kstrdup(tiers_csv, GFP_KERNEL);
+	if (!spec)
+		return -ENOMEM;
+	cursor = spec;
+
+	while ((p = strsep(&cursor, ":")) != NULL) {
+		struct smoothfs_tier *t;
+
+		if (!*p)
+			continue;
+		if (rank >= SMOOTHFS_MAX_TIERS) {
+			err = -E2BIG;
+			break;
+		}
+		t = &sbi->tiers[rank];
+		err = kern_path(p, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &t->lower_path);
+		if (err) {
+			pr_err("smoothfs: tier %u path %s lookup failed: %d\n",
+			       rank, p, err);
+			break;
+		}
+		t->rank = rank;
+		t->lower_id = NULL;     /* set later via SMOOTHFS_CMD_REGISTER_POOL */
+
+		err = smoothfs_probe_capabilities(t);
+		if (err) {
+			pr_err("smoothfs: tier %u capability probe failed: %d\n",
+			       rank, err);
+			path_put(&t->lower_path);
+			break;
+		}
+		if ((t->caps & SMOOTHFS_CAPS_REQUIRED) != SMOOTHFS_CAPS_REQUIRED) {
+			pr_err("smoothfs: tier %u (%s) missing required caps "
+			       "(have 0x%lx need 0x%lx)\n",
+			       rank, p, (unsigned long)t->caps,
+			       (unsigned long)SMOOTHFS_CAPS_REQUIRED);
+			path_put(&t->lower_path);
+			err = -EOPNOTSUPP;
+			break;
+		}
+		if (smoothfs_lower_has_revalidate(t))
+			sbi->any_lower_revalidates = true;
+		rank++;
+	}
+	kfree(spec);
+
+	if (err) {
+		while (rank > 0) {
+			--rank;
+			path_put(&sbi->tiers[rank].lower_path);
+		}
+		return err;
+	}
+	if (rank == 0)
+		return -EINVAL;
+
+	sbi->ntiers = rank;
+	sbi->fastest_tier = 0;
+	return 0;
+}
+
+static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
+{
+	struct smoothfs_fc_ctx *ctx = fc->fs_private;
+	struct smoothfs_sb_info *sbi;
+	struct path root_lower;
+	struct inode *root_inode;
+	int err;
+
+	if (!ctx->pool || !ctx->tiers) {
+		pr_err("smoothfs: pool= and tiers= are required\n");
+		return -EINVAL;
+	}
+
+	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
+	if (!sbi)
+		return -ENOMEM;
+
+	mutex_init(&sbi->placement_lock);
+	init_rwsem(&sbi->inode_lock);
+	INIT_LIST_HEAD(&sbi->inode_list);
+	atomic64_set(&sbi->oid_monotonic, 0);
+
+	err = smoothfs_oid_map_init(sbi);
+	if (err)
+		goto out_sbi;
+	err = smoothfs_lower_ino_map_init(sbi);
+	if (err)
+		goto out_sbi;
+	err = init_srcu_struct(&sbi->cutover_srcu);
+	if (err)
+		goto out_sbi;
+	sbi->cutover_srcu_ready = true;
+	err = smoothfs_oid_wb_init(sbi);
+	if (err)
+		goto out_sbi;
+
+	strscpy(sbi->pool_name, ctx->pool, sizeof(sbi->pool_name));
+	if (ctx->uuid_str) {
+		err = uuid_parse(ctx->uuid_str, &sbi->pool_uuid);
+		if (err) {
+			pr_err("smoothfs: pool uuid parse failed: %d\n", err);
+			goto out_sbi;
+		}
+	} else {
+		uuid_gen(&sbi->pool_uuid);
+	}
+	sbi->fsid = xxh32(sbi->pool_uuid.b, sizeof(sbi->pool_uuid.b), 0);
+
+	err = smoothfs_resolve_tiers(sbi, ctx->tiers);
+	if (err)
+		goto out_sbi;
+
+	sb->s_magic     = SMOOTHFS_MAGIC;
+	sb->s_op        = &smoothfs_super_ops;
+	sb->s_export_op = &smoothfs_export_ops;
+	smoothfs_compat_set_dentry_ops(sb, &smoothfs_dentry_ops);
+	sb->s_xattr     = smoothfs_xattr_handlers;
+	sb->s_maxbytes  = MAX_LFS_FILESIZE;
+	sb->s_blocksize = PAGE_SIZE;
+	sb->s_blocksize_bits = PAGE_SHIFT;
+	sb->s_time_gran = 1;
+	sb->s_flags     |= SB_POSIXACL | SB_NOSEC;
+	sb->s_fs_info   = sbi;
+
+	root_lower = sbi->tiers[sbi->fastest_tier].lower_path;
+	/* iget consumes one path ref; mirror that to the root dentry's
+	 * d_fsdata via dget(). */
+	path_get(&root_lower);
+
+	root_inode = smoothfs_iget(sb, &root_lower, true);
+	if (IS_ERR(root_inode)) {
+		err = PTR_ERR(root_inode);
+		path_put(&root_lower);
+		goto out_tiers;
+	}
+	/* iget took its own ref via path_get; release ours. */
+	path_put(&root_lower);
+
+	sb->s_root = d_make_root(root_inode);
+	if (!sb->s_root) {
+		err = -ENOMEM;
+		goto out_tiers;
+	}
+	smoothfs_set_lower_dentry(sb->s_root, root_lower.dentry);
+
+	err = smoothfs_placement_open(sbi);
+	if (err) {
+		pr_err("smoothfs: placement log open failed: %d\n", err);
+		goto out_tiers;
+	}
+	err = smoothfs_placement_replay(sb, sbi);
+	if (err) {
+		pr_err("smoothfs: placement log replay failed: %d\n", err);
+		smoothfs_placement_close(sbi);
+		goto out_tiers;
+	}
+
+	atomic64_set(&sbi->transaction_seq, 1);
+	sbi->quiesced = false;
+
+	err = smoothfs_sb_register(sbi);
+	if (err) {
+		pr_err("smoothfs: sb register failed: %d\n", err);
+		smoothfs_placement_close(sbi);
+		goto out_tiers;
+	}
+	smoothfs_heat_init(sbi);
+
+	smoothfs_netlink_emit_mount_ready(sbi);
+	pr_info("smoothfs: mounted pool '%s' with %u tier(s)\n",
+		sbi->pool_name, sbi->ntiers);
+	return 0;
+
+out_tiers:
+	{
+		u8 i;
+		for (i = 0; i < sbi->ntiers; i++)
+			path_put(&sbi->tiers[i].lower_path);
+	}
+out_sbi:
+	smoothfs_oid_wb_destroy(sbi);
+	if (sbi->cutover_srcu_ready)
+		cleanup_srcu_struct(&sbi->cutover_srcu);
+	smoothfs_lower_ino_map_destroy(sbi);
+	smoothfs_oid_map_destroy(sbi);
+	kfree(sbi);
+	sb->s_fs_info = NULL;
+	return err;
+}
+
+static int smoothfs_get_tree(struct fs_context *fc)
+{
+	return get_tree_nodev(fc, smoothfs_fill_super);
+}
+
+static void smoothfs_free_fc(struct fs_context *fc)
+{
+	struct smoothfs_fc_ctx *ctx = fc->fs_private;
+
+	if (!ctx)
+		return;
+	kfree(ctx->pool);
+	kfree(ctx->uuid_str);
+	kfree(ctx->tiers);
+	kfree(ctx);
+	fc->fs_private = NULL;
+}
+
+static const struct fs_context_operations smoothfs_context_ops = {
+	.parse_param = smoothfs_parse_param,
+	.get_tree    = smoothfs_get_tree,
+	.free        = smoothfs_free_fc,
+};
+
+int smoothfs_init_fs_context(struct fs_context *fc)
+{
+	struct smoothfs_fc_ctx *ctx;
+
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
+
+	fc->fs_private = ctx;
+	fc->ops = &smoothfs_context_ops;
+	return 0;
+}
+
+/* ----- super_operations beyond alloc/free (those live in module.c) ----- */
+
+static void smoothfs_put_super(struct super_block *sb)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(sb);
+	u8 i;
+
+	if (!sbi)
+		return;
+	smoothfs_heat_destroy(sbi);
+	smoothfs_sb_unregister(sbi);
+	/* Drain OID xattr queue before we release sb state; otherwise
+	 * queued entries would reference dentries whose sb is torn down. */
+	smoothfs_oid_wb_destroy(sbi);
+	smoothfs_placement_close(sbi);
+	if (sbi->cutover_srcu_ready)
+		cleanup_srcu_struct(&sbi->cutover_srcu);
+	smoothfs_lower_ino_map_destroy(sbi);
+	smoothfs_oid_map_destroy(sbi);
+	for (i = 0; i < sbi->ntiers; i++)
+		path_put(&sbi->tiers[i].lower_path);
+	kfree(sbi);
+	sb->s_fs_info = NULL;
+}
+
+/* §POSIX statfs: aggregate across all tier targets. */
+static int smoothfs_statfs(struct dentry *dentry, struct kstatfs *buf)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(dentry->d_sb);
+	struct kstatfs tmp;
+	u8 i;
+	int err;
+
+	memset(buf, 0, sizeof(*buf));
+	buf->f_type    = SMOOTHFS_MAGIC;
+	buf->f_bsize   = PAGE_SIZE;
+	buf->f_namelen = NAME_MAX;
+	buf->f_frsize  = PAGE_SIZE;
+
+	for (i = 0; i < sbi->ntiers; i++) {
+		err = vfs_statfs(&sbi->tiers[i].lower_path, &tmp);
+		if (err) {
+			smoothfs_netlink_emit_tier_fault(sbi, i);
+			continue;
+		}
+		buf->f_blocks += (tmp.f_blocks * tmp.f_bsize) / PAGE_SIZE;
+		buf->f_bfree  += (tmp.f_bfree  * tmp.f_bsize) / PAGE_SIZE;
+		buf->f_bavail += (tmp.f_bavail * tmp.f_bsize) / PAGE_SIZE;
+		buf->f_files  += tmp.f_files;
+		buf->f_ffree  += tmp.f_ffree;
+	}
+	return 0;
+}
+
+static int smoothfs_show_options(struct seq_file *m, struct dentry *root)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(root->d_sb);
+	u8 i;
+
+	seq_printf(m, ",pool=%s", sbi->pool_name);
+	seq_printf(m, ",fsid=0x%08x", sbi->fsid);
+	for (i = 0; i < sbi->ntiers; i++)
+		seq_printf(m, ",tier%u=present", i);
+	return 0;
+}
+
+/*
+ * sync_fs: drain deferred OID xattr writes so `sync` / `syncfs` / the
+ * periodic writeback pass all see up-to-date on-disk state. Called
+ * with wait=1 for "make it durable", wait=0 for "kick it". We flush
+ * synchronously when asked to wait and just nudge the worker when we
+ * aren't.
+ */
+static int smoothfs_sync_fs(struct super_block *sb, int wait)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(sb);
+
+	if (!sbi)
+		return 0;
+	if (wait)
+		smoothfs_oid_wb_drain(sbi);
+	else if (sbi->oid_wb_ready)
+		mod_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work, 0);
+	return 0;
+}
+
+const struct super_operations smoothfs_super_ops = {
+	.alloc_inode   = smoothfs_alloc_inode,
+	.free_inode    = smoothfs_free_inode,
+	.evict_inode   = smoothfs_evict_inode,
+	.put_super     = smoothfs_put_super,
+	.sync_fs       = smoothfs_sync_fs,
+	.statfs        = smoothfs_statfs,
+	.show_options  = smoothfs_show_options,
+};
+
+/*
+ * smoothfs_iget — create a smoothfs inode that wraps a lower path.
+ *
+ * For the root inode (root=true) we use iget_locked with inode #1 so the
+ * VFS root has a stable identity. For non-root inodes we synthesise the
+ * inode number from the object_id per Phase 0 §0.1; if the lower has no
+ * object_id xattr yet (a freshly-discovered file), one is allocated and
+ * persisted before iget completes.
+ */
+struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
+			    bool root)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(sb);
+	struct inode *lower_inode = d_inode(lower->dentry);
+	struct smoothfs_inode_info *si;
+	struct inode *inode;
+	u8 oid[SMOOTHFS_OID_LEN];
+	u32 gen = 0;
+	u64 ino_no;
+	u8 tier_idx = SMOOTHFS_MAX_TIERS;
+	bool need_cache_insert = false;
+	int err;
+
+	if (root) {
+		ino_no = 1;
+		memset(oid, 0, SMOOTHFS_OID_LEN);
+	} else {
+		/* Fast path — if we've seen this (tier, lower_ino) before, we
+		 * already know the smoothfs ino_no and can skip both xattr
+		 * reads. iget_locked's hash check will match an in-core
+		 * smoothfs inode if one exists; otherwise we hit the slow
+		 * path below. */
+		tier_idx = smoothfs_tier_of(sbi, lower->mnt);
+		ino_no = smoothfs_lower_ino_map_get(sbi, tier_idx,
+						    lower_inode->i_ino);
+		if (ino_no) {
+			inode = ilookup(sb, ino_no);
+			if (inode) {
+				path_get(lower);
+				return inode;
+			}
+			/* Cache hit but inode was evicted — treat as miss
+			 * and rebuild state from xattrs. */
+		}
+
+		err = smoothfs_read_oid_xattr(lower->dentry, oid);
+		if (err == -ENODATA) {
+			/* Fresh file. Mint an OID in memory and queue the
+			 * xattr write to the per-sb writeback worker — we
+			 * don't block CREATE on the synchronous setxattr.
+			 * A crash between CREATE and the next flush loses
+			 * the OID (the file itself survives on the lower);
+			 * next mount re-mints one. See the §0.1 addendum
+			 * in the smoothfs proposal.
+			 *
+			 * We also know gen == 0 for a freshly-minted OID,
+			 * so skip the second vfs_getxattr call that would
+			 * otherwise return -ENODATA. */
+			err = smoothfs_alloc_oid(sbi, oid);
+			if (err)
+				return ERR_PTR(err);
+			err = smoothfs_oid_wb_queue(sbi, lower, oid);
+			if (err)
+				return ERR_PTR(err);
+			gen = 0;
+		} else if (err) {
+			return ERR_PTR(err);
+		} else {
+			(void)smoothfs_read_gen_xattr(lower->dentry, &gen);
+		}
+		ino_no = smoothfs_inode_no_from_oid(oid);
+		need_cache_insert = (tier_idx < SMOOTHFS_MAX_TIERS);
+	}
+
+	inode = iget_locked(sb, ino_no);
+	if (!inode)
+		return ERR_PTR(-ENOMEM);
+	if (!smoothfs_compat_inode_is_new(inode)) {
+		/*
+		 * The existing inode already has its own si->lower_path with
+		 * its own reference. Take a matching ref on the caller's
+		 * local lower_path so every caller can path_put() on return
+		 * without caring whether the inode was fresh or cached.
+		 */
+		path_get(lower);
+		return inode;
+	}
+
+	si = SMOOTHFS_I(inode);
+	memcpy(si->oid, oid, SMOOTHFS_OID_LEN);
+	si->gen = gen;
+	si->lower_path = *lower;
+	path_get(&si->lower_path);
+
+	smoothfs_copy_attrs(inode, lower_inode);
+	inode->i_mapping->a_ops = &smoothfs_aops;
+
+	if (S_ISDIR(inode->i_mode)) {
+		inode->i_op  = &smoothfs_dir_inode_ops;
+		inode->i_fop = &smoothfs_dir_ops;
+	} else if (S_ISLNK(inode->i_mode)) {
+		inode->i_op  = &smoothfs_symlink_inode_ops;
+	} else if (S_ISREG(inode->i_mode)) {
+		inode->i_op  = &smoothfs_file_inode_ops;
+		inode->i_fop = &smoothfs_file_ops;
+	} else {
+		inode->i_op  = &smoothfs_special_inode_ops;
+		init_special_inode(inode, inode->i_mode, lower_inode->i_rdev);
+	}
+
+	down_write(&sbi->inode_lock);
+	list_add(&si->sb_link, &sbi->inode_list);
+	up_write(&sbi->inode_lock);
+
+	err = smoothfs_oid_map_insert(sbi, si);
+	if (err && err != -EEXIST) {
+		/* EEXIST only happens if a concurrent iget races to insert
+		 * the same oid; iget_locked's singleton rule prevents that
+		 * for real oids. Any other error is fatal. evict_inode will
+		 * run the list cleanup (and the oid_map_remove no-ops). */
+		pr_err("smoothfs: oid map insert failed: %d\n", err);
+		iget_failed(inode);
+		return ERR_PTR(err);
+	}
+
+	if (need_cache_insert) {
+		/* Best-effort cache seed; a failure here is not fatal, just
+		 * means the next iget for this lower will read xattrs. */
+		(void)smoothfs_lower_ino_map_insert(sbi, tier_idx,
+						    lower_inode->i_ino, ino_no);
+	}
+
+	unlock_new_inode(inode);
+	return inode;
+}
+
+void smoothfs_copy_attrs(struct inode *dst, struct inode *src)
+{
+	dst->i_mode  = src->i_mode;
+	dst->i_uid   = src->i_uid;
+	dst->i_gid   = src->i_gid;
+	dst->i_rdev  = src->i_rdev;
+	inode_set_atime_to_ts(dst, inode_get_atime(src));
+	inode_set_mtime_to_ts(dst, inode_get_mtime(src));
+	inode_set_ctime_to_ts(dst, inode_get_ctime(src));
+	i_size_write(dst, i_size_read(src));
+	set_nlink(dst, src->i_nlink);
+}
+
+struct smoothfs_inode_info *smoothfs_lookup_rel_path(struct smoothfs_sb_info *sbi,
+						     const char *rel_path)
+{
+	struct smoothfs_inode_info *si, *found = NULL;
+
+	if (!rel_path)
+		return NULL;
+
+	down_read(&sbi->inode_lock);
+	list_for_each_entry(si, &sbi->inode_list, sb_link) {
+		if (si->rel_path && strcmp(si->rel_path, rel_path) == 0) {
+			found = si;
+			break;
+		}
+	}
+	up_read(&sbi->inode_lock);
+	return found;
+}

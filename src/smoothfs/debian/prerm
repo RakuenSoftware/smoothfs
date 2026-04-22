@@ -1,0 +1,23 @@
+#!/bin/sh
+# debhelper-managed prerm for smoothfs-dkms. dh_dkms splices its
+# `dkms remove` call at the marker below. The block above it
+# unloads the live module first, but only if nothing is currently
+# mounted as smoothfs — tearing down a live mount mid-upgrade
+# would be catastrophic, so we leave the module in place and let
+# DKMS update the on-disk .ko without touching the running one.
+
+set -e
+
+case "$1" in
+remove|upgrade|deconfigure)
+	if mount | grep -q ' type smoothfs '; then
+		echo "smoothfs-dkms: active smoothfs mounts present; leaving running module in place" >&2
+	elif lsmod | grep -q '^smoothfs '; then
+		modprobe -r smoothfs 2>/dev/null || true
+	fi
+	;;
+esac
+
+#DEBHELPER#
+
+exit 0

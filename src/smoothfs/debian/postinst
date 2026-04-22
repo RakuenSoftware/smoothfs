@@ -1,0 +1,21 @@
+#!/bin/sh
+# debhelper-managed postinst for smoothfs-dkms. dh_dkms splices its
+# DKMS add/build/install calls at the marker below. The block after
+# the marker loads the freshly-built module on first install — the
+# DKMS helper stops at installing the .ko and doesn't modprobe it.
+
+set -e
+
+#DEBHELPER#
+
+case "$1" in
+configure)
+	if lsmod | grep -q '^smoothfs '; then
+		:  # already loaded, nothing to do
+	elif command -v modprobe >/dev/null 2>&1; then
+		modprobe smoothfs 2>/dev/null || true
+	fi
+	;;
+esac
+
+exit 0

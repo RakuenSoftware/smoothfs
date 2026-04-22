@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Kernel build description for the smoothfs module.
+
+obj-m += smoothfs.o
+
+smoothfs-y := \
+	module.o \
+	super.o \
+	inode.o \
+	dir.o \
+	file.o \
+	xattr.o \
+	acl.o \
+	lock.o \
+	oid.o \
+	placement.o \
+	netlink.o \
+	lower.o \
+	probe.o \
+	heat.o \
+	movement.o \
+	export.o
+
+ccflags-y += -I$(src)
+ccflags-y += -Wall -Wmissing-prototypes
