@@ -117,6 +117,11 @@ func (s *Service) Run(ctx context.Context) error {
 		defer wg.Done()
 		s.planner.Run(ctx)
 	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.runSubtreeReconcile(ctx)
+	}()
 	for i := 0; i < s.workerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -172,6 +177,17 @@ func (s *Service) runEvents(ctx context.Context) {
 				if ev.Tier != nil {
 					log.Printf("smoothfs: tier fault: pool %s tier rank %d",
 						ev.PoolUUID, ev.Tier.TierRank)
+				}
+			case EventSpill:
+				s.mu.Lock()
+				if pool := s.pools[ev.PoolUUID.String()]; pool != nil {
+					pool.AnySpillSinceMount = true
+				}
+				s.mu.Unlock()
+				if ev.Spill != nil {
+					log.Printf("smoothfs: spill event pool=%s object=%x %d->%d size=%d",
+						ev.PoolUUID, ev.Spill.OID, ev.Spill.SourceTier,
+						ev.Spill.DestTier, ev.Spill.SizeBytes)
 				}
 			}
 		}
@@ -257,10 +273,11 @@ func (s *Service) discoverPool(ctx context.Context, ev *Event) (*Pool, error) {
 	}
 
 	return &Pool{
-		UUID:        ev.PoolUUID,
-		Name:        ev.PoolName,
-		NamespaceID: ns.ID,
-		Tiers:       tiers,
+		UUID:               ev.PoolUUID,
+		Name:               ev.PoolName,
+		NamespaceID:        ns.ID,
+		Tiers:              tiers,
+		AnySpillSinceMount: ev.AnySpillSinceMount,
 	}, nil
 }
 

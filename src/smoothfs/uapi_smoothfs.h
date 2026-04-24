@@ -52,6 +52,7 @@ enum {
 	SMOOTHFS_EVENT_TIER_FAULT         = 12,
 	SMOOTHFS_CMD_MOVE_CUTOVER         = 13,
 	SMOOTHFS_CMD_REVOKE_MAPPINGS      = 14,
+	SMOOTHFS_EVENT_SPILL              = 15,
 	__SMOOTHFS_CMD_MAX,
 };
 #define SMOOTHFS_CMD_MAX (__SMOOTHFS_CMD_MAX - 1)
@@ -79,6 +80,8 @@ enum {
 	SMOOTHFS_ATTR_TIERS               = 18, /* nested */
 	SMOOTHFS_ATTR_REL_PATH            = 19, /* string, namespace-relative */
 	SMOOTHFS_ATTR_FORCE               = 20, /* u8; 1 = bypass pin_state on MOVE_PLAN — Phase 5.3 */
+	SMOOTHFS_ATTR_SIZE_BYTES          = 21, /* u64 */
+	SMOOTHFS_ATTR_ANY_SPILL_SINCE_MOUNT = 22, /* u8 boolean */
 	__SMOOTHFS_ATTR_MAX,
 };
 #define SMOOTHFS_ATTR_MAX (__SMOOTHFS_ATTR_MAX - 1)

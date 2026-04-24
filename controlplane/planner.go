@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,11 +16,12 @@ import (
 // Pool is a runtime registration of a smoothfs mount that the planner
 // considers for movement.
 type Pool struct {
-	UUID        uuid.UUID
-	Name        string
-	NamespaceID string
-	Tiers       []TierInfo
-	transaction uint64
+	UUID               uuid.UUID
+	Name               string
+	NamespaceID        string
+	Tiers              []TierInfo
+	AnySpillSinceMount bool
+	transaction        uint64
 }
 
 // TierInfo describes one lower-tier in a Pool.
@@ -60,6 +62,21 @@ type candidate struct {
 	ewma        float64
 	lastMove    string
 	pinState    string
+}
+
+var tierFillPct = func(path string) (int, error) {
+	var st syscall.Statfs_t
+	var used, total uint64
+
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	total = st.Blocks * uint64(st.Bsize)
+	if total == 0 {
+		return 0, nil
+	}
+	used = (st.Blocks - st.Bavail) * uint64(st.Bsize)
+	return int((used * 100) / total), nil
 }
 
 func LoadPlannerConfig(ctx context.Context, db *sql.DB) (PlannerConfig, error) {
@@ -141,6 +158,15 @@ func (p *Planner) planPool(ctx context.Context, pool *Pool) error {
 		return nil
 	}
 
+	poolTiers := make([]TierInfo, len(pool.Tiers))
+	copy(poolTiers, pool.Tiers)
+	for i := range poolTiers {
+		fillPct, err := tierFillPct(poolTiers[i].LowerDir)
+		if err == nil {
+			poolTiers[i].FillPct = fillPct
+		}
+	}
+
 	rows, err := p.db.QueryContext(ctx, `
 		SELECT object_id, current_tier_id, rel_path, ewma_value,
 		       COALESCE(last_movement_at, created_at),
@@ -175,7 +201,7 @@ func (p *Planner) planPool(ctx context.Context, pool *Pool) error {
 	demoteCut := objs[demoteIdx].ewma
 
 	tiersByID := make(map[string]TierInfo, len(pool.Tiers))
-	for _, t := range pool.Tiers {
+	for _, t := range poolTiers {
 		tiersByID[t.TargetID] = t
 	}
 
@@ -188,20 +214,28 @@ func (p *Planner) planPool(ctx context.Context, pool *Pool) error {
 		if c.pinState != "" && c.pinState != "none" {
 			continue
 		}
-		if movedRecently(now, c.lastMove, p.cfg.MinResidencySec, p.cfg.CooldownSec) {
-			continue
-		}
 
 		var dest *TierInfo
+		sourceOverfull := cur.FullPct > 0 && cur.FillPct >= cur.FullPct
 		switch {
 		case c.ewma >= promoteCut && int(cur.Rank) > 0:
-			t := pool.Tiers[int(cur.Rank)-1]
+			if movedRecently(now, c.lastMove, p.cfg.MinResidencySec, p.cfg.CooldownSec) {
+				continue
+			}
+			t := poolTiers[int(cur.Rank)-1]
 			dest = &t
-		case c.ewma <= demoteCut && int(cur.Rank) < len(pool.Tiers)-1:
-			t := pool.Tiers[int(cur.Rank)+1]
+		case (c.ewma <= demoteCut || sourceOverfull) && int(cur.Rank) < len(poolTiers)-1:
+			if !sourceOverfull &&
+				movedRecently(now, c.lastMove, p.cfg.MinResidencySec, p.cfg.CooldownSec) {
+				continue
+			}
+			t := poolTiers[int(cur.Rank)+1]
 			dest = &t
 		}
 		if dest == nil {
+			continue
+		}
+		if dest.FullPct > 0 && dest.FillPct >= dest.FullPct {
 			continue
 		}
 

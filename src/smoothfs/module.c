@@ -7,6 +7,7 @@
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
+#include <linux/kobject.h>
 #include <linux/slab.h>
 
 #include "smoothfs.h"
@@ -14,6 +15,7 @@
 static_assert(sizeof(struct smoothfs_inode_info) <= 4096);
 
 struct kmem_cache *smoothfs_inode_cachep;
+struct kobject *smoothfs_sysfs_root;
 
 static void smoothfs_init_once(void *foo)
 {
@@ -84,6 +86,22 @@ struct file_system_type smoothfs_fs_type = {
 };
 MODULE_ALIAS_FS(SMOOTHFS_NAME);
 
+int smoothfs_sysfs_init(void)
+{
+	smoothfs_sysfs_root = kobject_create_and_add(SMOOTHFS_NAME, fs_kobj);
+	if (!smoothfs_sysfs_root)
+		return -ENOMEM;
+	return 0;
+}
+
+void smoothfs_sysfs_exit(void)
+{
+	if (!smoothfs_sysfs_root)
+		return;
+	kobject_put(smoothfs_sysfs_root);
+	smoothfs_sysfs_root = NULL;
+}
+
 static int __init smoothfs_init(void)
 {
 	int err;
@@ -96,13 +114,19 @@ static int __init smoothfs_init(void)
 	if (err)
 		goto out_cache;
 
-	err = register_filesystem(&smoothfs_fs_type);
+	err = smoothfs_sysfs_init();
 	if (err)
 		goto out_netlink;
+
+	err = register_filesystem(&smoothfs_fs_type);
+	if (err)
+		goto out_sysfs;
 
 	pr_info("smoothfs: loaded\n");
 	return 0;
 
+out_sysfs:
+	smoothfs_sysfs_exit();
 out_netlink:
 	smoothfs_netlink_exit();
 out_cache:
@@ -113,6 +137,7 @@ out_cache:
 static void __exit smoothfs_exit(void)
 {
 	unregister_filesystem(&smoothfs_fs_type);
+	smoothfs_sysfs_exit();
 	smoothfs_netlink_exit();
 	smoothfs_destroy_inodecache();
 	pr_info("smoothfs: unloaded\n");

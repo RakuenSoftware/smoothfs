@@ -30,31 +30,34 @@ const (
 	EventTierFault    uint8 = 12
 	CmdMoveCutover    uint8 = 13
 	CmdRevokeMappings uint8 = 14
+	EventSpill        uint8 = 15
 )
 
 // Generic netlink attributes. Keep in sync with src/smoothfs/uapi_smoothfs.h.
 const (
-	AttrUnspec          uint16 = 0
-	AttrPoolUUID        uint16 = 1
-	AttrPoolName        uint16 = 2
-	AttrFSID            uint16 = 3
-	AttrTierRank        uint16 = 4
-	AttrTierCaps        uint16 = 5
-	AttrTierPath        uint16 = 6
-	AttrTierID          uint16 = 7
-	AttrObjectID        uint16 = 8
-	AttrGeneration      uint16 = 9
-	AttrMovementState   uint16 = 10
-	AttrCurrentTier     uint16 = 11
-	AttrIntendedTier    uint16 = 12
-	AttrTransactionSeq  uint16 = 13
-	AttrPinState        uint16 = 14
-	AttrHeatSampleBlob  uint16 = 15
-	AttrCheckpointSeq   uint16 = 16
-	AttrReconcileReason uint16 = 17
-	AttrTiers           uint16 = 18
-	AttrRelPath         uint16 = 19
-	AttrForce           uint16 = 20
+	AttrUnspec             uint16 = 0
+	AttrPoolUUID           uint16 = 1
+	AttrPoolName           uint16 = 2
+	AttrFSID               uint16 = 3
+	AttrTierRank           uint16 = 4
+	AttrTierCaps           uint16 = 5
+	AttrTierPath           uint16 = 6
+	AttrTierID             uint16 = 7
+	AttrObjectID           uint16 = 8
+	AttrGeneration         uint16 = 9
+	AttrMovementState      uint16 = 10
+	AttrCurrentTier        uint16 = 11
+	AttrIntendedTier       uint16 = 12
+	AttrTransactionSeq     uint16 = 13
+	AttrPinState           uint16 = 14
+	AttrHeatSampleBlob     uint16 = 15
+	AttrCheckpointSeq      uint16 = 16
+	AttrReconcileReason    uint16 = 17
+	AttrTiers              uint16 = 18
+	AttrRelPath            uint16 = 19
+	AttrForce              uint16 = 20
+	AttrSizeBytes          uint16 = 21
+	AttrAnySpillSinceMount uint16 = 22
 )
 
 // MovementState mirrors the on-disk movement_state CHECK column +

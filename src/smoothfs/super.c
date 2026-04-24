@@ -16,6 +16,7 @@
 #include <linux/namei.h>
 #include <linux/parser.h>
 #include <linux/rhashtable.h>
+#include <linux/sysfs.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/string.h>
@@ -24,6 +25,121 @@
 #include <linux/xxhash.h>
 
 #include "smoothfs.h"
+
+extern struct kobject *smoothfs_sysfs_root;
+
+struct smoothfs_sysfs_pool {
+	struct kobject         kobj;
+	struct smoothfs_sb_info *sbi;
+};
+
+static inline struct smoothfs_sysfs_pool *to_smoothfs_sysfs_pool(struct kobject *kobj)
+{
+	return container_of(kobj, struct smoothfs_sysfs_pool, kobj);
+}
+
+static ssize_t spill_creates_total_show(struct kobject *kobj,
+					struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+			  (long long)atomic64_read(&pool->sbi->spill_creates_total));
+}
+
+static ssize_t spill_creates_failed_all_tiers_show(struct kobject *kobj,
+						   struct kobj_attribute *attr,
+						   char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->spill_creates_failed_all_tiers));
+}
+
+static ssize_t any_spill_since_mount_show(struct kobject *kobj,
+					  struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%d\n",
+			  atomic_read(&pool->sbi->any_spill_since_mount) ? 1 : 0);
+}
+
+static struct kobj_attribute spill_creates_total_attr =
+	__ATTR_RO(spill_creates_total);
+static struct kobj_attribute spill_creates_failed_all_tiers_attr =
+	__ATTR_RO(spill_creates_failed_all_tiers);
+static struct kobj_attribute any_spill_since_mount_attr =
+	__ATTR_RO(any_spill_since_mount);
+
+static struct attribute *smoothfs_pool_attrs[] = {
+	&spill_creates_total_attr.attr,
+	&spill_creates_failed_all_tiers_attr.attr,
+	&any_spill_since_mount_attr.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(smoothfs_pool);
+
+static void smoothfs_sysfs_pool_release(struct kobject *kobj)
+{
+	kfree(to_smoothfs_sysfs_pool(kobj));
+}
+
+static const struct kobj_type smoothfs_pool_ktype = {
+	.release        = smoothfs_sysfs_pool_release,
+	.sysfs_ops      = &kobj_sysfs_ops,
+	.default_groups = smoothfs_pool_groups,
+};
+
+int smoothfs_sysfs_pool_add(struct smoothfs_sb_info *sbi)
+{
+	struct smoothfs_sysfs_pool *pool;
+	int err;
+
+	if (!smoothfs_sysfs_root)
+		return 0;
+
+	pool = kzalloc(sizeof(*pool), GFP_KERNEL);
+	if (!pool)
+		return -ENOMEM;
+	pool->sbi = sbi;
+	err = kobject_init_and_add(&pool->kobj, &smoothfs_pool_ktype,
+				   smoothfs_sysfs_root, "%pUb",
+				   &sbi->pool_uuid);
+	if (err) {
+		kobject_put(&pool->kobj);
+		return err;
+	}
+	sbi->sysfs_pool = pool;
+	return 0;
+}
+
+void smoothfs_sysfs_pool_remove(struct smoothfs_sb_info *sbi)
+{
+	struct smoothfs_sysfs_pool *pool = sbi->sysfs_pool;
+
+	sbi->sysfs_pool = NULL;
+	if (pool)
+		kobject_put(&pool->kobj);
+}
+
+void smoothfs_spill_note_success(struct smoothfs_sb_info *sbi,
+				 struct inode *inode,
+				 u8 source_tier, u8 dest_tier)
+{
+	atomic64_inc(&sbi->spill_creates_total);
+	atomic_set(&sbi->any_spill_since_mount, 1);
+	smoothfs_netlink_emit_spill(sbi, SMOOTHFS_I(inode)->oid,
+				    source_tier, dest_tier,
+				    i_size_read(inode));
+}
+
+void smoothfs_spill_note_failed_all_tiers(struct smoothfs_sb_info *sbi)
+{
+	atomic64_inc(&sbi->spill_creates_failed_all_tiers);
+}
 
 const struct rhashtable_params smoothfs_oid_rht_params = {
 	.head_offset = offsetof(struct smoothfs_inode_info, hash_node),
@@ -542,6 +658,9 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		uuid_gen(&sbi->pool_uuid);
 	}
 	sbi->fsid = xxh32(sbi->pool_uuid.b, sizeof(sbi->pool_uuid.b), 0);
+	atomic64_set(&sbi->spill_creates_total, 0);
+	atomic64_set(&sbi->spill_creates_failed_all_tiers, 0);
+	atomic_set(&sbi->any_spill_since_mount, 0);
 
 	err = smoothfs_resolve_tiers(sbi, ctx->tiers);
 	if (err)
@@ -598,6 +717,13 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = smoothfs_sb_register(sbi);
 	if (err) {
 		pr_err("smoothfs: sb register failed: %d\n", err);
+		smoothfs_placement_close(sbi);
+		goto out_tiers;
+	}
+	err = smoothfs_sysfs_pool_add(sbi);
+	if (err) {
+		pr_err("smoothfs: sysfs pool add failed: %d\n", err);
+		smoothfs_sb_unregister(sbi);
 		smoothfs_placement_close(sbi);
 		goto out_tiers;
 	}
@@ -672,6 +798,7 @@ static void smoothfs_put_super(struct super_block *sb)
 	if (!sbi)
 		return;
 	smoothfs_heat_destroy(sbi);
+	smoothfs_sysfs_pool_remove(sbi);
 	smoothfs_sb_unregister(sbi);
 	/* Drain OID xattr queue before we release sb state; otherwise
 	 * queued entries would reference dentries whose sb is torn down. */

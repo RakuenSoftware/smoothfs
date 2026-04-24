@@ -98,6 +98,8 @@ static const struct nla_policy smoothfs_genl_policy[SMOOTHFS_ATTR_MAX + 1] = {
 	[SMOOTHFS_ATTR_TIERS]            = { .type = NLA_NESTED },
 	[SMOOTHFS_ATTR_REL_PATH]         = { .type = NLA_NUL_STRING, .len = PATH_MAX - 1 },
 	[SMOOTHFS_ATTR_FORCE]            = { .type = NLA_U8 },
+	[SMOOTHFS_ATTR_SIZE_BYTES]       = { .type = NLA_U64 },
+	[SMOOTHFS_ATTR_ANY_SPILL_SINCE_MOUNT] = { .type = NLA_U8 },
 };
 
 static char *smoothfs_path_string(const struct path *path)
@@ -442,7 +444,9 @@ static int emit_pool_event(struct smoothfs_sb_info *sbi, u8 cmd,
 	if (nla_put(skb, SMOOTHFS_ATTR_POOL_UUID, sizeof(sbi->pool_uuid.b),
 		    sbi->pool_uuid.b) ||
 	    nla_put_string(skb, SMOOTHFS_ATTR_POOL_NAME, sbi->pool_name) ||
-	    nla_put_u32(skb, SMOOTHFS_ATTR_FSID, sbi->fsid))
+	    nla_put_u32(skb, SMOOTHFS_ATTR_FSID, sbi->fsid) ||
+	    nla_put_u8(skb, SMOOTHFS_ATTR_ANY_SPILL_SINCE_MOUNT,
+		       atomic_read(&sbi->any_spill_since_mount) ? 1 : 0))
 		goto cancel;
 	if (cmd == SMOOTHFS_EVENT_MOUNT_READY) {
 		tiers = nla_nest_start(skb, SMOOTHFS_ATTR_TIERS);
@@ -547,6 +551,39 @@ int smoothfs_netlink_emit_heat_samples(struct smoothfs_sb_info *sbi,
 	if (nla_put(skb, SMOOTHFS_ATTR_POOL_UUID, sizeof(sbi->pool_uuid.b),
 		    sbi->pool_uuid.b) ||
 	    nla_put(skb, SMOOTHFS_ATTR_HEAT_SAMPLE_BLOB, len, blob))
+		goto cancel;
+	genlmsg_end(skb, hdr);
+	return multicast_send(skb);
+
+cancel:
+	genlmsg_cancel(skb, hdr);
+err:
+	nlmsg_free(skb);
+	return -EMSGSIZE;
+}
+
+int smoothfs_netlink_emit_spill(struct smoothfs_sb_info *sbi,
+				const u8 oid[SMOOTHFS_OID_LEN],
+				u8 source_tier, u8 dest_tier,
+				u64 size_bytes)
+{
+	struct sk_buff *skb;
+	void *hdr;
+
+	skb = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+	hdr = genlmsg_put(skb, 0, 0, &smoothfs_genl_family, 0,
+			  SMOOTHFS_EVENT_SPILL);
+	if (!hdr)
+		goto err;
+	if (nla_put(skb, SMOOTHFS_ATTR_POOL_UUID, sizeof(sbi->pool_uuid.b),
+		    sbi->pool_uuid.b) ||
+	    nla_put_u8(skb, SMOOTHFS_ATTR_ANY_SPILL_SINCE_MOUNT, 1) ||
+	    nla_put(skb, SMOOTHFS_ATTR_OBJECT_ID, SMOOTHFS_OID_LEN, oid) ||
+	    nla_put_u8(skb, SMOOTHFS_ATTR_CURRENT_TIER, source_tier) ||
+	    nla_put_u8(skb, SMOOTHFS_ATTR_INTENDED_TIER, dest_tier) ||
+	    nla_put_u64_64bit(skb, SMOOTHFS_ATTR_SIZE_BYTES, size_bytes, 0))
 		goto cancel;
 	genlmsg_end(skb, hdr);
 	return multicast_send(skb);
