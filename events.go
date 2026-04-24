@@ -12,13 +12,15 @@ import (
 
 // Event is the tagged union of multicast messages from the kernel.
 type Event struct {
-	PoolUUID    uuid.UUID
-	Type        uint8
-	PoolName    string
-	HeatSamples []HeatSampleRecord
-	Tiers       []MountedTier
-	Move        *MoveStateEvent
-	Tier        *TierFaultEvent
+	PoolUUID           uuid.UUID
+	Type               uint8
+	PoolName           string
+	AnySpillSinceMount bool
+	HeatSamples        []HeatSampleRecord
+	Tiers              []MountedTier
+	Move               *MoveStateEvent
+	Tier               *TierFaultEvent
+	Spill              *SpillEvent
 }
 
 type MoveStateEvent struct {
@@ -31,10 +33,17 @@ type TierFaultEvent struct {
 	TierRank uint8
 }
 
+type SpillEvent struct {
+	OID        [OIDLen]byte
+	SourceTier uint8
+	DestTier   uint8
+	SizeBytes  uint64
+}
+
 func DecodeEvent(msg genetlink.Message) (*Event, error) {
 	cmd := msg.Header.Command
 	switch cmd {
-	case EventMountReady, EventHeatSample, EventMoveState, EventTierFault:
+	case EventMountReady, EventHeatSample, EventMoveState, EventTierFault, EventSpill:
 	default:
 		return nil, nil
 	}
@@ -51,6 +60,8 @@ func DecodeEvent(msg genetlink.Message) (*Event, error) {
 			}
 		case AttrPoolName:
 			ev.PoolName = nullTermString(a.Data)
+		case AttrAnySpillSinceMount:
+			ev.AnySpillSinceMount = len(a.Data) >= 1 && a.Data[0] != 0
 		case AttrHeatSampleBlob:
 			records, err := parseHeatBlob(a.Data)
 			if err != nil {
@@ -64,6 +75,15 @@ func DecodeEvent(msg genetlink.Message) (*Event, error) {
 			}
 			ev.Tiers = tiers
 		case AttrObjectID:
+			if cmd == EventSpill {
+				if ev.Spill == nil {
+					ev.Spill = &SpillEvent{}
+				}
+				if len(a.Data) == OIDLen {
+					copy(ev.Spill.OID[:], a.Data)
+				}
+				continue
+			}
 			if ev.Move == nil {
 				ev.Move = &MoveStateEvent{}
 			}
@@ -90,6 +110,27 @@ func DecodeEvent(msg genetlink.Message) (*Event, error) {
 			}
 			if len(a.Data) >= 1 {
 				ev.Tier.TierRank = a.Data[0]
+			}
+		case AttrCurrentTier:
+			if ev.Spill == nil {
+				ev.Spill = &SpillEvent{}
+			}
+			if len(a.Data) >= 1 {
+				ev.Spill.SourceTier = a.Data[0]
+			}
+		case AttrIntendedTier:
+			if ev.Spill == nil {
+				ev.Spill = &SpillEvent{}
+			}
+			if len(a.Data) >= 1 {
+				ev.Spill.DestTier = a.Data[0]
+			}
+		case AttrSizeBytes:
+			if ev.Spill == nil {
+				ev.Spill = &SpillEvent{}
+			}
+			if len(a.Data) >= 8 {
+				ev.Spill.SizeBytes = binary.LittleEndian.Uint64(a.Data)
 			}
 		}
 	}

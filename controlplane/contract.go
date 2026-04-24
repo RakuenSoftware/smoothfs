@@ -6,6 +6,7 @@ type Client = root.Client
 type Event = root.Event
 type MoveStateEvent = root.MoveStateEvent
 type TierFaultEvent = root.TierFaultEvent
+type SpillEvent = root.SpillEvent
 type MovementState = root.MovementState
 type PinState = root.PinState
 type HeatSampleRecord = root.HeatSampleRecord
@@ -18,6 +19,7 @@ const (
 	EventHeatSample          = root.EventHeatSample
 	EventMoveState           = root.EventMoveState
 	EventTierFault           = root.EventTierFault
+	EventSpill               = root.EventSpill
 	StatePlaced              = root.StatePlaced
 	StatePlanAccepted        = root.StatePlanAccepted
 	StateDestinationReserved = root.StateDestinationReserved

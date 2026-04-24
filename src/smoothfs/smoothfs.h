@@ -30,6 +30,7 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/version.h>
+#include <linux/kobject.h>
 
 #include "uapi_smoothfs.h"
 #include "compat.h"
@@ -197,6 +198,13 @@ struct smoothfs_sb_info {
 	struct list_head     oid_wb_pending;
 	unsigned int         oid_wb_pending_count;
 	bool                 oid_wb_ready;
+
+	/* Spill observability. Exported via per-pool sysfs files and the
+	 * generic-netlink spill event path. */
+	atomic64_t          spill_creates_total;
+	atomic64_t          spill_creates_failed_all_tiers;
+	atomic_t            any_spill_since_mount;
+	void               *sysfs_pool;
 };
 
 /* Default drain interval — overridable per pool via Phase 0 §0.5
@@ -294,6 +302,8 @@ static inline void smoothfs_set_lower_dentry(struct dentry *dentry,
 /* module.c */
 extern struct file_system_type smoothfs_fs_type;
 extern struct kmem_cache       *smoothfs_inode_cachep;
+int  smoothfs_sysfs_init(void);
+void smoothfs_sysfs_exit(void);
 
 /* super.c */
 extern const struct super_operations  smoothfs_super_ops;
@@ -308,6 +318,12 @@ int  smoothfs_oid_map_insert(struct smoothfs_sb_info *sbi,
 			     struct smoothfs_inode_info *si);
 void smoothfs_oid_map_remove(struct smoothfs_sb_info *sbi,
 			     struct smoothfs_inode_info *si);
+int  smoothfs_sysfs_pool_add(struct smoothfs_sb_info *sbi);
+void smoothfs_sysfs_pool_remove(struct smoothfs_sb_info *sbi);
+void smoothfs_spill_note_success(struct smoothfs_sb_info *sbi,
+				 struct inode *inode,
+				 u8 source_tier, u8 dest_tier);
+void smoothfs_spill_note_failed_all_tiers(struct smoothfs_sb_info *sbi);
 
 /* (tier_idx, lower_ino) -> smoothfs ino_no cache.
  * 8-byte key: (tier_idx << 56) | (lower_ino & 0x00FFFFFFFFFFFFFF).
@@ -412,6 +428,10 @@ int  smoothfs_netlink_emit_move_state(struct smoothfs_sb_info *sbi,
 int  smoothfs_netlink_emit_heat_samples(struct smoothfs_sb_info *sbi,
 					const void *blob, size_t len,
 					unsigned int n_records);
+int  smoothfs_netlink_emit_spill(struct smoothfs_sb_info *sbi,
+				 const u8 oid[SMOOTHFS_OID_LEN],
+				 u8 source_tier, u8 dest_tier,
+				 u64 size_bytes);
 
 /* sb registry (sb_id <-> sbi) — netlink command handlers look up the
  * target pool from the request payload. */
@@ -448,6 +468,7 @@ struct smoothfs_file_info {
 	fmode_t            open_flags;
 	const struct cred *open_cred;
 	struct mutex       reissue_lock;
+	void              *dir_cache;          /* dir.c-owned merged readdir state */
 };
 
 int  smoothfs_open_lower(struct file *file, struct inode *inode);

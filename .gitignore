@@ -10,6 +10,7 @@ dist/
 *.a
 *.so
 *.swp
+!go.mod
 
 src/smoothfs/.tmp_versions/
 src/smoothfs/modules.order

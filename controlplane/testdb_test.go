@@ -48,6 +48,7 @@ func testDB(t *testing.T) *sql.DB {
 			current_tier_id TEXT NOT NULL,
 			intended_tier_id TEXT,
 			movement_state TEXT NOT NULL DEFAULT 'placed',
+			pin_state TEXT NOT NULL DEFAULT 'none',
 			transaction_seq INTEGER NOT NULL DEFAULT 0,
 			last_committed_cutover_gen INTEGER NOT NULL DEFAULT 0,
 			failure_reason TEXT NOT NULL DEFAULT '',
