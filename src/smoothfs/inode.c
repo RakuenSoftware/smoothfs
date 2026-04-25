@@ -24,6 +24,7 @@
 #include <linux/slab.h>
 #include <linux/xattr.h>
 #include <linux/limits.h>
+#include <linux/statfs.h>
 
 #include "smoothfs.h"
 
@@ -222,7 +223,7 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 			goto out_err;
 		}
 
-		qname = QSTR_INIT(component, strlen(component));
+		qname = (struct qstr)QSTR_INIT(component, strlen(component));
 		inode_lock(d_inode(cur.dentry));
 		child = smoothfs_compat_lookup(&nop_mnt_idmap, &qname, cur.dentry);
 		if (IS_ERR(child)) {

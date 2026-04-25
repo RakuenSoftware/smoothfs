@@ -207,6 +207,17 @@ struct smoothfs_sb_info {
 	void               *sysfs_pool;
 };
 
+static inline u8 smoothfs_tier_of(struct smoothfs_sb_info *sbi,
+				  struct vfsmount *mnt)
+{
+	u8 i;
+
+	for (i = 0; i < sbi->ntiers; i++)
+		if (sbi->tiers[i].lower_path.mnt == mnt)
+			return i;
+	return SMOOTHFS_MAX_TIERS;
+}
+
 /* Default drain interval — overridable per pool via Phase 0 §0.5
  * tunables. Phase 2 hard-codes; later we plumb from tierd. */
 #define SMOOTHFS_HEAT_DRAIN_MS  30000

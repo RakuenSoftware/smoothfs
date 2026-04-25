@@ -445,16 +445,6 @@ static void smoothfs_free_inode(struct inode *inode)
 	kmem_cache_free(smoothfs_inode_cachep, SMOOTHFS_I(inode));
 }
 
-static u8 smoothfs_tier_of(struct smoothfs_sb_info *sbi, struct vfsmount *mnt)
-{
-	u8 i;
-
-	for (i = 0; i < sbi->ntiers; i++)
-		if (sbi->tiers[i].lower_path.mnt == mnt)
-			return i;
-	return SMOOTHFS_MAX_TIERS;
-}
-
 static void smoothfs_evict_inode(struct inode *inode)
 {
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
