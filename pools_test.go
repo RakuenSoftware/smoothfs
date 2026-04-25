@@ -79,9 +79,11 @@ func TestValidateTiers(t *testing.T) {
 
 func TestUnitFilenameFor(t *testing.T) {
 	cases := map[string]string{
-		"/mnt/smoothfs/tank":  "mnt-smoothfs-tank.mount",
-		"/mnt/smoothfs/pool0": "mnt-smoothfs-pool0.mount",
-		"/var/lib/fast":       "var-lib-fast.mount",
+		"/mnt/smoothfs/tank":              "mnt-smoothfs-tank.mount",
+		"/mnt/smoothfs/pool0":             "mnt-smoothfs-pool0.mount",
+		"/var/lib/fast":                   "var-lib-fast.mount",
+		"/mnt/.tierd-backing/media/HDD":   "mnt-.tierd\\x2dbacking-media-HDD.mount",
+		"/mnt/.tierd-backing/media/NVME/": "mnt-.tierd\\x2dbacking-media-NVME.mount",
 	}
 	for input, want := range cases {
 		if got := UnitFilenameFor(input); got != want {
