@@ -500,13 +500,14 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		goto out;
 	}
 
-	for (tier = parent_tier; tier < sbi->ntiers; tier++) {
-		bool spilled = tier != parent_tier;
+	for (tier = sbi->fastest_tier; tier < sbi->ntiers; tier++) {
+		bool materialize_parent = tier != parent_tier;
+		bool cold_placement = tier != sbi->fastest_tier;
 
 		if (tier != sbi->ntiers - 1 && smoothfs_tier_near_enospc(sbi, tier))
 			continue;
 
-		if (spilled) {
+		if (materialize_parent) {
 			err = smoothfs_materialize_parent_on_tier(idmap, dir->i_sb,
 								  sbi, tier,
 								  parent_rel_path,
@@ -553,13 +554,13 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		}
 		err = smoothfs_track_placed(sbi, inode, rel_path, tier,
 					    /*pin_lookup_ref=*/false,
-					    /*record_log=*/spilled);
+					    /*record_log=*/cold_placement);
 		if (err) {
 			iput(inode);
 			path_put(&parent_path);
 			goto out;
 		}
-		if (spilled)
+		if (cold_placement)
 			smoothfs_spill_note_success(sbi, inode, parent_tier, tier);
 
 		smoothfs_set_lower_dentry(dentry, lower);
@@ -770,13 +771,14 @@ static struct dentry *smoothfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		goto out_err;
 	}
 
-	for (tier = parent_tier; tier < sbi->ntiers; tier++) {
-		bool spilled = tier != parent_tier;
+	for (tier = sbi->fastest_tier; tier < sbi->ntiers; tier++) {
+		bool materialize_parent = tier != parent_tier;
+		bool cold_placement = tier != sbi->fastest_tier;
 
 		if (tier != sbi->ntiers - 1 && smoothfs_tier_near_enospc(sbi, tier))
 			continue;
 
-		if (spilled) {
+		if (materialize_parent) {
 			err = smoothfs_materialize_parent_on_tier(idmap, dir->i_sb,
 								  sbi, tier,
 								  parent_rel_path,
@@ -831,13 +833,13 @@ static struct dentry *smoothfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 		}
 		err = smoothfs_track_placed(sbi, inode, rel_path, tier,
 					    /*pin_lookup_ref=*/false,
-					    /*record_log=*/spilled);
+					    /*record_log=*/cold_placement);
 		if (err) {
 			iput(inode);
 			path_put(&parent_path);
 			goto out_err;
 		}
-		if (spilled)
+		if (cold_placement)
 			smoothfs_spill_note_success(sbi, inode, parent_tier, tier);
 
 		smoothfs_set_lower_dentry(dentry, lower);

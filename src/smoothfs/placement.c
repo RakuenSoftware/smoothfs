@@ -30,6 +30,8 @@
 #include <linux/string.h>
 #include <linux/timekeeping.h>
 #include <linux/dirent.h>
+#include <linux/hashtable.h>
+#include <linux/jhash.h>
 
 #include "smoothfs.h"
 
@@ -37,9 +39,12 @@
 #define SMOOTHFS_PLACEMENT_MAGIC    0x534D46504C4F470AULL  /* "SMFPLOG\n" */
 #define SMOOTHFS_PLACEMENT_DIR      ".smoothfs"
 #define SMOOTHFS_PLACEMENT_FILE     ".smoothfs/placement.log"
+#define SMOOTHFS_REPLAY_HASH_BITS   15
+#define SMOOTHFS_REPLAY_HASH_SIZE   (1U << SMOOTHFS_REPLAY_HASH_BITS)
 
 struct smoothfs_replay_record {
 	struct list_head link;
+	struct hlist_node hash;
 	u8 oid[SMOOTHFS_OID_LEN];
 	u8 movement_state;
 	u8 current_tier;
@@ -86,6 +91,14 @@ static char *smoothfs_tier_root_string(struct smoothfs_tier *tier)
 	return out;
 }
 
+static void smoothfs_replay_index_init(struct hlist_head *index)
+{
+	u32 i;
+
+	for (i = 0; i < SMOOTHFS_REPLAY_HASH_SIZE; i++)
+		INIT_HLIST_HEAD(&index[i]);
+}
+
 static int smoothfs_resolve_rel_path(struct smoothfs_tier *tier,
 				     const char *rel_path, struct path *out)
 {
@@ -108,11 +121,14 @@ static int smoothfs_resolve_rel_path(struct smoothfs_tier *tier,
 }
 
 static struct smoothfs_replay_record *
-smoothfs_replay_find(struct list_head *records, const u8 oid[SMOOTHFS_OID_LEN])
+smoothfs_replay_find(struct hlist_head *index, const u8 oid[SMOOTHFS_OID_LEN])
 {
 	struct smoothfs_replay_record *rec;
+	u32 key = jhash(oid, SMOOTHFS_OID_LEN, 0);
 
-	list_for_each_entry(rec, records, link) {
+	hlist_for_each_entry(rec,
+			     &index[hash_min(key, SMOOTHFS_REPLAY_HASH_BITS)],
+			     hash) {
 		if (memcmp(rec->oid, oid, SMOOTHFS_OID_LEN) == 0)
 			return rec;
 	}
@@ -121,11 +137,13 @@ smoothfs_replay_find(struct list_head *records, const u8 oid[SMOOTHFS_OID_LEN])
 
 static struct smoothfs_replay_record *
 smoothfs_replay_get_or_create(struct list_head *records,
+			      struct hlist_head *index,
 			      const u8 oid[SMOOTHFS_OID_LEN])
 {
 	struct smoothfs_replay_record *rec;
+	u32 key = jhash(oid, SMOOTHFS_OID_LEN, 0);
 
-	rec = smoothfs_replay_find(records, oid);
+	rec = smoothfs_replay_find(index, oid);
 	if (rec)
 		return rec;
 
@@ -138,6 +156,8 @@ smoothfs_replay_get_or_create(struct list_head *records,
 	rec->chosen_tier = U8_MAX;
 	rec->authoritative_tier = U8_MAX;
 	list_add_tail(&rec->link, records);
+	hlist_add_head(&rec->hash,
+		       &index[hash_min(key, SMOOTHFS_REPLAY_HASH_BITS)]);
 	return rec;
 }
 
@@ -232,6 +252,7 @@ static int smoothfs_scan_dir_entries(struct path *dir, struct list_head *names)
 }
 
 static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
+			      struct hlist_head *index,
 			      const char *rel_path, struct dentry *dentry)
 {
 	struct smoothfs_replay_record *rec;
@@ -244,7 +265,7 @@ static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
 		return 0;
 	(void)smoothfs_read_gen_xattr(dentry, &gen);
 
-	rec = smoothfs_replay_get_or_create(records, oid);
+	rec = smoothfs_replay_get_or_create(records, index, oid);
 	if (!rec)
 		return -ENOMEM;
 	if (rec->seq == 0 && rec->chosen_rel_path == NULL) {
@@ -273,7 +294,8 @@ static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
 }
 
 static int smoothfs_scan_tree(struct list_head *records, struct path *dir,
-			      u8 tier_rank, const char *prefix)
+			      struct hlist_head *index, u8 tier_rank,
+			      const char *prefix)
 {
 	LIST_HEAD(names);
 	struct smoothfs_scan_name *entry, *tmp;
@@ -317,10 +339,11 @@ static int smoothfs_scan_tree(struct list_head *records, struct path *dir,
 
 		if (S_ISDIR(d_inode(child)->i_mode)) {
 			if (strcmp(rel_path, SMOOTHFS_PLACEMENT_DIR) != 0)
-				err = smoothfs_scan_tree(records, &child_path, tier_rank,
-							 rel_path);
+				err = smoothfs_scan_tree(records, &child_path,
+							 index, tier_rank, rel_path);
 		} else {
-			err = smoothfs_scan_file(records, tier_rank, rel_path, child);
+			err = smoothfs_scan_file(records, tier_rank, index,
+						 rel_path, child);
 		}
 		path_put(&child_path);
 		kfree(rel_path);
@@ -337,6 +360,7 @@ static void smoothfs_replay_free_records(struct list_head *records)
 
 	list_for_each_entry_safe(rec, tmp, records, link) {
 		list_del(&rec->link);
+		hlist_del_init(&rec->hash);
 		kfree(rec->fallback_rel_path);
 		kfree(rec->chosen_rel_path);
 		kfree(rec);
@@ -344,7 +368,8 @@ static void smoothfs_replay_free_records(struct list_head *records)
 }
 
 static int smoothfs_replay_load_log(struct smoothfs_sb_info *sbi,
-				    struct list_head *records)
+				    struct list_head *records,
+				    struct hlist_head *index)
 {
 	u8 buf[SMOOTHFS_PLACEMENT_REC_SIZE];
 	loff_t pos = 0;
@@ -370,7 +395,7 @@ static int smoothfs_replay_load_log(struct smoothfs_sb_info *sbi,
 		seq = le64_to_cpu(*(__le64 *)&buf[8]);
 		memcpy(oid, &buf[16], SMOOTHFS_OID_LEN);
 
-		rec = smoothfs_replay_get_or_create(records, oid);
+		rec = smoothfs_replay_get_or_create(records, index, oid);
 		if (!rec)
 			return -ENOMEM;
 		if (seq < rec->seq)
@@ -581,19 +606,25 @@ int smoothfs_placement_replay(struct super_block *sb,
 			      struct smoothfs_sb_info *sbi)
 {
 	LIST_HEAD(records);
+	struct hlist_head *index;
 	u8 tier;
 	int err;
 
 	if (!sbi->placement_log)
 		return -ENODEV;
 
-	err = smoothfs_replay_load_log(sbi, &records);
+	index = kvcalloc(SMOOTHFS_REPLAY_HASH_SIZE, sizeof(*index), GFP_KERNEL);
+	if (!index)
+		return -ENOMEM;
+	smoothfs_replay_index_init(index);
+
+	err = smoothfs_replay_load_log(sbi, &records, index);
 	if (err)
 		goto out;
 
 	for (tier = 0; tier < sbi->ntiers; tier++) {
 		err = smoothfs_scan_tree(&records, &sbi->tiers[tier].lower_path,
-					 tier, "");
+					 index, tier, "");
 		if (err)
 			goto out;
 	}
@@ -602,5 +633,6 @@ int smoothfs_placement_replay(struct super_block *sb,
 
 out:
 	smoothfs_replay_free_records(&records);
+	kvfree(index);
 	return err;
 }
