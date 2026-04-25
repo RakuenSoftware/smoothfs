@@ -35,12 +35,13 @@
 
 #include "smoothfs.h"
 
-#define SMOOTHFS_PLACEMENT_REC_SIZE 64
 #define SMOOTHFS_PLACEMENT_MAGIC    0x534D46504C4F470AULL  /* "SMFPLOG\n" */
 #define SMOOTHFS_PLACEMENT_DIR      ".smoothfs"
 #define SMOOTHFS_PLACEMENT_FILE     ".smoothfs/placement.log"
 #define SMOOTHFS_REPLAY_HASH_BITS   15
 #define SMOOTHFS_REPLAY_HASH_SIZE   (1U << SMOOTHFS_REPLAY_HASH_BITS)
+#define SMOOTHFS_PLACEMENT_WB_INTERVAL_MS 1000
+#define SMOOTHFS_PLACEMENT_WB_HIGH_WATER 8192
 
 struct smoothfs_replay_record {
 	struct list_head link;
@@ -442,7 +443,7 @@ static int smoothfs_replay_instantiate(struct super_block *sb,
 		err = smoothfs_resolve_rel_path(&sbi->tiers[tier], rel_path, &lower);
 		if (err)
 			continue;
-		inode = smoothfs_iget(sb, &lower, false);
+		inode = smoothfs_iget(sb, &lower, false, false);
 		path_put(&lower);
 		if (IS_ERR(inode))
 			return PTR_ERR(inode);
@@ -549,10 +550,86 @@ int smoothfs_placement_open(struct smoothfs_sb_info *sbi)
 	return 0;
 }
 
+static void smoothfs_placement_wb_worker(struct work_struct *work)
+{
+	struct smoothfs_sb_info *sbi = container_of(to_delayed_work(work),
+						     struct smoothfs_sb_info,
+						     placement_wb_work);
+	LIST_HEAD(local);
+	struct smoothfs_placement_wb_entry *e, *tmp;
+	struct file *log;
+
+	spin_lock(&sbi->placement_wb_lock);
+	list_splice_init(&sbi->placement_wb_pending, &local);
+	sbi->placement_wb_pending_count = 0;
+	spin_unlock(&sbi->placement_wb_lock);
+
+	mutex_lock(&sbi->placement_lock);
+	log = sbi->placement_log;
+	list_for_each_entry_safe(e, tmp, &local, link) {
+		loff_t pos = 0;
+		ssize_t n;
+
+		if (log) {
+			n = kernel_write(log, e->record,
+					 SMOOTHFS_PLACEMENT_REC_SIZE, &pos);
+			if (n != SMOOTHFS_PLACEMENT_REC_SIZE)
+				pr_warn_ratelimited("smoothfs: placement log write failed: %zd\n",
+						    n >= 0 ? -EIO : n);
+		}
+		list_del(&e->link);
+		kfree(e);
+	}
+	mutex_unlock(&sbi->placement_lock);
+}
+
+int smoothfs_placement_wb_init(struct smoothfs_sb_info *sbi)
+{
+	spin_lock_init(&sbi->placement_wb_lock);
+	INIT_LIST_HEAD(&sbi->placement_wb_pending);
+	sbi->placement_wb_pending_count = 0;
+	INIT_DELAYED_WORK(&sbi->placement_wb_work,
+			  smoothfs_placement_wb_worker);
+	sbi->placement_wb_wq = alloc_workqueue("smoothfs-placement-wb",
+					       WQ_UNBOUND | WQ_MEM_RECLAIM,
+					       0);
+	if (!sbi->placement_wb_wq)
+		return -ENOMEM;
+	WRITE_ONCE(sbi->placement_wb_ready, true);
+	return 0;
+}
+
+void smoothfs_placement_wb_kick(struct smoothfs_sb_info *sbi)
+{
+	if (READ_ONCE(sbi->placement_wb_ready))
+		mod_delayed_work(sbi->placement_wb_wq,
+				 &sbi->placement_wb_work, 0);
+}
+
+void smoothfs_placement_wb_drain(struct smoothfs_sb_info *sbi)
+{
+	if (!READ_ONCE(sbi->placement_wb_ready))
+		return;
+	smoothfs_placement_wb_kick(sbi);
+	flush_delayed_work(&sbi->placement_wb_work);
+}
+
+void smoothfs_placement_wb_destroy(struct smoothfs_sb_info *sbi)
+{
+	if (!sbi->placement_wb_ready)
+		return;
+	WRITE_ONCE(sbi->placement_wb_ready, false);
+	cancel_delayed_work_sync(&sbi->placement_wb_work);
+	smoothfs_placement_wb_worker(&sbi->placement_wb_work.work);
+	destroy_workqueue(sbi->placement_wb_wq);
+	sbi->placement_wb_wq = NULL;
+}
+
 void smoothfs_placement_close(struct smoothfs_sb_info *sbi)
 {
 	if (!sbi->placement_log)
 		return;
+	smoothfs_placement_wb_drain(sbi);
 	vfs_fsync(sbi->placement_log, 0);
 	fput(sbi->placement_log);
 	sbi->placement_log = NULL;
@@ -563,43 +640,53 @@ int smoothfs_placement_record(struct smoothfs_sb_info *sbi,
 			      u8 movement_state, u8 current_tier,
 			      u8 intended_tier, bool sync)
 {
-	struct file *log;
-	u8 buf[SMOOTHFS_PLACEMENT_REC_SIZE];
-	__le64 *magic = (__le64 *)&buf[0];
-	__le64 *seq   = (__le64 *)&buf[8];
-	__le32 *gen   = (__le32 *)&buf[36];
-	__le64 *ts    = (__le64 *)&buf[40];
-	loff_t pos = 0;
-	ssize_t n;
+	struct smoothfs_placement_wb_entry *e;
+	__le64 *magic;
+	__le64 *seq;
+	__le32 *gen;
+	__le64 *ts;
+	unsigned int count;
+	bool kick_now = sync;
 
-	mutex_lock(&sbi->placement_lock);
-	log = sbi->placement_log;
-	if (!log) {
-		mutex_unlock(&sbi->placement_lock);
-		return -ENODEV;
+	if (!READ_ONCE(sbi->placement_wb_ready)) {
+		pr_warn_ratelimited("smoothfs: placement writeback unavailable; dropping recoverable record\n");
+		return 0;
 	}
 
-	memset(buf, 0, sizeof(buf));
+	e = kzalloc(sizeof(*e), GFP_NOFS);
+	if (!e) {
+		pr_warn_ratelimited("smoothfs: placement writeback allocation failed; dropping recoverable record\n");
+		return 0;
+	}
+
+	magic = (__le64 *)&e->record[0];
+	seq   = (__le64 *)&e->record[8];
+	gen   = (__le32 *)&e->record[36];
+	ts    = (__le64 *)&e->record[40];
 	*magic = cpu_to_le64(SMOOTHFS_PLACEMENT_MAGIC);
-	*seq   = cpu_to_le64(++sbi->placement_seq);
-	memcpy(&buf[16], oid, SMOOTHFS_OID_LEN);
-	buf[32] = movement_state;
-	buf[33] = current_tier;
-	buf[34] = intended_tier;
-	buf[35] = SMOOTHFS_PIN_NONE;  /* per-record pin not modelled in Phase 1 */
+	memcpy(&e->record[16], oid, SMOOTHFS_OID_LEN);
+	e->record[32] = movement_state;
+	e->record[33] = current_tier;
+	e->record[34] = intended_tier;
+	e->record[35] = SMOOTHFS_PIN_NONE;  /* per-record pin not modelled in Phase 1 */
 	*gen   = cpu_to_le32(0);
-	*ts    = cpu_to_le64(ktime_get_real_ns());
 
-	n = kernel_write(log, buf, sizeof(buf), &pos);
-	if (n != sizeof(buf))
-		n = n >= 0 ? -EIO : n;
-	else if (sync)
-		n = vfs_fsync(log, 0);
+	spin_lock(&sbi->placement_wb_lock);
+	*seq = cpu_to_le64(++sbi->placement_seq);
+	*ts = cpu_to_le64(ktime_get_real_ns());
+	list_add_tail(&e->link, &sbi->placement_wb_pending);
+	count = ++sbi->placement_wb_pending_count;
+	if (count >= SMOOTHFS_PLACEMENT_WB_HIGH_WATER)
+		kick_now = true;
+	spin_unlock(&sbi->placement_wb_lock);
+
+	if (kick_now)
+		smoothfs_placement_wb_kick(sbi);
 	else
-		n = 0;
-
-	mutex_unlock(&sbi->placement_lock);
-	return n < 0 ? n : 0;
+		queue_delayed_work(sbi->placement_wb_wq,
+				   &sbi->placement_wb_work,
+				   msecs_to_jiffies(SMOOTHFS_PLACEMENT_WB_INTERVAL_MS));
+	return 0;
 }
 
 int smoothfs_placement_replay(struct super_block *sb,

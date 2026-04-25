@@ -295,8 +295,8 @@ void smoothfs_lower_ino_map_remove(struct smoothfs_sb_info *sbi, u8 tier_idx,
 
 /* ---- OID xattr writeback queue ---- */
 
-#define SMOOTHFS_OID_WB_INTERVAL_MS  50
-#define SMOOTHFS_OID_WB_HIGH_WATER   256
+#define SMOOTHFS_OID_WB_INTERVAL_MS  5000
+#define SMOOTHFS_OID_WB_HIGH_WATER   65536
 
 static void smoothfs_oid_wb_worker(struct work_struct *work)
 {
@@ -636,6 +636,9 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = smoothfs_oid_wb_init(sbi);
 	if (err)
 		goto out_sbi;
+	err = smoothfs_placement_wb_init(sbi);
+	if (err)
+		goto out_sbi;
 
 	strscpy(sbi->pool_name, ctx->pool, sizeof(sbi->pool_name));
 	if (ctx->uuid_str) {
@@ -673,7 +676,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	 * d_fsdata via dget(). */
 	path_get(&root_lower);
 
-	root_inode = smoothfs_iget(sb, &root_lower, true);
+	root_inode = smoothfs_iget(sb, &root_lower, true, false);
 	if (IS_ERR(root_inode)) {
 		err = PTR_ERR(root_inode);
 		path_put(&root_lower);
@@ -731,6 +734,7 @@ out_tiers:
 			path_put(&sbi->tiers[i].lower_path);
 	}
 out_sbi:
+	smoothfs_placement_wb_destroy(sbi);
 	smoothfs_oid_wb_destroy(sbi);
 	if (sbi->cutover_srcu_ready)
 		cleanup_srcu_struct(&sbi->cutover_srcu);
@@ -790,10 +794,11 @@ static void smoothfs_put_super(struct super_block *sb)
 	smoothfs_heat_destroy(sbi);
 	smoothfs_sysfs_pool_remove(sbi);
 	smoothfs_sb_unregister(sbi);
-	/* Drain OID xattr queue before we release sb state; otherwise
-	 * queued entries would reference dentries whose sb is torn down. */
+	/* Drain deferred metadata before we release sb state; otherwise
+	 * queued entries would reference dentries/files whose sb is torn down. */
 	smoothfs_oid_wb_destroy(sbi);
 	smoothfs_placement_close(sbi);
+	smoothfs_placement_wb_destroy(sbi);
 	if (sbi->cutover_srcu_ready)
 		cleanup_srcu_struct(&sbi->cutover_srcu);
 	smoothfs_lower_ino_map_destroy(sbi);
@@ -846,11 +851,11 @@ static int smoothfs_show_options(struct seq_file *m, struct dentry *root)
 }
 
 /*
- * sync_fs: drain deferred OID xattr writes so `sync` / `syncfs` / the
- * periodic writeback pass all see up-to-date on-disk state. Called
- * with wait=1 for "make it durable", wait=0 for "kick it". We flush
- * synchronously when asked to wait and just nudge the worker when we
- * aren't.
+ * sync_fs: drain deferred SmoothFS metadata so `sync` / `syncfs` /
+ * the periodic writeback pass all see up-to-date on-disk state.
+ * Called with wait=1 for "make it durable", wait=0 for "kick it".
+ * We flush synchronously when asked to wait and just nudge workers
+ * when we aren't.
  */
 static int smoothfs_sync_fs(struct super_block *sb, int wait)
 {
@@ -858,10 +863,16 @@ static int smoothfs_sync_fs(struct super_block *sb, int wait)
 
 	if (!sbi)
 		return 0;
-	if (wait)
+	if (wait) {
 		smoothfs_oid_wb_drain(sbi);
-	else if (sbi->oid_wb_ready)
-		mod_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work, 0);
+		smoothfs_placement_wb_drain(sbi);
+		if (sbi->placement_log)
+			vfs_fsync(sbi->placement_log, 0);
+	} else {
+		smoothfs_placement_wb_kick(sbi);
+		if (sbi->oid_wb_ready)
+			mod_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work, 0);
+	}
 	return 0;
 }
 
@@ -885,7 +896,7 @@ const struct super_operations smoothfs_super_ops = {
  * persisted before iget completes.
  */
 struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
-			    bool root)
+			    bool root, bool fresh)
 {
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(sb);
 	struct inode *lower_inode = d_inode(lower->dentry);
@@ -920,7 +931,11 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 			 * and rebuild state from xattrs. */
 		}
 
-		err = smoothfs_read_oid_xattr(lower->dentry, oid);
+		if (fresh) {
+			err = -ENODATA;
+		} else {
+			err = smoothfs_read_oid_xattr(lower->dentry, oid);
+		}
 		if (err == -ENODATA) {
 			/* Fresh file. Mint an OID in memory and queue the
 			 * xattr write to the per-sb writeback worker — we
