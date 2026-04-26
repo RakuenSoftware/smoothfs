@@ -221,7 +221,10 @@ struct smoothfs_sb_info {
 	bool                write_staging_enabled;
 	u8                  write_staging_full_pct;
 	atomic64_t          staged_bytes;
+	atomic64_t          staged_rehome_bytes;
 	atomic64_t          staged_rehomes_total;
+	atomic64_t          range_staged_bytes;
+	atomic64_t          range_staged_writes;
 	atomic64_t          oldest_staged_write_ns;
 	atomic64_t          last_drain_ns;
 	atomic64_t          metadata_tier_skips;
