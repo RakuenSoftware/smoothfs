@@ -14,6 +14,7 @@
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
 #include <linux/namei.h>
+#include <linux/limits.h>
 #include <linux/parser.h>
 #include <linux/rhashtable.h>
 #include <linux/sysfs.h>
@@ -40,6 +41,10 @@ static inline struct smoothfs_sysfs_pool *to_smoothfs_sysfs_pool(struct kobject 
 {
 	return container_of(kobj, struct smoothfs_sysfs_pool, kobj);
 }
+
+static void smoothfs_write_staging_set_reason(struct smoothfs_sb_info *sbi,
+					      const char *reason);
+static int smoothfs_write_staging_drain_rehomes(struct smoothfs_sb_info *sbi);
 
 static ssize_t spill_creates_total_show(struct kobject *kobj,
 					struct kobj_attribute *attr, char *buf)
@@ -146,7 +151,8 @@ static ssize_t staged_rehomes_total_show(struct kobject *kobj,
 		(long long)atomic64_read(&pool->sbi->staged_rehomes_total));
 }
 
-static unsigned int smoothfs_write_staging_drainable_rehomes(struct smoothfs_sb_info *sbi)
+static unsigned int smoothfs_write_staging_rehome_count(struct smoothfs_sb_info *sbi,
+							bool drainable_only)
 {
 	struct smoothfs_inode_info *si;
 	unsigned int count = 0;
@@ -157,12 +163,26 @@ static unsigned int smoothfs_write_staging_drainable_rehomes(struct smoothfs_sb_
 
 		if (!READ_ONCE(si->write_staged))
 			continue;
+		if (!drainable_only) {
+			count++;
+			continue;
+		}
 		tier = READ_ONCE(si->write_staged_drain_tier);
 		if (smoothfs_write_staging_drain_tier_active(sbi, tier))
 			count++;
 	}
 	up_read(&sbi->inode_lock);
 	return count;
+}
+
+static unsigned int smoothfs_write_staging_pending_rehomes(struct smoothfs_sb_info *sbi)
+{
+	return smoothfs_write_staging_rehome_count(sbi, false);
+}
+
+static unsigned int smoothfs_write_staging_drainable_rehomes(struct smoothfs_sb_info *sbi)
+{
+	return smoothfs_write_staging_rehome_count(sbi, true);
 }
 
 static ssize_t write_staging_drainable_rehomes_show(struct kobject *kobj,
@@ -178,7 +198,7 @@ static ssize_t write_staging_drainable_rehomes_show(struct kobject *kobj,
 static bool smoothfs_write_staging_has_work(struct smoothfs_sb_info *sbi)
 {
 	return atomic64_read(&sbi->staged_bytes) > 0 ||
-	       atomic64_read(&sbi->staged_rehomes_total) > 0;
+	       smoothfs_write_staging_pending_rehomes(sbi) > 0;
 }
 
 static bool smoothfs_write_staging_fastest_pressure(struct smoothfs_sb_info *sbi)
@@ -328,6 +348,10 @@ static ssize_t write_staging_drain_active_tier_mask_store(struct kobject *kobj,
 	mask &= valid_mask;
 	mask |= BIT(sbi->fastest_tier);
 	WRITE_ONCE(sbi->write_staging_drain_active_tier_mask, mask);
+	err = smoothfs_write_staging_drain_rehomes(sbi);
+	if (err)
+		pr_warn_ratelimited("smoothfs: write-staging rehome drain failed: %d\n",
+				    err);
 	return count;
 }
 
@@ -464,6 +488,189 @@ static void smoothfs_write_staging_set_reason(struct smoothfs_sb_info *sbi,
 	strscpy(sbi->last_drain_reason, reason,
 		sizeof(sbi->last_drain_reason));
 	spin_unlock(&sbi->write_staging_lock);
+}
+
+static int smoothfs_resolve_rel_path_on_tier(struct smoothfs_sb_info *sbi,
+					     u8 tier, const char *rel_path,
+					     struct path *out)
+{
+	char *buf, *rendered, *full = NULL;
+	int err;
+
+	if (tier >= sbi->ntiers)
+		return -EINVAL;
+
+	buf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	rendered = d_path(&sbi->tiers[tier].lower_path, buf, PATH_MAX);
+	if (IS_ERR(rendered)) {
+		err = PTR_ERR(rendered);
+		kfree(buf);
+		return err;
+	}
+	if (rel_path && *rel_path)
+		full = kasprintf(GFP_KERNEL, "%s/%s", rendered, rel_path);
+	else
+		full = kstrdup(rendered, GFP_KERNEL);
+	kfree(buf);
+	if (!full)
+		return -ENOMEM;
+	err = kern_path(full, LOOKUP_FOLLOW, out);
+	kfree(full);
+	return err;
+}
+
+static int smoothfs_unlink_rel_path_on_tier(struct smoothfs_sb_info *sbi,
+					    u8 tier, const char *rel_path)
+{
+	struct path parent_path;
+	struct dentry *lower;
+	struct qstr qname;
+	char *work, *slash, *name, *parent_rel;
+	int err;
+
+	if (!rel_path || !*rel_path)
+		return -EINVAL;
+
+	work = kstrdup(rel_path, GFP_KERNEL);
+	if (!work)
+		return -ENOMEM;
+
+	slash = strrchr(work, '/');
+	if (slash) {
+		*slash = '\0';
+		parent_rel = work;
+		name = slash + 1;
+	} else {
+		parent_rel = "";
+		name = work;
+	}
+	if (!*name) {
+		kfree(work);
+		return -EINVAL;
+	}
+
+	err = smoothfs_resolve_rel_path_on_tier(sbi, tier, parent_rel,
+						&parent_path);
+	if (err) {
+		kfree(work);
+		return err;
+	}
+
+	qname = (struct qstr)QSTR_INIT(name, strlen(name));
+	inode_lock(d_inode(parent_path.dentry));
+	lower = smoothfs_compat_lookup(&nop_mnt_idmap, &qname,
+				       parent_path.dentry);
+	if (IS_ERR(lower)) {
+		err = PTR_ERR(lower);
+		goto out_unlock;
+	}
+	if (d_really_is_negative(lower)) {
+		dput(lower);
+		err = 0;
+		goto out_unlock;
+	}
+	if (!d_is_reg(lower)) {
+		dput(lower);
+		err = -EISDIR;
+		goto out_unlock;
+	}
+	err = vfs_unlink(&nop_mnt_idmap, d_inode(parent_path.dentry), lower,
+			 NULL);
+	dput(lower);
+
+out_unlock:
+	inode_unlock(d_inode(parent_path.dentry));
+	path_put(&parent_path);
+	kfree(work);
+	return err;
+}
+
+static struct inode *smoothfs_write_staging_find_drainable_rehome(struct smoothfs_sb_info *sbi)
+{
+	struct smoothfs_inode_info *si;
+	struct inode *inode = NULL;
+
+	down_read(&sbi->inode_lock);
+	list_for_each_entry(si, &sbi->inode_list, sb_link) {
+		u8 tier;
+
+		if (!READ_ONCE(si->write_staged))
+			continue;
+		tier = READ_ONCE(si->write_staged_drain_tier);
+		if (!smoothfs_write_staging_drain_tier_active(sbi, tier))
+			continue;
+		inode = igrab(&si->vfs_inode);
+		if (inode)
+			break;
+	}
+	up_read(&sbi->inode_lock);
+	return inode;
+}
+
+static int smoothfs_write_staging_drain_one_rehome(struct smoothfs_sb_info *sbi,
+						   struct inode *inode)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	char *rel_path = NULL;
+	u8 tier;
+	bool cleared = false;
+	int err = 0;
+
+	inode_lock(inode);
+	if (!READ_ONCE(si->write_staged)) {
+		inode_unlock(inode);
+		return 0;
+	}
+	tier = READ_ONCE(si->write_staged_drain_tier);
+	if (!smoothfs_write_staging_drain_tier_active(sbi, tier)) {
+		inode_unlock(inode);
+		return 0;
+	}
+	if (si->rel_path)
+		rel_path = kstrdup(si->rel_path, GFP_KERNEL);
+	inode_unlock(inode);
+	if (!rel_path)
+		return -ENOMEM;
+
+	err = smoothfs_unlink_rel_path_on_tier(sbi, tier, rel_path);
+	kfree(rel_path);
+	if (err)
+		return err;
+
+	inode_lock(inode);
+	if (READ_ONCE(si->write_staged) &&
+	    READ_ONCE(si->write_staged_drain_tier) == tier) {
+		WRITE_ONCE(si->write_staged, false);
+		WRITE_ONCE(si->write_staged_drain_tier, SMOOTHFS_MAX_TIERS);
+		cleared = true;
+	}
+	inode_unlock(inode);
+
+	if (cleared) {
+		atomic64_set(&sbi->last_drain_ns, ktime_get_real_ns());
+		smoothfs_write_staging_set_reason(sbi, "truncate-rehome-drain");
+		if (smoothfs_write_staging_pending_rehomes(sbi) == 0) {
+			atomic64_set(&sbi->staged_bytes, 0);
+			atomic64_set(&sbi->oldest_staged_write_ns, 0);
+		}
+	}
+	return 0;
+}
+
+static int smoothfs_write_staging_drain_rehomes(struct smoothfs_sb_info *sbi)
+{
+	struct inode *inode;
+	int err;
+
+	while ((inode = smoothfs_write_staging_find_drainable_rehome(sbi)) != NULL) {
+		err = smoothfs_write_staging_drain_one_rehome(sbi, inode);
+		iput(inode);
+		if (err)
+			return err;
+	}
+	return 0;
 }
 
 void smoothfs_write_staging_note_rehome(struct smoothfs_sb_info *sbi)
