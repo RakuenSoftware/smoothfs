@@ -130,6 +130,9 @@ cat /sys/fs/smoothfs/<uuid>/write_staging_supported
 cat /sys/fs/smoothfs/<uuid>/write_staging_enabled
 cat /sys/fs/smoothfs/<uuid>/write_staging_full_pct
 cat /sys/fs/smoothfs/<uuid>/staged_bytes
+cat /sys/fs/smoothfs/<uuid>/staged_rehome_bytes
+cat /sys/fs/smoothfs/<uuid>/range_staged_bytes
+cat /sys/fs/smoothfs/<uuid>/range_staged_writes
 cat /sys/fs/smoothfs/<uuid>/staged_rehomes_total
 cat /sys/fs/smoothfs/<uuid>/staged_rehomes_pending
 cat /sys/fs/smoothfs/<uuid>/write_staging_drainable_rehomes
@@ -148,6 +151,9 @@ follow the same admission rule: they land on the fastest tier until that tier
 reaches the full threshold, then spill to the next tier. Range-level staging for
 non-truncating writes and draining back to HDD are follow-up work.
 `staged_rehomes_total` counts these truncate-write rehomes.
+`staged_rehome_bytes` reports bytes written through the truncate-rehome staging
+path. `range_staged_bytes` and `range_staged_writes` are reserved for the
+non-truncating range-staging path and remain zero until that path lands.
 `staged_rehomes_pending` counts truncate-write rehomes that still have staged
 cleanup work outstanding.
 `write_staging_drainable_rehomes` counts staged truncate rehomes whose original

@@ -142,6 +142,33 @@ static ssize_t staged_bytes_show(struct kobject *kobj,
 			  (long long)atomic64_read(&pool->sbi->staged_bytes));
 }
 
+static ssize_t staged_rehome_bytes_show(struct kobject *kobj,
+					struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->staged_rehome_bytes));
+}
+
+static ssize_t range_staged_bytes_show(struct kobject *kobj,
+				       struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->range_staged_bytes));
+}
+
+static ssize_t range_staged_writes_show(struct kobject *kobj,
+					struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->range_staged_writes));
+}
+
 static ssize_t staged_rehomes_total_show(struct kobject *kobj,
 					 struct kobj_attribute *attr, char *buf)
 {
@@ -388,6 +415,12 @@ static struct kobj_attribute write_staging_full_pct_attr =
 	__ATTR_RW(write_staging_full_pct);
 static struct kobj_attribute staged_bytes_attr =
 	__ATTR_RO(staged_bytes);
+static struct kobj_attribute staged_rehome_bytes_attr =
+	__ATTR_RO(staged_rehome_bytes);
+static struct kobj_attribute range_staged_bytes_attr =
+	__ATTR_RO(range_staged_bytes);
+static struct kobj_attribute range_staged_writes_attr =
+	__ATTR_RO(range_staged_writes);
 static struct kobj_attribute staged_rehomes_total_attr =
 	__ATTR_RO(staged_rehomes_total);
 static struct kobj_attribute staged_rehomes_pending_attr =
@@ -419,6 +452,9 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&write_staging_enabled_attr.attr,
 	&write_staging_full_pct_attr.attr,
 	&staged_bytes_attr.attr,
+	&staged_rehome_bytes_attr.attr,
+	&range_staged_bytes_attr.attr,
+	&range_staged_writes_attr.attr,
 	&staged_rehomes_total_attr.attr,
 	&staged_rehomes_pending_attr.attr,
 	&write_staging_drainable_rehomes_attr.attr,
@@ -704,6 +740,7 @@ void smoothfs_write_staging_note_write(struct smoothfs_sb_info *sbi,
 		return;
 	now = ktime_get_real_ns();
 	atomic64_add(bytes, &sbi->staged_bytes);
+	atomic64_add(bytes, &sbi->staged_rehome_bytes);
 	atomic64_cmpxchg(&sbi->oldest_staged_write_ns, 0, now);
 	smoothfs_write_staging_set_reason(sbi, "staged-write");
 }
@@ -1228,7 +1265,10 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	WRITE_ONCE(sbi->write_staging_enabled, false);
 	WRITE_ONCE(sbi->write_staging_full_pct, 98);
 	atomic64_set(&sbi->staged_bytes, 0);
+	atomic64_set(&sbi->staged_rehome_bytes, 0);
 	atomic64_set(&sbi->staged_rehomes_total, 0);
+	atomic64_set(&sbi->range_staged_bytes, 0);
+	atomic64_set(&sbi->range_staged_writes, 0);
 	atomic64_set(&sbi->oldest_staged_write_ns, 0);
 	atomic64_set(&sbi->last_drain_ns, 0);
 	atomic64_set(&sbi->metadata_tier_skips, 0);
