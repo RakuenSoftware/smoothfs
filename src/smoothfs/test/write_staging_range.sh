@@ -47,4 +47,12 @@ spill_assert test "$range_writes" = "1"
 spill_assert test "$staged_bytes" = "3"
 spill_assert test "$reason" = "range-staged-write"
 
+echo "=== direct I/O refuses to bypass staged ranges ==="
+if dd if="$SPILL_ROOT/server/range.txt" of=/dev/null bs=4096 iflag=direct count=1 status=none 2>/dev/null; then
+	echo "  FAIL  direct read unexpectedly bypassed staged range"
+	spill_rc=1
+else
+	echo "  ok    direct read refused while range-staged"
+fi
+
 spill_finish "write_staging_range"

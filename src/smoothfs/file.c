@@ -317,16 +317,17 @@ static int smoothfs_release(struct inode *inode, struct file *file)
 static ssize_t smoothfs_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct file *lower = smoothfs_lower_file(iocb->ki_filp);
+	struct smoothfs_inode_info *si =
+		SMOOTHFS_I(file_inode(iocb->ki_filp));
 	ssize_t ret;
 
-	if (READ_ONCE(SMOOTHFS_I(file_inode(iocb->ki_filp))->range_staged) &&
-	    !(iocb->ki_flags & IOCB_DIRECT))
+	if (READ_ONCE(si->range_staged) && (iocb->ki_flags & IOCB_DIRECT))
+		return -EBUSY;
+	if (READ_ONCE(si->range_staged))
 		ret = smoothfs_range_stage_read_iter(iocb, to);
 	else
 		ret = smoothfs_compat_read_iter(lower, &iocb->ki_pos, to);
 	if (ret > 0) {
-		struct smoothfs_inode_info *si =
-			SMOOTHFS_I(file_inode(iocb->ki_filp));
 		atomic64_add(ret, &si->read_bytes);
 		si->last_access_ns = ktime_get_real_ns();
 	}
@@ -372,6 +373,8 @@ again:
 
 	lower = smoothfs_lower_file(iocb->ki_filp);
 	tier = smoothfs_tier_of(sbi, lower->f_path.mnt);
+	if (READ_ONCE(si->range_staged) && (iocb->ki_flags & IOCB_DIRECT))
+		return -EBUSY;
 	if (tier < sbi->ntiers)
 		atomic_inc(&sbi->tiers[tier].active_writes);
 	smoothfs_clear_write_reservation(sbi, si);
@@ -436,6 +439,8 @@ static int smoothfs_mmap(struct file *file, struct vm_area_struct *vma)
 	if (!can_mmap_file(lower))
 		return -ENODEV;
 	if (vma_is_shared_maywrite(vma) && READ_ONCE(si->mappings_quiesced))
+		return -EBUSY;
+	if (READ_ONCE(si->range_staged))
 		return -EBUSY;
 
 	vma_set_file(vma, lower);
