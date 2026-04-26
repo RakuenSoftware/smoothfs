@@ -226,6 +226,7 @@ struct smoothfs_sb_info {
 	atomic64_t          metadata_tier_skips;
 	spinlock_t          write_staging_lock;
 	u32                 metadata_active_tier_mask;
+	u32                 write_staging_drain_active_tier_mask;
 	char                last_drain_reason[64];
 	void               *sysfs_pool;
 };
@@ -257,6 +258,19 @@ static inline bool smoothfs_metadata_tier_active(struct smoothfs_sb_info *sbi,
 static inline void smoothfs_note_metadata_tier_skip(struct smoothfs_sb_info *sbi)
 {
 	atomic64_inc(&sbi->metadata_tier_skips);
+}
+
+static inline bool smoothfs_write_staging_drain_tier_active(struct smoothfs_sb_info *sbi,
+							    u8 tier)
+{
+	u32 mask;
+
+	if (tier >= sbi->ntiers)
+		return false;
+	if (tier == sbi->fastest_tier)
+		return true;
+	mask = READ_ONCE(sbi->write_staging_drain_active_tier_mask);
+	return mask & BIT(tier);
 }
 
 /* Default drain interval — overridable per pool via Phase 0 §0.5

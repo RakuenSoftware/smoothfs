@@ -200,6 +200,40 @@ static ssize_t metadata_active_tier_mask_store(struct kobject *kobj,
 	return count;
 }
 
+static ssize_t write_staging_drain_active_tier_mask_show(struct kobject *kobj,
+							 struct kobj_attribute *attr,
+							 char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "0x%x\n",
+		READ_ONCE(pool->sbi->write_staging_drain_active_tier_mask));
+}
+
+static ssize_t write_staging_drain_active_tier_mask_store(struct kobject *kobj,
+							  struct kobj_attribute *attr,
+							  const char *buf,
+							  size_t count)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+	struct smoothfs_sb_info *sbi = pool->sbi;
+	u32 mask;
+	u32 valid_mask;
+	int err;
+
+	err = kstrtou32(buf, 0, &mask);
+	if (err)
+		return err;
+	if (sbi->ntiers == 0 || sbi->ntiers > SMOOTHFS_MAX_TIERS)
+		return -EINVAL;
+
+	valid_mask = BIT(sbi->ntiers) - 1;
+	mask &= valid_mask;
+	mask |= BIT(sbi->fastest_tier);
+	WRITE_ONCE(sbi->write_staging_drain_active_tier_mask, mask);
+	return count;
+}
+
 static ssize_t metadata_tier_skips_show(struct kobject *kobj,
 					struct kobj_attribute *attr, char *buf)
 {
@@ -231,6 +265,8 @@ static struct kobj_attribute last_drain_reason_attr =
 	__ATTR_RO(last_drain_reason);
 static struct kobj_attribute metadata_active_tier_mask_attr =
 	__ATTR_RW(metadata_active_tier_mask);
+static struct kobj_attribute write_staging_drain_active_tier_mask_attr =
+	__ATTR_RW(write_staging_drain_active_tier_mask);
 static struct kobj_attribute metadata_tier_skips_attr =
 	__ATTR_RO(metadata_tier_skips);
 
@@ -246,6 +282,7 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&last_drain_at_attr.attr,
 	&last_drain_reason_attr.attr,
 	&metadata_active_tier_mask_attr.attr,
+	&write_staging_drain_active_tier_mask_attr.attr,
 	&metadata_tier_skips_attr.attr,
 	NULL,
 };
@@ -865,12 +902,16 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	atomic64_set(&sbi->metadata_tier_skips, 0);
 	spin_lock_init(&sbi->write_staging_lock);
 	WRITE_ONCE(sbi->metadata_active_tier_mask, BIT(sbi->fastest_tier));
+	WRITE_ONCE(sbi->write_staging_drain_active_tier_mask,
+		   BIT(sbi->fastest_tier));
 	sbi->last_drain_reason[0] = '\0';
 
 	err = smoothfs_resolve_tiers(sbi, ctx->tiers);
 	if (err)
 		goto out_sbi;
 	WRITE_ONCE(sbi->metadata_active_tier_mask, BIT(sbi->ntiers) - 1);
+	WRITE_ONCE(sbi->write_staging_drain_active_tier_mask,
+		   BIT(sbi->fastest_tier));
 
 	sb->s_magic     = SMOOTHFS_MAGIC;
 	sb->s_op        = &smoothfs_super_ops;

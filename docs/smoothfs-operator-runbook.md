@@ -131,6 +131,7 @@ cat /sys/fs/smoothfs/<uuid>/write_staging_enabled
 cat /sys/fs/smoothfs/<uuid>/write_staging_full_pct
 cat /sys/fs/smoothfs/<uuid>/staged_bytes
 cat /sys/fs/smoothfs/<uuid>/metadata_active_tier_mask
+cat /sys/fs/smoothfs/<uuid>/write_staging_drain_active_tier_mask
 cat /sys/fs/smoothfs/<uuid>/metadata_tier_skips
 ```
 
@@ -148,6 +149,13 @@ For a two-tier pool, writing `0x1` keeps browse/readdir fallback on the fastest
 tier and skips tier 1 until SmoothNAS observes it externally active. If a
 cold-tier dentry is already resolved, `stat` returns smoothfs's cached inode
 attributes instead of refreshing from an inactive lower tier.
+
+The separate `write_staging_drain_active_tier_mask` is the data-drain gate.
+SmoothNAS should write a bit only after it has observed that tier's backing
+devices active due to external activity. The fastest-tier bit is always forced
+on by the kernel. Future staged-data drain work uses this mask rather than the
+metadata browse mask so directory visibility and data-drain permission can move
+independently.
 
 ### Destroying a pool
 
