@@ -16,6 +16,7 @@
 #define _SMOOTHFS_H
 
 #include <linux/fs.h>
+#include <linux/hashtable.h>
 #include <linux/types.h>
 #include <linux/path.h>
 #include <linux/list.h>
@@ -23,6 +24,7 @@
 #include <linux/rwsem.h>
 #include <linux/rhashtable.h>
 #include <linux/srcu.h>
+#include <linux/time64.h>
 #include <linux/uuid.h>
 #include <linux/xattr.h>
 #include <linux/atomic.h>
@@ -38,6 +40,8 @@
 #define SMOOTHFS_NAME           "smoothfs"
 #define SMOOTHFS_MAGIC          0x534D4F46  /* 'SMOF' */
 #define SMOOTHFS_MAX_TIERS      8
+#define SMOOTHFS_REL_PATH_HASH_BITS 18
+#define SMOOTHFS_FRESH_DIR_FAST_CREATE_NS (10ULL * 60ULL * NSEC_PER_SEC)
 #define SMOOTHFS_OID_XATTR      "trusted.smoothfs.oid"
 #define SMOOTHFS_GEN_XATTR      "trusted.smoothfs.gen"
 #define SMOOTHFS_FILEID_XATTR   "trusted.smoothfs.fileid"
@@ -151,6 +155,7 @@ struct smoothfs_sb_info {
 
 	struct rw_semaphore inode_lock;
 	struct list_head    inode_list;
+	DECLARE_HASHTABLE(rel_path_hash, SMOOTHFS_REL_PATH_HASH_BITS);
 
 	/* True if any lower filesystem installs a d_revalidate callback.
 	 * Set at mount time from the capability probe; read (RCU-safe) by
@@ -269,6 +274,7 @@ struct smoothfs_inode_info {
 	wait_queue_head_t cutover_wq;
 	bool            mappings_quiesced;
 	char           *rel_path;            /* namespace-relative cached path */
+	u64             fast_create_until_ns;
 
 	/* Non-zero when smoothfs_placement_replay holds a pin (the iget ref
 	 * was never released so the replayed inode survives in-cache until
@@ -282,6 +288,9 @@ struct smoothfs_inode_info {
 
 	struct list_head sb_link;
 	struct rhash_head hash_node;          /* oid_map membership */
+	struct hlist_node rel_hash_node;      /* rel_path_hash membership */
+	u32              rel_path_hash;
+	bool             rel_path_indexed;
 };
 
 static __always_inline struct smoothfs_inode_info *SMOOTHFS_I(struct inode *inode)

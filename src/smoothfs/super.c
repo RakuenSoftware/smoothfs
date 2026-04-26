@@ -13,6 +13,7 @@
 #include <linux/fs.h>
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
+#include <linux/jhash.h>
 #include <linux/namei.h>
 #include <linux/parser.h>
 #include <linux/rhashtable.h>
@@ -20,6 +21,7 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/string.h>
+#include <linux/timekeeping.h>
 #include <linux/uuid.h>
 #include <linux/version.h>
 #include <linux/xxhash.h>
@@ -400,7 +402,7 @@ int smoothfs_oid_wb_queue(struct smoothfs_sb_info *sbi,
 
 	if (kick_now)
 		mod_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work, 0);
-	else
+	else if (count == 1)
 		queue_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work,
 				   msecs_to_jiffies(SMOOTHFS_OID_WB_INTERVAL_MS));
 	return 0;
@@ -436,8 +438,12 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	init_waitqueue_head(&si->cutover_wq);
 	si->mappings_quiesced = false;
 	si->rel_path = NULL;
+	si->fast_create_until_ns = 0;
 	atomic_set(&si->replay_pinned, 0);
 	INIT_LIST_HEAD(&si->sb_link);
+	INIT_HLIST_NODE(&si->rel_hash_node);
+	si->rel_path_hash = 0;
+	si->rel_path_indexed = false;
 	return &si->vfs_inode;
 }
 
@@ -464,6 +470,10 @@ static void smoothfs_evict_inode(struct inode *inode)
 					d_inode(si->lower_path.dentry)->i_ino);
 		}
 		down_write(&sbi->inode_lock);
+		if (si->rel_path_indexed) {
+			hlist_del_init(&si->rel_hash_node);
+			si->rel_path_indexed = false;
+		}
 		if (!list_empty(&si->sb_link))
 			list_del_init(&si->sb_link);
 		up_write(&sbi->inode_lock);
@@ -623,6 +633,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	mutex_init(&sbi->placement_lock);
 	init_rwsem(&sbi->inode_lock);
 	INIT_LIST_HEAD(&sbi->inode_list);
+	hash_init(sbi->rel_path_hash);
 	atomic64_set(&sbi->oid_monotonic, 0);
 
 	err = smoothfs_oid_map_init(sbi);
@@ -990,6 +1001,17 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 	inode->i_mapping->a_ops = &smoothfs_aops;
 
 	if (S_ISDIR(inode->i_mode)) {
+		struct timespec64 ctime = inode_get_ctime(lower_inode);
+		struct timespec64 mtime = inode_get_mtime(lower_inode);
+		u64 now = ktime_get_real_ns();
+		u64 ctime_ns = timespec64_to_ns(&ctime);
+		u64 mtime_ns = timespec64_to_ns(&mtime);
+		u64 newest_ns = ctime_ns > mtime_ns ? ctime_ns : mtime_ns;
+
+		if (now >= newest_ns &&
+		    now - newest_ns < SMOOTHFS_FRESH_DIR_FAST_CREATE_NS)
+			si->fast_create_until_ns =
+				newest_ns + SMOOTHFS_FRESH_DIR_FAST_CREATE_NS;
 		inode->i_op  = &smoothfs_dir_inode_ops;
 		inode->i_fop = &smoothfs_dir_ops;
 	} else if (S_ISLNK(inode->i_mode)) {
@@ -1045,13 +1067,17 @@ struct smoothfs_inode_info *smoothfs_lookup_rel_path(struct smoothfs_sb_info *sb
 						     const char *rel_path)
 {
 	struct smoothfs_inode_info *si, *found = NULL;
+	u32 rel_hash;
 
 	if (!rel_path)
 		return NULL;
 
+	rel_hash = jhash(rel_path, strlen(rel_path), 0);
 	down_read(&sbi->inode_lock);
-	list_for_each_entry(si, &sbi->inode_list, sb_link) {
-		if (si->rel_path && strcmp(si->rel_path, rel_path) == 0) {
+	hash_for_each_possible(sbi->rel_path_hash, si, rel_hash_node,
+			       rel_hash) {
+		if (si->rel_path_indexed && si->rel_path_hash == rel_hash &&
+		    si->rel_path && strcmp(si->rel_path, rel_path) == 0) {
 			found = si;
 			break;
 		}
