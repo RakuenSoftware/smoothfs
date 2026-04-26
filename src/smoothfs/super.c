@@ -146,6 +146,35 @@ static ssize_t staged_rehomes_total_show(struct kobject *kobj,
 		(long long)atomic64_read(&pool->sbi->staged_rehomes_total));
 }
 
+static unsigned int smoothfs_write_staging_drainable_rehomes(struct smoothfs_sb_info *sbi)
+{
+	struct smoothfs_inode_info *si;
+	unsigned int count = 0;
+
+	down_read(&sbi->inode_lock);
+	list_for_each_entry(si, &sbi->inode_list, sb_link) {
+		u8 tier;
+
+		if (!READ_ONCE(si->write_staged))
+			continue;
+		tier = READ_ONCE(si->write_staged_drain_tier);
+		if (smoothfs_write_staging_drain_tier_active(sbi, tier))
+			count++;
+	}
+	up_read(&sbi->inode_lock);
+	return count;
+}
+
+static ssize_t write_staging_drainable_rehomes_show(struct kobject *kobj,
+						    struct kobj_attribute *attr,
+						    char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%u\n",
+		smoothfs_write_staging_drainable_rehomes(pool->sbi));
+}
+
 static bool smoothfs_write_staging_has_work(struct smoothfs_sb_info *sbi)
 {
 	return atomic64_read(&sbi->staged_bytes) > 0 ||
@@ -327,6 +356,8 @@ static struct kobj_attribute staged_bytes_attr =
 	__ATTR_RO(staged_bytes);
 static struct kobj_attribute staged_rehomes_total_attr =
 	__ATTR_RO(staged_rehomes_total);
+static struct kobj_attribute write_staging_drainable_rehomes_attr =
+	__ATTR_RO(write_staging_drainable_rehomes);
 static struct kobj_attribute write_staging_drain_pressure_attr =
 	__ATTR_RO(write_staging_drain_pressure);
 static struct kobj_attribute write_staging_drainable_tier_mask_attr =
@@ -353,6 +384,7 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&write_staging_full_pct_attr.attr,
 	&staged_bytes_attr.attr,
 	&staged_rehomes_total_attr.attr,
+	&write_staging_drainable_rehomes_attr.attr,
 	&write_staging_drain_pressure_attr.attr,
 	&write_staging_drainable_tier_mask_attr.attr,
 	&oldest_staged_write_at_attr.attr,

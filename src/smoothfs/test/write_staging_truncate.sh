@@ -40,6 +40,7 @@ spill_assert grep -qx 'cold-original' "$SPILL_ROOT/slow/cold.txt"
 
 staged_bytes=$(cat "$SYSFS/staged_bytes")
 staged_rehomes=$(cat "$SYSFS/staged_rehomes_total")
+drainable_rehomes=$(cat "$SYSFS/write_staging_drainable_rehomes")
 drain_pressure=$(cat "$SYSFS/write_staging_drain_pressure")
 drainable_mask=$(cat "$SYSFS/write_staging_drainable_tier_mask")
 full_pct=$(cat "$SYSFS/write_staging_full_pct")
@@ -60,8 +61,10 @@ else
 fi
 spill_assert test "$drain_pressure" = "0"
 spill_assert test "$drainable_mask" = "0x0"
+spill_assert test "$drainable_rehomes" = "0"
 echo 0x3 > "$SYSFS/write_staging_drain_active_tier_mask"
 spill_assert test "$(cat "$SYSFS/write_staging_drainable_tier_mask")" = "0x2"
+spill_assert test "$(cat "$SYSFS/write_staging_drainable_rehomes")" = "1"
 if [ "$oldest" -le 0 ]; then
 	echo "  FAIL  oldest_staged_write_at=$oldest"
 	spill_rc=1
