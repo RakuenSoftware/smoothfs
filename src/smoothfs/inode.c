@@ -30,7 +30,7 @@
 
 /* Kernel-version pin lives in compat.h. */
 
-#define SMOOTHFS_SPILL_HEADROOM_PCT 2
+#define SMOOTHFS_DEFAULT_FULL_PCT 98
 
 static char *smoothfs_rel_path_from_dentry(struct dentry *dentry)
 {
@@ -80,13 +80,16 @@ static int smoothfs_resolve_rel_path_on_tier(struct smoothfs_sb_info *sbi,
 static bool smoothfs_tier_near_enospc(struct smoothfs_sb_info *sbi, u8 tier)
 {
 	struct kstatfs st;
+	u8 full_pct = READ_ONCE(sbi->write_staging_full_pct);
 	int err;
 
 	err = vfs_statfs(&sbi->tiers[tier].lower_path, &st);
 	if (err || st.f_blocks == 0)
 		return false;
 
-	return st.f_bavail * 100 <= st.f_blocks * SMOOTHFS_SPILL_HEADROOM_PCT;
+	if (full_pct == 0 || full_pct > 100)
+		full_pct = SMOOTHFS_DEFAULT_FULL_PCT;
+	return (st.f_blocks - st.f_bavail) * 100 >= st.f_blocks * full_pct;
 }
 
 static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
@@ -184,6 +187,150 @@ static int smoothfs_track_placed(struct smoothfs_sb_info *sbi,
 	if (pin_lookup_ref)
 		atomic_set(&si->replay_pinned, 1);
 	return 0;
+}
+
+static bool smoothfs_should_stage_truncate(struct smoothfs_sb_info *sbi,
+					   struct smoothfs_inode_info *si,
+					   struct inode *inode,
+					   const struct iattr *attr)
+{
+	if (!READ_ONCE(sbi->write_staging_enabled))
+		return false;
+	if (!S_ISREG(inode->i_mode))
+		return false;
+	if (!(attr->ia_valid & ATTR_SIZE) || attr->ia_size != 0)
+		return false;
+	if (si->current_tier == sbi->fastest_tier)
+		return false;
+	if (si->pin_state != SMOOTHFS_PIN_NONE)
+		return false;
+	if (smoothfs_tier_near_enospc(sbi, sbi->fastest_tier))
+		return false;
+	return true;
+}
+
+static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
+					   struct dentry *dentry,
+					   struct iattr *attr)
+{
+	struct inode *inode = d_inode(dentry);
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
+	struct path parent_path;
+	struct path new_path;
+	struct path old_path = {};
+	struct dentry *lower;
+	struct qstr qname = dentry->d_name;
+	char *rel_path = NULL;
+	char *parent_rel_path = NULL;
+	char *rel_dup = NULL;
+	u8 old_tier;
+	int err;
+
+	if (!smoothfs_should_stage_truncate(sbi, si, inode, attr))
+		return -EOPNOTSUPP;
+
+	rel_path = smoothfs_rel_path_from_dentry(dentry);
+	parent_rel_path = smoothfs_rel_path_from_dentry(dentry->d_parent);
+	if (!rel_path || !parent_rel_path) {
+		err = -ENOMEM;
+		goto out;
+	}
+	rel_dup = kstrdup(rel_path, GFP_KERNEL);
+	if (!rel_dup) {
+		err = -ENOMEM;
+		goto out;
+	}
+
+	err = smoothfs_materialize_parent_on_tier(idmap, inode->i_sb, sbi,
+						  sbi->fastest_tier,
+						  parent_rel_path,
+						  &parent_path);
+	if (err)
+		goto out;
+
+	inode_lock(d_inode(parent_path.dentry));
+	lower = smoothfs_compat_lookup(&nop_mnt_idmap, &qname,
+				       parent_path.dentry);
+	if (IS_ERR(lower)) {
+		err = PTR_ERR(lower);
+		inode_unlock(d_inode(parent_path.dentry));
+		path_put(&parent_path);
+		goto out;
+	}
+	if (d_really_is_negative(lower)) {
+		err = smoothfs_compat_create(idmap, d_inode(parent_path.dentry),
+					     lower, inode->i_mode & 07777,
+					     false);
+		if (err) {
+			dput(lower);
+			inode_unlock(d_inode(parent_path.dentry));
+			path_put(&parent_path);
+			goto out;
+		}
+	}
+	inode_unlock(d_inode(parent_path.dentry));
+
+	new_path.mnt = parent_path.mnt;
+	new_path.dentry = lower;
+	mntget(new_path.mnt);
+
+	err = notify_change(idmap, lower, attr, NULL);
+	if (err)
+		goto out_new_path;
+
+	err = smoothfs_write_oid_xattr(lower, si->oid);
+	if (err == -EEXIST)
+		err = 0;
+	if (err)
+		goto out_new_path;
+	err = smoothfs_write_gen_xattr(lower, si->gen);
+	if (err)
+		goto out_new_path;
+
+	inode_lock(inode);
+	old_path = si->lower_path;
+	old_tier = smoothfs_tier_of(sbi, old_path.mnt);
+	si->lower_path = new_path;
+	kfree(si->rel_path);
+	si->rel_path = rel_dup;
+	rel_dup = NULL;
+	si->current_tier = sbi->fastest_tier;
+	si->intended_tier = sbi->fastest_tier;
+	si->movement_state = SMOOTHFS_MS_PLACED;
+	si->transaction_seq = 0;
+	si->write_staged = true;
+	si->cutover_gen++;
+	inode_unlock(inode);
+
+	if (old_tier < SMOOTHFS_MAX_TIERS && old_path.dentry)
+		smoothfs_lower_ino_map_remove(sbi, old_tier,
+			d_inode(old_path.dentry)->i_ino);
+	(void)smoothfs_lower_ino_map_insert(sbi, sbi->fastest_tier,
+		d_inode(new_path.dentry)->i_ino, inode->i_ino);
+	path_put(&old_path);
+	smoothfs_set_lower_dentry(dentry, lower);
+	smoothfs_copy_attrs(inode, d_inode(lower));
+	smoothfs_write_staging_note_rehome(sbi);
+	err = smoothfs_placement_record(sbi, si->oid, SMOOTHFS_MS_PLACED,
+					sbi->fastest_tier, sbi->fastest_tier,
+					/*sync=*/false);
+	if (err) {
+		pr_warn_ratelimited("smoothfs: staged truncate placement record failed: %d\n",
+				    err);
+		err = 0;
+	}
+	path_put(&parent_path);
+	goto out;
+
+out_new_path:
+	path_put(&new_path);
+	path_put(&parent_path);
+out:
+	kfree(rel_dup);
+	kfree(parent_rel_path);
+	kfree(rel_path);
+	return err;
 }
 
 static int smoothfs_lookup_rel_across_tiers(struct smoothfs_sb_info *sbi,
@@ -492,6 +639,12 @@ static int smoothfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 
 	err = setattr_prepare(idmap, dentry, attr);
 	if (err)
+		return err;
+
+	err = smoothfs_stage_truncate_to_fast(idmap, dentry, attr);
+	if (err == 0)
+		return 0;
+	if (err != -EOPNOTSUPP)
 		return err;
 
 	inode_lock(d_inode(lower));

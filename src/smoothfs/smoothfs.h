@@ -31,6 +31,7 @@
 #include <linux/workqueue.h>
 #include <linux/version.h>
 #include <linux/kobject.h>
+#include <linux/spinlock.h>
 
 #include "uapi_smoothfs.h"
 #include "compat.h"
@@ -213,6 +214,18 @@ struct smoothfs_sb_info {
 	atomic64_t          spill_creates_total;
 	atomic64_t          spill_creates_failed_all_tiers;
 	atomic_t            any_spill_since_mount;
+
+	/* Write-staging observability/control. The first supported staging
+	 * path is truncate-for-write rehoming of cold-tier files onto the
+	 * fastest tier; broader range-level COW staging builds on these
+	 * counters and sysfs contract. */
+	bool                write_staging_enabled;
+	u8                  write_staging_full_pct;
+	atomic64_t          staged_bytes;
+	atomic64_t          oldest_staged_write_ns;
+	atomic64_t          last_drain_ns;
+	spinlock_t          write_staging_lock;
+	char                last_drain_reason[64];
 	void               *sysfs_pool;
 };
 
@@ -268,6 +281,7 @@ struct smoothfs_inode_info {
 	 * cutover_srcu (see smoothfs_sb_info and smoothfs_write_iter). */
 	wait_queue_head_t cutover_wq;
 	bool            mappings_quiesced;
+	bool            write_staged;
 	char           *rel_path;            /* namespace-relative cached path */
 
 	/* Non-zero when smoothfs_placement_replay holds a pin (the iget ref
@@ -358,6 +372,9 @@ void smoothfs_spill_note_success(struct smoothfs_sb_info *sbi,
 				 struct inode *inode,
 				 u8 source_tier, u8 dest_tier);
 void smoothfs_spill_note_failed_all_tiers(struct smoothfs_sb_info *sbi);
+void smoothfs_write_staging_note_rehome(struct smoothfs_sb_info *sbi);
+void smoothfs_write_staging_note_write(struct smoothfs_sb_info *sbi,
+				       ssize_t bytes);
 
 /* (tier_idx, lower_ino) -> smoothfs ino_no cache.
  * 8-byte key: (tier_idx << 56) | (lower_ino & 0x00FFFFFFFFFFFFFF).
