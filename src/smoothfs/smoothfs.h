@@ -82,6 +82,7 @@ struct smoothfs_tier {
 	u32          caps;
 	struct path  lower_path;     /* root of the lower mount */
 	const char  *lower_id;       /* tier_targets.id from SQLite, kstrdup'd */
+	atomic_t     active_writes;
 };
 
 /* Movement state, mirroring §0.3 of the Phase 0 contract. */
@@ -158,11 +159,6 @@ struct smoothfs_sb_info {
 
 	/* Object_id allocator state (UUIDv7 monotonic counter). */
 	atomic64_t          oid_monotonic;
-
-	/* Regular-file create placement cursor. Each file still has one
-	 * owning tier; this only spreads independent new files across tiers
-	 * so multi-file client writes can use more than one lower at once. */
-	atomic_t            create_tier_cursor;
 
 	/* Heat drain work — periodic walk of inode_list, emit deltas via
 	 * netlink (Phase 2 §0.5). */

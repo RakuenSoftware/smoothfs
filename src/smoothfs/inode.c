@@ -89,15 +89,24 @@ static bool smoothfs_tier_near_enospc(struct smoothfs_sb_info *sbi, u8 tier)
 	return st.f_bavail * 100 <= st.f_blocks * SMOOTHFS_SPILL_HEADROOM_PCT;
 }
 
-static u8 smoothfs_next_create_tier(struct smoothfs_sb_info *sbi)
+static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 {
-	u32 cursor;
+	u8 tier;
 
 	if (sbi->ntiers <= 1)
 		return sbi->fastest_tier;
 
-	cursor = (u32)atomic_inc_return(&sbi->create_tier_cursor);
-	return (sbi->fastest_tier + (cursor % sbi->ntiers)) % sbi->ntiers;
+	if (atomic_read(&sbi->tiers[sbi->fastest_tier].active_writes) == 0)
+		return sbi->fastest_tier;
+
+	for (tier = 0; tier < sbi->ntiers; tier++) {
+		if (tier == sbi->fastest_tier)
+			continue;
+		if (atomic_read(&sbi->tiers[tier].active_writes) == 0)
+			return tier;
+	}
+
+	return sbi->fastest_tier;
 }
 
 static int smoothfs_ensure_oid_persisted(struct smoothfs_inode_info *si)
@@ -506,7 +515,7 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 	parent_tier = smoothfs_tier_of(sbi, SMOOTHFS_I(dir)->lower_path.mnt);
 	if (parent_tier >= sbi->ntiers)
 		parent_tier = sbi->fastest_tier;
-	start_tier = smoothfs_next_create_tier(sbi);
+	start_tier = smoothfs_select_create_tier(sbi);
 
 	rel_path = smoothfs_rel_path_from_dentry(dentry);
 	parent_rel_path = smoothfs_rel_path_from_dentry(dentry->d_parent);

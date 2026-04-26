@@ -622,7 +622,6 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	init_rwsem(&sbi->inode_lock);
 	INIT_LIST_HEAD(&sbi->inode_list);
 	atomic64_set(&sbi->oid_monotonic, 0);
-	atomic_set(&sbi->create_tier_cursor, -1);
 
 	err = smoothfs_oid_map_init(sbi);
 	if (err)
