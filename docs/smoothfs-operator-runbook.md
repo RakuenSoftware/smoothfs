@@ -155,8 +155,9 @@ non-truncating writes and draining back to HDD are follow-up work.
 path. For unpinned cold-tier regular files, buffered non-truncating writes can
 stage changed ranges into the fastest tier and read them back through the
 range-merge path; `range_staged_bytes` and `range_staged_writes` report that
-activity. Direct I/O, mmap, replay after remount, and drain-back remain pending
-for range-staged data.
+activity. Once a file has staged ranges, direct I/O and mmap are refused so
+callers cannot bypass the merge layer and observe stale lower bytes. Replay
+after remount and drain-back remain pending for range-staged data.
 `staged_rehomes_pending` counts truncate-write rehomes that still have staged
 cleanup work outstanding.
 `write_staging_drainable_rehomes` counts staged truncate rehomes whose original
