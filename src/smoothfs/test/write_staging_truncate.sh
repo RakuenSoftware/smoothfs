@@ -39,6 +39,7 @@ spill_assert grep -qx 'fast-replacement' "$SPILL_ROOT/server/cold.txt"
 spill_assert grep -qx 'cold-original' "$SPILL_ROOT/slow/cold.txt"
 
 staged_bytes=$(cat "$SYSFS/staged_bytes")
+staged_rehomes=$(cat "$SYSFS/staged_rehomes_total")
 full_pct=$(cat "$SYSFS/write_staging_full_pct")
 oldest=$(cat "$SYSFS/oldest_staged_write_at")
 reason=$(cat "$SYSFS/last_drain_reason")
@@ -48,6 +49,12 @@ if [ "$staged_bytes" -le 0 ]; then
 	spill_rc=1
 else
 	echo "  ok    staged_bytes=$staged_bytes"
+fi
+if [ "$staged_rehomes" -le 0 ]; then
+	echo "  FAIL  staged_rehomes_total=$staged_rehomes"
+	spill_rc=1
+else
+	echo "  ok    staged_rehomes_total=$staged_rehomes"
 fi
 if [ "$oldest" -le 0 ]; then
 	echo "  FAIL  oldest_staged_write_at=$oldest"

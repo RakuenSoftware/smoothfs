@@ -221,6 +221,7 @@ struct smoothfs_sb_info {
 	bool                write_staging_enabled;
 	u8                  write_staging_full_pct;
 	atomic64_t          staged_bytes;
+	atomic64_t          staged_rehomes_total;
 	atomic64_t          oldest_staged_write_ns;
 	atomic64_t          last_drain_ns;
 	atomic64_t          metadata_tier_skips;
@@ -315,6 +316,7 @@ struct smoothfs_inode_info {
 	wait_queue_head_t cutover_wq;
 	bool            mappings_quiesced;
 	bool            write_staged;
+	u8              write_staged_drain_tier;
 	char           *rel_path;            /* namespace-relative cached path */
 
 	/* Non-zero when smoothfs_placement_replay holds a pin (the iget ref

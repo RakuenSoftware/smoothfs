@@ -303,6 +303,7 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 	si->movement_state = SMOOTHFS_MS_PLACED;
 	si->transaction_seq = 0;
 	si->write_staged = true;
+	si->write_staged_drain_tier = old_tier;
 	si->cutover_gen++;
 	inode_unlock(inode);
 

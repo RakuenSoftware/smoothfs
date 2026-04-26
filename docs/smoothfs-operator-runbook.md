@@ -130,6 +130,7 @@ cat /sys/fs/smoothfs/<uuid>/write_staging_supported
 cat /sys/fs/smoothfs/<uuid>/write_staging_enabled
 cat /sys/fs/smoothfs/<uuid>/write_staging_full_pct
 cat /sys/fs/smoothfs/<uuid>/staged_bytes
+cat /sys/fs/smoothfs/<uuid>/staged_rehomes_total
 cat /sys/fs/smoothfs/<uuid>/metadata_active_tier_mask
 cat /sys/fs/smoothfs/<uuid>/write_staging_drain_active_tier_mask
 cat /sys/fs/smoothfs/<uuid>/metadata_tier_skips
@@ -142,6 +143,7 @@ fastest tier is below `write_staging_full_pct` (default 98). New files already
 follow the same admission rule: they land on the fastest tier until that tier
 reaches the full threshold, then spill to the next tier. Range-level staging for
 non-truncating writes and draining back to HDD are follow-up work.
+`staged_rehomes_total` counts these truncate-write rehomes.
 
 SmoothNAS can also write `metadata_active_tier_mask` to suppress metadata-only
 walks of standby tiers. Bit `0` is the fastest tier and is always forced on.
