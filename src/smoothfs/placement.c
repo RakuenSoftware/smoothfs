@@ -30,16 +30,22 @@
 #include <linux/string.h>
 #include <linux/timekeeping.h>
 #include <linux/dirent.h>
+#include <linux/hashtable.h>
+#include <linux/jhash.h>
 
 #include "smoothfs.h"
 
-#define SMOOTHFS_PLACEMENT_REC_SIZE 64
 #define SMOOTHFS_PLACEMENT_MAGIC    0x534D46504C4F470AULL  /* "SMFPLOG\n" */
 #define SMOOTHFS_PLACEMENT_DIR      ".smoothfs"
 #define SMOOTHFS_PLACEMENT_FILE     ".smoothfs/placement.log"
+#define SMOOTHFS_REPLAY_HASH_BITS   15
+#define SMOOTHFS_REPLAY_HASH_SIZE   (1U << SMOOTHFS_REPLAY_HASH_BITS)
+#define SMOOTHFS_PLACEMENT_WB_INTERVAL_MS 1000
+#define SMOOTHFS_PLACEMENT_WB_HIGH_WATER 8192
 
 struct smoothfs_replay_record {
 	struct list_head link;
+	struct hlist_node hash;
 	u8 oid[SMOOTHFS_OID_LEN];
 	u8 movement_state;
 	u8 current_tier;
@@ -86,6 +92,14 @@ static char *smoothfs_tier_root_string(struct smoothfs_tier *tier)
 	return out;
 }
 
+static void smoothfs_replay_index_init(struct hlist_head *index)
+{
+	u32 i;
+
+	for (i = 0; i < SMOOTHFS_REPLAY_HASH_SIZE; i++)
+		INIT_HLIST_HEAD(&index[i]);
+}
+
 static int smoothfs_resolve_rel_path(struct smoothfs_tier *tier,
 				     const char *rel_path, struct path *out)
 {
@@ -108,11 +122,14 @@ static int smoothfs_resolve_rel_path(struct smoothfs_tier *tier,
 }
 
 static struct smoothfs_replay_record *
-smoothfs_replay_find(struct list_head *records, const u8 oid[SMOOTHFS_OID_LEN])
+smoothfs_replay_find(struct hlist_head *index, const u8 oid[SMOOTHFS_OID_LEN])
 {
 	struct smoothfs_replay_record *rec;
+	u32 key = jhash(oid, SMOOTHFS_OID_LEN, 0);
 
-	list_for_each_entry(rec, records, link) {
+	hlist_for_each_entry(rec,
+			     &index[hash_min(key, SMOOTHFS_REPLAY_HASH_BITS)],
+			     hash) {
 		if (memcmp(rec->oid, oid, SMOOTHFS_OID_LEN) == 0)
 			return rec;
 	}
@@ -121,11 +138,13 @@ smoothfs_replay_find(struct list_head *records, const u8 oid[SMOOTHFS_OID_LEN])
 
 static struct smoothfs_replay_record *
 smoothfs_replay_get_or_create(struct list_head *records,
+			      struct hlist_head *index,
 			      const u8 oid[SMOOTHFS_OID_LEN])
 {
 	struct smoothfs_replay_record *rec;
+	u32 key = jhash(oid, SMOOTHFS_OID_LEN, 0);
 
-	rec = smoothfs_replay_find(records, oid);
+	rec = smoothfs_replay_find(index, oid);
 	if (rec)
 		return rec;
 
@@ -138,6 +157,8 @@ smoothfs_replay_get_or_create(struct list_head *records,
 	rec->chosen_tier = U8_MAX;
 	rec->authoritative_tier = U8_MAX;
 	list_add_tail(&rec->link, records);
+	hlist_add_head(&rec->hash,
+		       &index[hash_min(key, SMOOTHFS_REPLAY_HASH_BITS)]);
 	return rec;
 }
 
@@ -232,6 +253,7 @@ static int smoothfs_scan_dir_entries(struct path *dir, struct list_head *names)
 }
 
 static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
+			      struct hlist_head *index,
 			      const char *rel_path, struct dentry *dentry)
 {
 	struct smoothfs_replay_record *rec;
@@ -244,7 +266,7 @@ static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
 		return 0;
 	(void)smoothfs_read_gen_xattr(dentry, &gen);
 
-	rec = smoothfs_replay_get_or_create(records, oid);
+	rec = smoothfs_replay_get_or_create(records, index, oid);
 	if (!rec)
 		return -ENOMEM;
 	if (rec->seq == 0 && rec->chosen_rel_path == NULL) {
@@ -273,7 +295,8 @@ static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
 }
 
 static int smoothfs_scan_tree(struct list_head *records, struct path *dir,
-			      u8 tier_rank, const char *prefix)
+			      struct hlist_head *index, u8 tier_rank,
+			      const char *prefix)
 {
 	LIST_HEAD(names);
 	struct smoothfs_scan_name *entry, *tmp;
@@ -317,10 +340,11 @@ static int smoothfs_scan_tree(struct list_head *records, struct path *dir,
 
 		if (S_ISDIR(d_inode(child)->i_mode)) {
 			if (strcmp(rel_path, SMOOTHFS_PLACEMENT_DIR) != 0)
-				err = smoothfs_scan_tree(records, &child_path, tier_rank,
-							 rel_path);
+				err = smoothfs_scan_tree(records, &child_path,
+							 index, tier_rank, rel_path);
 		} else {
-			err = smoothfs_scan_file(records, tier_rank, rel_path, child);
+			err = smoothfs_scan_file(records, tier_rank, index,
+						 rel_path, child);
 		}
 		path_put(&child_path);
 		kfree(rel_path);
@@ -337,6 +361,7 @@ static void smoothfs_replay_free_records(struct list_head *records)
 
 	list_for_each_entry_safe(rec, tmp, records, link) {
 		list_del(&rec->link);
+		hlist_del_init(&rec->hash);
 		kfree(rec->fallback_rel_path);
 		kfree(rec->chosen_rel_path);
 		kfree(rec);
@@ -344,7 +369,8 @@ static void smoothfs_replay_free_records(struct list_head *records)
 }
 
 static int smoothfs_replay_load_log(struct smoothfs_sb_info *sbi,
-				    struct list_head *records)
+				    struct list_head *records,
+				    struct hlist_head *index)
 {
 	u8 buf[SMOOTHFS_PLACEMENT_REC_SIZE];
 	loff_t pos = 0;
@@ -370,7 +396,7 @@ static int smoothfs_replay_load_log(struct smoothfs_sb_info *sbi,
 		seq = le64_to_cpu(*(__le64 *)&buf[8]);
 		memcpy(oid, &buf[16], SMOOTHFS_OID_LEN);
 
-		rec = smoothfs_replay_get_or_create(records, oid);
+		rec = smoothfs_replay_get_or_create(records, index, oid);
 		if (!rec)
 			return -ENOMEM;
 		if (seq < rec->seq)
@@ -417,7 +443,7 @@ static int smoothfs_replay_instantiate(struct super_block *sb,
 		err = smoothfs_resolve_rel_path(&sbi->tiers[tier], rel_path, &lower);
 		if (err)
 			continue;
-		inode = smoothfs_iget(sb, &lower, false);
+		inode = smoothfs_iget(sb, &lower, false, false);
 		path_put(&lower);
 		if (IS_ERR(inode))
 			return PTR_ERR(inode);
@@ -524,10 +550,86 @@ int smoothfs_placement_open(struct smoothfs_sb_info *sbi)
 	return 0;
 }
 
+static void smoothfs_placement_wb_worker(struct work_struct *work)
+{
+	struct smoothfs_sb_info *sbi = container_of(to_delayed_work(work),
+						     struct smoothfs_sb_info,
+						     placement_wb_work);
+	LIST_HEAD(local);
+	struct smoothfs_placement_wb_entry *e, *tmp;
+	struct file *log;
+
+	spin_lock(&sbi->placement_wb_lock);
+	list_splice_init(&sbi->placement_wb_pending, &local);
+	sbi->placement_wb_pending_count = 0;
+	spin_unlock(&sbi->placement_wb_lock);
+
+	mutex_lock(&sbi->placement_lock);
+	log = sbi->placement_log;
+	list_for_each_entry_safe(e, tmp, &local, link) {
+		loff_t pos = 0;
+		ssize_t n;
+
+		if (log) {
+			n = kernel_write(log, e->record,
+					 SMOOTHFS_PLACEMENT_REC_SIZE, &pos);
+			if (n != SMOOTHFS_PLACEMENT_REC_SIZE)
+				pr_warn_ratelimited("smoothfs: placement log write failed: %zd\n",
+						    n >= 0 ? -EIO : n);
+		}
+		list_del(&e->link);
+		kfree(e);
+	}
+	mutex_unlock(&sbi->placement_lock);
+}
+
+int smoothfs_placement_wb_init(struct smoothfs_sb_info *sbi)
+{
+	spin_lock_init(&sbi->placement_wb_lock);
+	INIT_LIST_HEAD(&sbi->placement_wb_pending);
+	sbi->placement_wb_pending_count = 0;
+	INIT_DELAYED_WORK(&sbi->placement_wb_work,
+			  smoothfs_placement_wb_worker);
+	sbi->placement_wb_wq = alloc_workqueue("smoothfs-placement-wb",
+					       WQ_UNBOUND | WQ_MEM_RECLAIM,
+					       0);
+	if (!sbi->placement_wb_wq)
+		return -ENOMEM;
+	WRITE_ONCE(sbi->placement_wb_ready, true);
+	return 0;
+}
+
+void smoothfs_placement_wb_kick(struct smoothfs_sb_info *sbi)
+{
+	if (READ_ONCE(sbi->placement_wb_ready))
+		mod_delayed_work(sbi->placement_wb_wq,
+				 &sbi->placement_wb_work, 0);
+}
+
+void smoothfs_placement_wb_drain(struct smoothfs_sb_info *sbi)
+{
+	if (!READ_ONCE(sbi->placement_wb_ready))
+		return;
+	smoothfs_placement_wb_kick(sbi);
+	flush_delayed_work(&sbi->placement_wb_work);
+}
+
+void smoothfs_placement_wb_destroy(struct smoothfs_sb_info *sbi)
+{
+	if (!sbi->placement_wb_ready)
+		return;
+	WRITE_ONCE(sbi->placement_wb_ready, false);
+	cancel_delayed_work_sync(&sbi->placement_wb_work);
+	smoothfs_placement_wb_worker(&sbi->placement_wb_work.work);
+	destroy_workqueue(sbi->placement_wb_wq);
+	sbi->placement_wb_wq = NULL;
+}
+
 void smoothfs_placement_close(struct smoothfs_sb_info *sbi)
 {
 	if (!sbi->placement_log)
 		return;
+	smoothfs_placement_wb_drain(sbi);
 	vfs_fsync(sbi->placement_log, 0);
 	fput(sbi->placement_log);
 	sbi->placement_log = NULL;
@@ -538,62 +640,78 @@ int smoothfs_placement_record(struct smoothfs_sb_info *sbi,
 			      u8 movement_state, u8 current_tier,
 			      u8 intended_tier, bool sync)
 {
-	struct file *log;
-	u8 buf[SMOOTHFS_PLACEMENT_REC_SIZE];
-	__le64 *magic = (__le64 *)&buf[0];
-	__le64 *seq   = (__le64 *)&buf[8];
-	__le32 *gen   = (__le32 *)&buf[36];
-	__le64 *ts    = (__le64 *)&buf[40];
-	loff_t pos = 0;
-	ssize_t n;
+	struct smoothfs_placement_wb_entry *e;
+	__le64 *magic;
+	__le64 *seq;
+	__le32 *gen;
+	__le64 *ts;
+	unsigned int count;
+	bool kick_now = sync;
 
-	mutex_lock(&sbi->placement_lock);
-	log = sbi->placement_log;
-	if (!log) {
-		mutex_unlock(&sbi->placement_lock);
-		return -ENODEV;
+	if (!READ_ONCE(sbi->placement_wb_ready)) {
+		pr_warn_ratelimited("smoothfs: placement writeback unavailable; dropping recoverable record\n");
+		return 0;
 	}
 
-	memset(buf, 0, sizeof(buf));
+	e = kzalloc(sizeof(*e), GFP_NOFS);
+	if (!e) {
+		pr_warn_ratelimited("smoothfs: placement writeback allocation failed; dropping recoverable record\n");
+		return 0;
+	}
+
+	magic = (__le64 *)&e->record[0];
+	seq   = (__le64 *)&e->record[8];
+	gen   = (__le32 *)&e->record[36];
+	ts    = (__le64 *)&e->record[40];
 	*magic = cpu_to_le64(SMOOTHFS_PLACEMENT_MAGIC);
-	*seq   = cpu_to_le64(++sbi->placement_seq);
-	memcpy(&buf[16], oid, SMOOTHFS_OID_LEN);
-	buf[32] = movement_state;
-	buf[33] = current_tier;
-	buf[34] = intended_tier;
-	buf[35] = SMOOTHFS_PIN_NONE;  /* per-record pin not modelled in Phase 1 */
+	memcpy(&e->record[16], oid, SMOOTHFS_OID_LEN);
+	e->record[32] = movement_state;
+	e->record[33] = current_tier;
+	e->record[34] = intended_tier;
+	e->record[35] = SMOOTHFS_PIN_NONE;  /* per-record pin not modelled in Phase 1 */
 	*gen   = cpu_to_le32(0);
-	*ts    = cpu_to_le64(ktime_get_real_ns());
 
-	n = kernel_write(log, buf, sizeof(buf), &pos);
-	if (n != sizeof(buf))
-		n = n >= 0 ? -EIO : n;
-	else if (sync)
-		n = vfs_fsync(log, 0);
+	spin_lock(&sbi->placement_wb_lock);
+	*seq = cpu_to_le64(++sbi->placement_seq);
+	*ts = cpu_to_le64(ktime_get_real_ns());
+	list_add_tail(&e->link, &sbi->placement_wb_pending);
+	count = ++sbi->placement_wb_pending_count;
+	if (count >= SMOOTHFS_PLACEMENT_WB_HIGH_WATER)
+		kick_now = true;
+	spin_unlock(&sbi->placement_wb_lock);
+
+	if (kick_now)
+		smoothfs_placement_wb_kick(sbi);
 	else
-		n = 0;
-
-	mutex_unlock(&sbi->placement_lock);
-	return n < 0 ? n : 0;
+		queue_delayed_work(sbi->placement_wb_wq,
+				   &sbi->placement_wb_work,
+				   msecs_to_jiffies(SMOOTHFS_PLACEMENT_WB_INTERVAL_MS));
+	return 0;
 }
 
 int smoothfs_placement_replay(struct super_block *sb,
 			      struct smoothfs_sb_info *sbi)
 {
 	LIST_HEAD(records);
+	struct hlist_head *index;
 	u8 tier;
 	int err;
 
 	if (!sbi->placement_log)
 		return -ENODEV;
 
-	err = smoothfs_replay_load_log(sbi, &records);
+	index = kvcalloc(SMOOTHFS_REPLAY_HASH_SIZE, sizeof(*index), GFP_KERNEL);
+	if (!index)
+		return -ENOMEM;
+	smoothfs_replay_index_init(index);
+
+	err = smoothfs_replay_load_log(sbi, &records, index);
 	if (err)
 		goto out;
 
 	for (tier = 0; tier < sbi->ntiers; tier++) {
 		err = smoothfs_scan_tree(&records, &sbi->tiers[tier].lower_path,
-					 tier, "");
+					 index, tier, "");
 		if (err)
 			goto out;
 	}
@@ -602,5 +720,6 @@ int smoothfs_placement_replay(struct super_block *sb,
 
 out:
 	smoothfs_replay_free_records(&records);
+	kvfree(index);
 	return err;
 }

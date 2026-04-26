@@ -44,6 +44,7 @@
 #define SMOOTHFS_LEASE_XATTR    "trusted.smoothfs.lease"
 #define SMOOTHFS_OID_LEN        16  /* UUIDv7, 128 bits */
 #define SMOOTHFS_GEN_LEN        4   /* monotonic uint32 */
+#define SMOOTHFS_PLACEMENT_REC_SIZE 64
 
 /* Lower-fs capability bits, mirroring Phase 0 contract §0.6. */
 #define SMOOTHFS_CAP_XATTR_USER             BIT(0)
@@ -81,6 +82,8 @@ struct smoothfs_tier {
 	u32          caps;
 	struct path  lower_path;     /* root of the lower mount */
 	const char  *lower_id;       /* tier_targets.id from SQLite, kstrdup'd */
+	atomic_t     active_writes;
+	atomic_t     pending_writes;
 };
 
 /* Movement state, mirroring §0.3 of the Phase 0 contract. */
@@ -123,6 +126,12 @@ struct smoothfs_sb_info {
 	struct file        *placement_log;
 	struct mutex        placement_lock;
 	u64                 placement_seq;
+	struct workqueue_struct *placement_wb_wq;
+	struct delayed_work placement_wb_work;
+	spinlock_t          placement_wb_lock;
+	struct list_head    placement_wb_pending;
+	unsigned int        placement_wb_pending_count;
+	bool                placement_wb_ready;
 
 	/* OID -> smoothfs_inode map. rhashtable gives O(1) lookups on the
 	 * hot path (stat, NFS fh_to_dentry, movement netlink commands).
@@ -245,6 +254,7 @@ struct smoothfs_inode_info {
 	atomic_t        open_count;
 	atomic64_t      read_bytes;
 	atomic64_t      write_bytes;
+	atomic_t        write_reservation;
 	u64             last_access_ns;
 
 	/* Last drained snapshot — drain emits the delta. */
@@ -294,6 +304,19 @@ static __always_inline struct dentry *smoothfs_lower_dentry(struct dentry *dentr
 	return dentry->d_fsdata;
 }
 
+static inline void smoothfs_clear_write_reservation(struct smoothfs_sb_info *sbi,
+						    struct smoothfs_inode_info *si)
+{
+	u8 tier;
+
+	if (!atomic_xchg(&si->write_reservation, 0))
+		return;
+
+	tier = READ_ONCE(si->current_tier);
+	if (tier < sbi->ntiers)
+		atomic_dec(&sbi->tiers[tier].pending_writes);
+}
+
 /*
  * d_fsdata owns its own reference on the lower dentry; smoothfs_d_release
  * is the matching dput. Callers pass the lower dentry by pointer without
@@ -322,7 +345,7 @@ extern const struct rhashtable_params smoothfs_oid_rht_params;
 extern const struct rhashtable_params smoothfs_lower_ino_rht_params;
 int  smoothfs_init_fs_context(struct fs_context *fc);
 struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
-			    bool root);
+			    bool root, bool fresh);
 int  smoothfs_oid_map_init(struct smoothfs_sb_info *sbi);
 void smoothfs_oid_map_destroy(struct smoothfs_sb_info *sbi);
 int  smoothfs_oid_map_insert(struct smoothfs_sb_info *sbi,
@@ -351,6 +374,11 @@ struct smoothfs_oid_wb_entry {
 	struct list_head link;
 	struct path      lower_path;
 	u8               oid[SMOOTHFS_OID_LEN];
+};
+
+struct smoothfs_placement_wb_entry {
+	struct list_head link;
+	u8               record[SMOOTHFS_PLACEMENT_REC_SIZE];
 };
 
 int  smoothfs_oid_wb_init(struct smoothfs_sb_info *sbi);
@@ -413,13 +441,16 @@ u64  smoothfs_inode_no_from_oid(const u8 oid[SMOOTHFS_OID_LEN]);
 /* placement.c */
 int  smoothfs_placement_open(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_close(struct smoothfs_sb_info *sbi);
+int  smoothfs_placement_wb_init(struct smoothfs_sb_info *sbi);
+void smoothfs_placement_wb_destroy(struct smoothfs_sb_info *sbi);
+void smoothfs_placement_wb_drain(struct smoothfs_sb_info *sbi);
+void smoothfs_placement_wb_kick(struct smoothfs_sb_info *sbi);
 /*
- * Append one placement record. `sync=true` fsyncs after the write (use
- * for commit-critical transitions: CUTOVER_IN_PROGRESS before the
- * lower_path swap, SWITCHED after). `sync=false` lets the record sit
- * in page-cache (durable on next sync_fs / periodic flush) — safe for
- * informational states where loss on crash just means the planner
- * re-derives them.
+ * Enqueue one placement record for asynchronous writeback. `sync=true`
+ * now means "kick the writeback worker immediately", not "block the
+ * caller on lower-fs durability". sync_fs / put_super drain the queue.
+ * Record loss is recoverable: replay also scans the lower tiers and
+ * rebuilds placement from the copy-on-write state.
  */
 int  smoothfs_placement_record(struct smoothfs_sb_info *sbi,
 			       const u8 oid[SMOOTHFS_OID_LEN],

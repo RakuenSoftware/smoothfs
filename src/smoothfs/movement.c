@@ -107,8 +107,8 @@ int smoothfs_movement_plan(struct smoothfs_sb_info *sbi,
 	si->movement_state  = SMOOTHFS_MS_PLAN_ACCEPTED;
 	si->transaction_seq = transaction_seq;
 
-	/* Informational: if we crash before the next fsync, tierd's
-	 * planner re-issues the plan on its next cycle — idempotent. */
+	/* Recoverable writeback: if this record is lost before the next
+	 * drain, tierd's planner re-issues the plan on its next cycle. */
 	smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_PLAN_ACCEPTED,
 				  si->current_tier, dest_tier, /*sync=*/false);
 	smoothfs_netlink_emit_move_state(sbi, oid,
@@ -186,9 +186,9 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	 * every other inode op (lookup, getattr, …) for the duration
 	 * of the wait. Re-acquire below and re-validate. */
 	si->movement_state = SMOOTHFS_MS_CUTOVER_IN_PROGRESS;
-	/* Commit-critical: must be on-disk BEFORE the lower_path swap so
-	 * crash recovery sees the intent and can forward-fix to SWITCHED
-	 * (or roll back) deterministically. */
+	/* Copy-on-write recovery can rediscover source and destination from
+	 * lower tiers, so this only kicks asynchronous placement writeback;
+	 * it does not block cutover on lower-fs durability. */
 	smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_CUTOVER_IN_PROGRESS,
 				  si->current_tier, si->intended_tier,
 				  /*sync=*/true);
@@ -286,8 +286,8 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	/* Refresh attrs from the new lower. */
 	smoothfs_copy_attrs(inode, d_inode(dest_dentry));
 
-	/* Commit-critical: must be on-disk so crash recovery doesn't roll
-	 * the completed swap back to the source tier. */
+	/* Kick writeback for observability. Replay normalizes from lower
+	 * tier contents if this record is lost before the next drain. */
 	smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_SWITCHED,
 				  si->current_tier, si->current_tier,
 				  /*sync=*/true);

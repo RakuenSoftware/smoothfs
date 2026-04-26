@@ -184,11 +184,6 @@ func (s *Service) runEvents(ctx context.Context) {
 					pool.AnySpillSinceMount = true
 				}
 				s.mu.Unlock()
-				if ev.Spill != nil {
-					log.Printf("smoothfs: spill event pool=%s object=%x %d->%d size=%d",
-						ev.PoolUUID, ev.Spill.OID, ev.Spill.SourceTier,
-						ev.Spill.DestTier, ev.Spill.SizeBytes)
-				}
 			}
 		}
 	}

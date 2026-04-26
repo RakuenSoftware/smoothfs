@@ -50,7 +50,10 @@ static int smoothfs_open(struct inode *inode, struct file *file)
 
 static int smoothfs_release(struct inode *inode, struct file *file)
 {
-	atomic_dec(&SMOOTHFS_I(inode)->open_count);
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+
+	if (atomic_dec_and_test(&si->open_count))
+		smoothfs_clear_write_reservation(SMOOTHFS_SB(inode->i_sb), si);
 	return smoothfs_release_lower(file);
 }
 
@@ -76,6 +79,7 @@ static ssize_t smoothfs_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
 	struct file *lower;
 	ssize_t ret;
+	u8 tier;
 	int srcu_idx;
 
 	/*
@@ -106,7 +110,13 @@ again:
 	}
 
 	lower = smoothfs_lower_file(iocb->ki_filp);
+	tier = smoothfs_tier_of(sbi, lower->f_path.mnt);
+	if (tier < sbi->ntiers)
+		atomic_inc(&sbi->tiers[tier].active_writes);
+	smoothfs_clear_write_reservation(sbi, si);
 	ret = smoothfs_compat_write_iter(lower, &iocb->ki_pos, from);
+	if (tier < sbi->ntiers)
+		atomic_dec(&sbi->tiers[tier].active_writes);
 	srcu_read_unlock(&sbi->cutover_srcu, srcu_idx);
 
 	if (ret > 0) {

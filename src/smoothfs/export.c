@@ -201,7 +201,7 @@ static struct dentry *smoothfs_get_parent(struct dentry *child)
 	lower_path.dentry = lower_parent;
 	mntget(lower_path.mnt);
 
-	inode = smoothfs_iget(sb, &lower_path, false);
+	inode = smoothfs_iget(sb, &lower_path, false, false);
 	path_put(&lower_path);
 	dput(lower_parent);
 	if (IS_ERR(inode))
