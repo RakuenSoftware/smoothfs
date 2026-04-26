@@ -100,6 +100,9 @@ static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 
 	if (sbi->ntiers <= 1)
 		return sbi->fastest_tier;
+	if (READ_ONCE(sbi->write_staging_enabled) &&
+	    !smoothfs_tier_near_enospc(sbi, sbi->fastest_tier))
+		return sbi->fastest_tier;
 
 	best_tier = sbi->fastest_tier;
 	best_load = atomic_read(&sbi->tiers[best_tier].active_writes) +
@@ -346,6 +349,10 @@ static int smoothfs_lookup_rel_across_tiers(struct smoothfs_sb_info *sbi,
 			continue;
 		if (!rel_path || !*rel_path)
 			continue;
+		if (!smoothfs_metadata_tier_active(sbi, tier)) {
+			smoothfs_note_metadata_tier_skip(sbi);
+			continue;
+		}
 		if (!smoothfs_resolve_rel_path_on_tier(sbi, tier, rel_path, out)) {
 			if (found_tier)
 				*found_tier = tier;
