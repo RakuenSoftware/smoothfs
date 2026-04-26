@@ -135,6 +135,15 @@ static ssize_t staged_bytes_show(struct kobject *kobj,
 			  (long long)atomic64_read(&pool->sbi->staged_bytes));
 }
 
+static ssize_t staged_rehomes_total_show(struct kobject *kobj,
+					 struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->staged_rehomes_total));
+}
+
 static ssize_t oldest_staged_write_at_show(struct kobject *kobj,
 					   struct kobj_attribute *attr,
 					   char *buf)
@@ -257,6 +266,8 @@ static struct kobj_attribute write_staging_full_pct_attr =
 	__ATTR_RW(write_staging_full_pct);
 static struct kobj_attribute staged_bytes_attr =
 	__ATTR_RO(staged_bytes);
+static struct kobj_attribute staged_rehomes_total_attr =
+	__ATTR_RO(staged_rehomes_total);
 static struct kobj_attribute oldest_staged_write_at_attr =
 	__ATTR_RO(oldest_staged_write_at);
 static struct kobj_attribute last_drain_at_attr =
@@ -278,6 +289,7 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&write_staging_enabled_attr.attr,
 	&write_staging_full_pct_attr.attr,
 	&staged_bytes_attr.attr,
+	&staged_rehomes_total_attr.attr,
 	&oldest_staged_write_at_attr.attr,
 	&last_drain_at_attr.attr,
 	&last_drain_reason_attr.attr,
@@ -361,6 +373,7 @@ void smoothfs_write_staging_note_rehome(struct smoothfs_sb_info *sbi)
 {
 	u64 now = ktime_get_real_ns();
 
+	atomic64_inc(&sbi->staged_rehomes_total);
 	atomic64_cmpxchg(&sbi->oldest_staged_write_ns, 0, now);
 	smoothfs_write_staging_set_reason(sbi, "truncate-rehome");
 }
@@ -673,6 +686,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	init_waitqueue_head(&si->cutover_wq);
 	si->mappings_quiesced = false;
 	si->write_staged = false;
+	si->write_staged_drain_tier = SMOOTHFS_MAX_TIERS;
 	si->rel_path = NULL;
 	atomic_set(&si->replay_pinned, 0);
 	INIT_LIST_HEAD(&si->sb_link);
@@ -897,6 +911,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	WRITE_ONCE(sbi->write_staging_enabled, false);
 	WRITE_ONCE(sbi->write_staging_full_pct, 98);
 	atomic64_set(&sbi->staged_bytes, 0);
+	atomic64_set(&sbi->staged_rehomes_total, 0);
 	atomic64_set(&sbi->oldest_staged_write_ns, 0);
 	atomic64_set(&sbi->last_drain_ns, 0);
 	atomic64_set(&sbi->metadata_tier_skips, 0);

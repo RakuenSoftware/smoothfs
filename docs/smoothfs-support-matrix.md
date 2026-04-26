@@ -78,9 +78,9 @@ Other filesystems (fat / ntfs-3g / overlayfs / fuse / etc.) are not capability-g
 
 | Feature | Status | Notes |
 |---|---|---|
-| Sysfs status/control | Supported | `/sys/fs/smoothfs/<uuid>/write_staging_supported`, `write_staging_enabled`, `write_staging_full_pct`, `staged_bytes`, `oldest_staged_write_at`, `last_drain_at`, `last_drain_reason`, `write_staging_drain_active_tier_mask` |
+| Sysfs status/control | Supported | `/sys/fs/smoothfs/<uuid>/write_staging_supported`, `write_staging_enabled`, `write_staging_full_pct`, `staged_bytes`, `staged_rehomes_total`, `oldest_staged_write_at`, `last_drain_at`, `last_drain_reason`, `write_staging_drain_active_tier_mask` |
 | New writes to new files | Supported | New files land on the fastest tier until that tier reaches `write_staging_full_pct`, then spill to the next tier. |
-| Truncate-for-write rehome | Supported | With write staging enabled, an `O_TRUNC` write to a regular file placed on a colder tier is rehomed to the fastest tier before the colder lower file is opened, unless the fastest tier is at the full threshold. |
+| Truncate-for-write rehome | Supported | With write staging enabled, an `O_TRUNC` write to a regular file placed on a colder tier is rehomed to the fastest tier before the colder lower file is opened, unless the fastest tier is at the full threshold. smoothfs records the original tier as the staged file's future drain target and increments `staged_rehomes_total`. |
 | Metadata tier activity gate | Supported | SmoothNAS can write `metadata_active_tier_mask`; smoothfs skips inactive tiers for fallback lookup and union readdir, serves cached `getattr` for already-resolved inactive-tier dentries, and reports skipped probes via `metadata_tier_skips`. |
 | Range-level staging | Pending | Non-truncating writes still use the current lower file. |
 | Drain back to HDD | Pending | smoothfs exposes `write_staging_drain_active_tier_mask` so future drain code can target only tiers that SmoothNAS has observed active due to external activity. |
