@@ -215,6 +215,10 @@ static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
 
 		if (tier == canonical_tier)
 			continue;
+		if (!smoothfs_metadata_tier_active(sbi, tier)) {
+			smoothfs_note_metadata_tier_skip(sbi);
+			continue;
+		}
 		err = smoothfs_resolve_rel_path_on_tier(sbi, tier, rel_path, &tier_path);
 		if (err)
 			continue;

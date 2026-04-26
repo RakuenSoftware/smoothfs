@@ -31,7 +31,6 @@
 #include <linux/workqueue.h>
 #include <linux/version.h>
 #include <linux/kobject.h>
-#include <linux/spinlock.h>
 
 #include "uapi_smoothfs.h"
 #include "compat.h"
@@ -224,7 +223,9 @@ struct smoothfs_sb_info {
 	atomic64_t          staged_bytes;
 	atomic64_t          oldest_staged_write_ns;
 	atomic64_t          last_drain_ns;
+	atomic64_t          metadata_tier_skips;
 	spinlock_t          write_staging_lock;
+	u32                 metadata_active_tier_mask;
 	char                last_drain_reason[64];
 	void               *sysfs_pool;
 };
@@ -238,6 +239,24 @@ static inline u8 smoothfs_tier_of(struct smoothfs_sb_info *sbi,
 		if (sbi->tiers[i].lower_path.mnt == mnt)
 			return i;
 	return SMOOTHFS_MAX_TIERS;
+}
+
+static inline bool smoothfs_metadata_tier_active(struct smoothfs_sb_info *sbi,
+						 u8 tier)
+{
+	u32 mask;
+
+	if (tier >= sbi->ntiers)
+		return false;
+	if (tier == sbi->fastest_tier)
+		return true;
+	mask = READ_ONCE(sbi->metadata_active_tier_mask);
+	return mask & BIT(tier);
+}
+
+static inline void smoothfs_note_metadata_tier_skip(struct smoothfs_sb_info *sbi)
+{
+	atomic64_inc(&sbi->metadata_tier_skips);
 }
 
 /* Default drain interval — overridable per pool via Phase 0 §0.5
