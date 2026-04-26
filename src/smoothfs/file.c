@@ -122,6 +122,9 @@ again:
 	if (ret > 0) {
 		struct inode *upper = file_inode(iocb->ki_filp);
 		atomic64_add(ret, &si->write_bytes);
+		if (READ_ONCE(si->write_staged) &&
+		    tier == sbi->fastest_tier)
+			smoothfs_write_staging_note_write(sbi, ret);
 		si->last_access_ns = ktime_get_real_ns();
 		/* getattr already reads through to the lower via
 		 * vfs_getattr_nosec, but nfsd's NFSv4.2 READ_PLUS path

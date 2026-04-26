@@ -120,6 +120,26 @@ sqlite3 /var/lib/tierd/tierd.db \
     'SELECT written_at, to_state, source_tier, dest_tier FROM smoothfs_movement_log ORDER BY id DESC LIMIT 50;'
 ```
 
+### Write staging
+
+SmoothNAS controls write staging from the smoothfs Pools page. The kernel-side
+switch and counters are also visible under `/sys/fs/smoothfs/<pool-uuid>/`:
+
+```bash
+cat /sys/fs/smoothfs/<uuid>/write_staging_supported
+cat /sys/fs/smoothfs/<uuid>/write_staging_enabled
+cat /sys/fs/smoothfs/<uuid>/write_staging_full_pct
+cat /sys/fs/smoothfs/<uuid>/staged_bytes
+```
+
+The first data-plane path handles replace-style writes: when staging is enabled,
+an `O_TRUNC` write to a regular file currently placed on a colder tier is
+rehomed onto the fastest tier before the lower file is opened, provided the
+fastest tier is below `write_staging_full_pct` (default 98). New files already
+follow the same admission rule: they land on the fastest tier until that tier
+reaches the full threshold, then spill to the next tier. Range-level staging for
+non-truncating writes and draining back to HDD are follow-up work.
+
 ### Destroying a pool
 
 Stops + removes the systemd mount unit. Any share pointing at a file on this pool will return `EIO` until the pool is re-created.

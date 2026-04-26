@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 #include <linux/string.h>
+#include <linux/timekeeping.h>
 #include <linux/uuid.h>
 #include <linux/version.h>
 #include <linux/xxhash.h>
@@ -66,17 +67,138 @@ static ssize_t any_spill_since_mount_show(struct kobject *kobj,
 			  atomic_read(&pool->sbi->any_spill_since_mount) ? 1 : 0);
 }
 
+static ssize_t write_staging_supported_show(struct kobject *kobj,
+					    struct kobj_attribute *attr,
+					    char *buf)
+{
+	return sysfs_emit(buf, "1\n");
+}
+
+static ssize_t write_staging_enabled_show(struct kobject *kobj,
+					  struct kobj_attribute *attr,
+					  char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%d\n",
+			  READ_ONCE(pool->sbi->write_staging_enabled) ? 1 : 0);
+}
+
+static ssize_t write_staging_enabled_store(struct kobject *kobj,
+					   struct kobj_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+	bool enabled;
+	int err;
+
+	err = kstrtobool(buf, &enabled);
+	if (err)
+		return err;
+	WRITE_ONCE(pool->sbi->write_staging_enabled, enabled);
+	return count;
+}
+
+static ssize_t write_staging_full_pct_show(struct kobject *kobj,
+					   struct kobj_attribute *attr,
+					   char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%u\n",
+			  (unsigned int)READ_ONCE(pool->sbi->write_staging_full_pct));
+}
+
+static ssize_t write_staging_full_pct_store(struct kobject *kobj,
+					    struct kobj_attribute *attr,
+					    const char *buf, size_t count)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+	unsigned int pct;
+	int err;
+
+	err = kstrtouint(buf, 10, &pct);
+	if (err)
+		return err;
+	if (pct < 1 || pct > 100)
+		return -EINVAL;
+	WRITE_ONCE(pool->sbi->write_staging_full_pct, (u8)pct);
+	return count;
+}
+
+static ssize_t staged_bytes_show(struct kobject *kobj,
+				 struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+			  (long long)atomic64_read(&pool->sbi->staged_bytes));
+}
+
+static ssize_t oldest_staged_write_at_show(struct kobject *kobj,
+					   struct kobj_attribute *attr,
+					   char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->oldest_staged_write_ns));
+}
+
+static ssize_t last_drain_at_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+			  (long long)atomic64_read(&pool->sbi->last_drain_ns));
+}
+
+static ssize_t last_drain_reason_show(struct kobject *kobj,
+				      struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+	struct smoothfs_sb_info *sbi = pool->sbi;
+	char reason[sizeof(sbi->last_drain_reason)];
+
+	spin_lock(&sbi->write_staging_lock);
+	strscpy(reason, sbi->last_drain_reason, sizeof(reason));
+	spin_unlock(&sbi->write_staging_lock);
+	return sysfs_emit(buf, "%s\n", reason);
+}
+
 static struct kobj_attribute spill_creates_total_attr =
 	__ATTR_RO(spill_creates_total);
 static struct kobj_attribute spill_creates_failed_all_tiers_attr =
 	__ATTR_RO(spill_creates_failed_all_tiers);
 static struct kobj_attribute any_spill_since_mount_attr =
 	__ATTR_RO(any_spill_since_mount);
+static struct kobj_attribute write_staging_supported_attr =
+	__ATTR_RO(write_staging_supported);
+static struct kobj_attribute write_staging_enabled_attr =
+	__ATTR_RW(write_staging_enabled);
+static struct kobj_attribute write_staging_full_pct_attr =
+	__ATTR_RW(write_staging_full_pct);
+static struct kobj_attribute staged_bytes_attr =
+	__ATTR_RO(staged_bytes);
+static struct kobj_attribute oldest_staged_write_at_attr =
+	__ATTR_RO(oldest_staged_write_at);
+static struct kobj_attribute last_drain_at_attr =
+	__ATTR_RO(last_drain_at);
+static struct kobj_attribute last_drain_reason_attr =
+	__ATTR_RO(last_drain_reason);
 
 static struct attribute *smoothfs_pool_attrs[] = {
 	&spill_creates_total_attr.attr,
 	&spill_creates_failed_all_tiers_attr.attr,
 	&any_spill_since_mount_attr.attr,
+	&write_staging_supported_attr.attr,
+	&write_staging_enabled_attr.attr,
+	&write_staging_full_pct_attr.attr,
+	&staged_bytes_attr.attr,
+	&oldest_staged_write_at_attr.attr,
+	&last_drain_at_attr.attr,
+	&last_drain_reason_attr.attr,
 	NULL,
 };
 
@@ -139,6 +261,36 @@ void smoothfs_spill_note_success(struct smoothfs_sb_info *sbi,
 void smoothfs_spill_note_failed_all_tiers(struct smoothfs_sb_info *sbi)
 {
 	atomic64_inc(&sbi->spill_creates_failed_all_tiers);
+}
+
+static void smoothfs_write_staging_set_reason(struct smoothfs_sb_info *sbi,
+					      const char *reason)
+{
+	spin_lock(&sbi->write_staging_lock);
+	strscpy(sbi->last_drain_reason, reason,
+		sizeof(sbi->last_drain_reason));
+	spin_unlock(&sbi->write_staging_lock);
+}
+
+void smoothfs_write_staging_note_rehome(struct smoothfs_sb_info *sbi)
+{
+	u64 now = ktime_get_real_ns();
+
+	atomic64_cmpxchg(&sbi->oldest_staged_write_ns, 0, now);
+	smoothfs_write_staging_set_reason(sbi, "truncate-rehome");
+}
+
+void smoothfs_write_staging_note_write(struct smoothfs_sb_info *sbi,
+				       ssize_t bytes)
+{
+	u64 now;
+
+	if (bytes <= 0)
+		return;
+	now = ktime_get_real_ns();
+	atomic64_add(bytes, &sbi->staged_bytes);
+	atomic64_cmpxchg(&sbi->oldest_staged_write_ns, 0, now);
+	smoothfs_write_staging_set_reason(sbi, "staged-write");
 }
 
 const struct rhashtable_params smoothfs_oid_rht_params = {
@@ -435,6 +587,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	si->last_access_ns = 0;
 	init_waitqueue_head(&si->cutover_wq);
 	si->mappings_quiesced = false;
+	si->write_staged = false;
 	si->rel_path = NULL;
 	atomic_set(&si->replay_pinned, 0);
 	INIT_LIST_HEAD(&si->sb_link);
@@ -656,6 +809,13 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	atomic64_set(&sbi->spill_creates_total, 0);
 	atomic64_set(&sbi->spill_creates_failed_all_tiers, 0);
 	atomic_set(&sbi->any_spill_since_mount, 0);
+	WRITE_ONCE(sbi->write_staging_enabled, false);
+	WRITE_ONCE(sbi->write_staging_full_pct, 98);
+	atomic64_set(&sbi->staged_bytes, 0);
+	atomic64_set(&sbi->oldest_staged_write_ns, 0);
+	atomic64_set(&sbi->last_drain_ns, 0);
+	spin_lock_init(&sbi->write_staging_lock);
+	sbi->last_drain_reason[0] = '\0';
 
 	err = smoothfs_resolve_tiers(sbi, ctx->tiers);
 	if (err)

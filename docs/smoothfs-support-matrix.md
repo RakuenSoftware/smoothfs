@@ -6,7 +6,7 @@ plus the four lower filesystems we test against. This page pins the
 combinations the smoothfs project tests for the SmoothNAS integration;
 anything outside this set may work but has no support commitment.
 
-Last reviewed against Phase 7.10 (Phase 0–7 complete; Phase 8 gated on production soak).
+Last reviewed against Phase 7.10 plus disk-spindown write-staging truncate rehome (Phase 0–7 complete; Phase 8 gated on production soak).
 
 ## Appliance OS
 
@@ -73,6 +73,16 @@ Other filesystems (fat / ntfs-3g / overlayfs / fuse / etc.) are not capability-g
 | **SMB 2/3** | Supported | 5.0–5.8.4 (smbtorture 16/16 MUST_PASS, Samba VFS module with lease pin + FileId + fanotify lease-break) |
 | **iSCSI (file-backed LUN)** | Supported | 6.0–6.5 (O_DIRECT conformance, LIO fileio round-trip, `PIN_LUN` contract, target restart) |
 | Active-LUN movement | **Unsupported in v1** | Phase 8 (gated on Phase 6 soak) |
+
+## Disk Spindown Write Staging
+
+| Feature | Status | Notes |
+|---|---|---|
+| Sysfs status/control | Supported | `/sys/fs/smoothfs/<uuid>/write_staging_supported`, `write_staging_enabled`, `write_staging_full_pct`, `staged_bytes`, `oldest_staged_write_at`, `last_drain_at`, `last_drain_reason` |
+| New writes to new files | Supported | New files land on the fastest tier until that tier reaches `write_staging_full_pct`, then spill to the next tier. |
+| Truncate-for-write rehome | Supported | With write staging enabled, an `O_TRUNC` write to a regular file placed on a colder tier is rehomed to the fastest tier before the colder lower file is opened, unless the fastest tier is at the full threshold. |
+| Range-level staging | Pending | Non-truncating writes still use the current lower file. |
+| Drain back to HDD | Pending | Draining staged data must only run when SmoothNAS has observed the HDD active due to external activity. |
 
 LUN backing files are auto-pinned with `PIN_LUN` and tierd refuses to move them. Operators who need to move a LUN must quiesce the target, clear the pin manually, move, re-pin. The automated active-LUN path is Phase 8.
 
