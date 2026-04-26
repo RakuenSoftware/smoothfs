@@ -24,28 +24,31 @@ if [ ! -d "$SYSFS" ]; then
 fi
 
 printf 'fast\n' > "$SPILL_ROOT/fast/fast.txt"
-printf 'slow\n' > "$SPILL_ROOT/slow/slow.txt"
+printf 'slow\n' > "$SPILL_ROOT/slow/slow-cached.txt"
+printf 'hidden\n' > "$SPILL_ROOT/slow/slow-hidden.txt"
 
 echo "=== default active mask sees both tiers ==="
-if ls "$SPILL_ROOT/server" | grep -qx 'slow.txt'; then
+if ls "$SPILL_ROOT/server" | grep -qx 'slow-hidden.txt'; then
 	echo "  ok    slow-tier file visible while tier is active"
 else
 	echo "  FAIL  slow-tier file missing before gate"
 	spill_rc=1
 fi
+spill_assert test "$(stat -c '%s' "$SPILL_ROOT/server/slow-cached.txt")" = "5"
 
 before=$(cat "$SYSFS/metadata_tier_skips")
 echo 0x1 > "$SYSFS/metadata_active_tier_mask"
 
 echo "=== inactive slow tier is skipped for metadata-only browse ==="
 spill_assert grep -qx 'fast' "$SPILL_ROOT/server/fast.txt"
-if ls "$SPILL_ROOT/server" | grep -qx 'slow.txt'; then
+spill_assert test "$(stat -c '%s' "$SPILL_ROOT/server/slow-cached.txt")" = "5"
+if ls "$SPILL_ROOT/server" | grep -qx 'slow-hidden.txt'; then
 	echo "  FAIL  slow-tier file visible while tier is inactive"
 	spill_rc=1
 else
 	echo "  ok    slow-tier file hidden while tier is inactive"
 fi
-if cat "$SPILL_ROOT/server/slow.txt" >/dev/null 2>&1; then
+if cat "$SPILL_ROOT/server/slow-hidden.txt" >/dev/null 2>&1; then
 	echo "  FAIL  fallback lookup touched inactive slow tier"
 	spill_rc=1
 else

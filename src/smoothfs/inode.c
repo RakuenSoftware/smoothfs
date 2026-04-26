@@ -615,8 +615,18 @@ static int smoothfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 			    unsigned int flags)
 {
 	struct inode *inode = d_inode(path->dentry);
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
 	struct path lower_path = *smoothfs_lower_path(inode);
 	int err;
+
+	if (!smoothfs_metadata_tier_active(sbi, READ_ONCE(si->current_tier))) {
+		generic_fillattr(idmap, request_mask, inode, stat);
+		stat->ino = inode->i_ino;
+		stat->dev = inode->i_sb->s_dev;
+		smoothfs_note_metadata_tier_skip(sbi);
+		return 0;
+	}
 
 	/* Direct passthrough to the lower. vfs_getattr_nosec skips the
 	 * security_inode_getattr hook because the VFS already ran it on
