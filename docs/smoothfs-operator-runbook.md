@@ -152,8 +152,11 @@ reaches the full threshold, then spill to the next tier. Range-level staging for
 non-truncating writes and draining back to HDD are follow-up work.
 `staged_rehomes_total` counts these truncate-write rehomes.
 `staged_rehome_bytes` reports bytes written through the truncate-rehome staging
-path. `range_staged_bytes` and `range_staged_writes` are reserved for the
-non-truncating range-staging path and remain zero until that path lands.
+path. For unpinned cold-tier regular files, buffered non-truncating writes can
+stage changed ranges into the fastest tier and read them back through the
+range-merge path; `range_staged_bytes` and `range_staged_writes` report that
+activity. Direct I/O, mmap, replay after remount, and drain-back remain pending
+for range-staged data.
 `staged_rehomes_pending` counts truncate-write rehomes that still have staged
 cleanup work outstanding.
 `write_staging_drainable_rehomes` counts staged truncate rehomes whose original

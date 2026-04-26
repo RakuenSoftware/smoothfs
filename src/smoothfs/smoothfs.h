@@ -320,6 +320,11 @@ struct smoothfs_inode_info {
 	bool            mappings_quiesced;
 	bool            write_staged;
 	u8              write_staged_drain_tier;
+	bool            range_staged;
+	u8              range_staged_source_tier;
+	struct path     range_staged_path;
+	struct mutex    range_staging_lock;
+	struct list_head range_staged_ranges;
 	char           *rel_path;            /* namespace-relative cached path */
 
 	/* Non-zero when smoothfs_placement_replay holds a pin (the iget ref
@@ -391,6 +396,12 @@ extern struct kmem_cache       *smoothfs_inode_cachep;
 int  smoothfs_sysfs_init(void);
 void smoothfs_sysfs_exit(void);
 
+struct smoothfs_staged_range {
+	struct list_head link;
+	loff_t           start;
+	loff_t           end;   /* exclusive */
+};
+
 /* super.c */
 extern const struct super_operations  smoothfs_super_ops;
 extern const struct rhashtable_params smoothfs_oid_rht_params;
@@ -413,6 +424,8 @@ void smoothfs_spill_note_failed_all_tiers(struct smoothfs_sb_info *sbi);
 void smoothfs_write_staging_note_rehome(struct smoothfs_sb_info *sbi);
 void smoothfs_write_staging_note_write(struct smoothfs_sb_info *sbi,
 				       ssize_t bytes);
+void smoothfs_write_staging_note_range_write(struct smoothfs_sb_info *sbi,
+					     ssize_t bytes);
 
 /* (tier_idx, lower_ino) -> smoothfs ino_no cache.
  * 8-byte key: (tier_idx << 56) | (lower_ino & 0x00FFFFFFFFFFFFFF).
