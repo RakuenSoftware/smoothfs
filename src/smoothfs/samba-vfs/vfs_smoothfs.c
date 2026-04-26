@@ -88,6 +88,8 @@ struct smoothfs_fileid_entry {
 
 struct smoothfs_connect_data {
 	bool is_smoothfs;
+	bool lease_watcher;
+	bool stable_fileid;
 
 	/*
 	 * fanotify watcher on the share's mount. FAN_MODIFY fires when
@@ -385,14 +387,25 @@ static int smoothfs_connect(vfs_handle_struct *handle,
 				struct smoothfs_connect_data,
 				return -1);
 
-	smoothfs_setup_fanotify(handle, d);
+	d->lease_watcher = lp_parm_bool(SNUM(handle->conn), "smoothfs",
+					"lease watcher", false);
+	d->stable_fileid = lp_parm_bool(SNUM(handle->conn), "smoothfs",
+					"stable fileid", false);
+
+	if (d->lease_watcher) {
+		smoothfs_setup_fanotify(handle, d);
+	} else {
+		d->fan_fd = -1;
+		d->fan_fde = NULL;
+	}
 
 	DBG_NOTICE("smoothfs: VFS module loaded for service %s (user %s); "
-		   "lower is %s; fanotify %s\n",
+		   "lower is %s; fanotify %s; stable_fileid %s\n",
 		   service ? service : "(unknown)",
 		   user ? user : "(unknown)",
 		   d->is_smoothfs ? "smoothfs" : "non-smoothfs (passthrough)",
-		   d->fan_fde != NULL ? "active" : "inactive");
+		   d->fan_fde != NULL ? "active" : "inactive",
+		   d->stable_fileid ? "active" : "inactive");
 
 	return 0;
 }
@@ -535,7 +548,7 @@ static int smoothfs_fstat(vfs_handle_struct *handle,
 
 	SMB_VFS_HANDLE_GET_DATA(handle, d, struct smoothfs_connect_data,
 				return ret);
-	if (!d->is_smoothfs) {
+	if (!d->is_smoothfs || !d->stable_fileid) {
 		return ret;
 	}
 
@@ -568,7 +581,7 @@ static struct file_id smoothfs_file_id_create(vfs_handle_struct *handle,
 
 	SMB_VFS_HANDLE_GET_DATA(handle, d, struct smoothfs_connect_data,
 				return key);
-	if (!d->is_smoothfs) {
+	if (!d->is_smoothfs || !d->stable_fileid) {
 		return key;
 	}
 
