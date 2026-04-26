@@ -280,6 +280,7 @@ static inline bool smoothfs_write_staging_drain_tier_active(struct smoothfs_sb_i
 /* Default drain interval — overridable per pool via Phase 0 §0.5
  * tunables. Phase 2 hard-codes; later we plumb from tierd. */
 #define SMOOTHFS_HEAT_DRAIN_MS  30000
+#define SMOOTHFS_RANGE_READ_CHUNK (256 * 1024)
 
 /*
  * Per-inode smoothfs state. Embeds vfs_inode for container_of.

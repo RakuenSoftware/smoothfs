@@ -149,7 +149,8 @@ rehomed onto the fastest tier before the lower file is opened, provided the
 fastest tier is below `write_staging_full_pct` (default 98). New files already
 follow the same admission rule: they land on the fastest tier until that tier
 reaches the full threshold, then spill to the next tier. Range-level staging for
-non-truncating writes and draining back to HDD are follow-up work.
+non-truncating buffered writes is supported for unpinned cold-tier regular
+files.
 `staged_rehomes_total` counts these truncate-write rehomes.
 `staged_rehome_bytes` reports bytes written through the truncate-rehome staging
 path. For unpinned cold-tier regular files, buffered non-truncating writes can
@@ -157,7 +158,7 @@ stage changed ranges into the fastest tier and read them back through the
 range-merge path; `range_staged_bytes` and `range_staged_writes` report that
 activity. Once a file has staged ranges, direct I/O and mmap are refused so
 callers cannot bypass the merge layer and observe stale lower bytes. Replay
-after remount and drain-back remain pending for range-staged data.
+after remount remains pending for range-staged data.
 `staged_rehomes_pending` counts truncate-write rehomes that still have staged
 cleanup work outstanding.
 `write_staging_drainable_rehomes` counts staged truncate rehomes whose original
@@ -180,8 +181,10 @@ SmoothNAS should write a bit only after it has observed that tier's backing
 devices active due to external activity. The fastest-tier bit is always forced
 on by the kernel. When a colder tier becomes drain-active, smoothfs also drains
 truncate-rehome staging records for that tier by removing the stale original
-lower file and clearing the per-inode staged state. Future range-level staged
-data drain work uses this mask rather than the metadata browse mask so directory
+lower file and clearing the per-inode staged state. Range-staged writes use the
+same gate: smoothfs copies staged ranges back to the source lower file, fsyncs,
+removes the fastest-tier sidecar, and clears staged-range state. Range data
+drain uses this mask rather than the metadata browse mask so directory
 visibility and data-drain permission can move independently.
 
 ### Destroying a pool

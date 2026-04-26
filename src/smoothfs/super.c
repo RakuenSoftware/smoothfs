@@ -45,6 +45,7 @@ static inline struct smoothfs_sysfs_pool *to_smoothfs_sysfs_pool(struct kobject 
 static void smoothfs_write_staging_set_reason(struct smoothfs_sb_info *sbi,
 					      const char *reason);
 static int smoothfs_write_staging_drain_rehomes(struct smoothfs_sb_info *sbi);
+static int smoothfs_write_staging_drain_ranges(struct smoothfs_sb_info *sbi);
 
 static ssize_t spill_creates_total_show(struct kobject *kobj,
 					struct kobj_attribute *attr, char *buf)
@@ -389,6 +390,10 @@ static ssize_t write_staging_drain_active_tier_mask_store(struct kobject *kobj,
 	if (err)
 		pr_warn_ratelimited("smoothfs: write-staging rehome drain failed: %d\n",
 				    err);
+	err = smoothfs_write_staging_drain_ranges(sbi);
+	if (err)
+		pr_warn_ratelimited("smoothfs: write-staging range drain failed: %d\n",
+				    err);
 	return count;
 }
 
@@ -700,7 +705,8 @@ static int smoothfs_write_staging_drain_one_rehome(struct smoothfs_sb_info *sbi,
 	if (cleared) {
 		atomic64_set(&sbi->last_drain_ns, ktime_get_real_ns());
 		smoothfs_write_staging_set_reason(sbi, "truncate-rehome-drain");
-		if (smoothfs_write_staging_pending_rehomes(sbi) == 0) {
+		if (smoothfs_write_staging_pending_rehomes(sbi) == 0 &&
+		    atomic64_read(&sbi->range_staged_bytes) == 0) {
 			atomic64_set(&sbi->staged_bytes, 0);
 			atomic64_set(&sbi->oldest_staged_write_ns, 0);
 		}
@@ -715,6 +721,199 @@ static int smoothfs_write_staging_drain_rehomes(struct smoothfs_sb_info *sbi)
 
 	while ((inode = smoothfs_write_staging_find_drainable_rehome(sbi)) != NULL) {
 		err = smoothfs_write_staging_drain_one_rehome(sbi, inode);
+		iput(inode);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+
+static struct inode *smoothfs_write_staging_find_drainable_range(struct smoothfs_sb_info *sbi)
+{
+	struct smoothfs_inode_info *si;
+	struct inode *inode = NULL;
+
+	down_read(&sbi->inode_lock);
+	list_for_each_entry(si, &sbi->inode_list, sb_link) {
+		u8 tier;
+
+		if (!READ_ONCE(si->range_staged))
+			continue;
+		tier = READ_ONCE(si->range_staged_source_tier);
+		if (!smoothfs_write_staging_drain_tier_active(sbi, tier))
+			continue;
+		inode = igrab(&si->vfs_inode);
+		if (inode)
+			break;
+	}
+	up_read(&sbi->inode_lock);
+	return inode;
+}
+
+static void smoothfs_range_staged_ranges_clear(struct smoothfs_inode_info *si)
+{
+	while (!list_empty(&si->range_staged_ranges)) {
+		struct smoothfs_staged_range *range;
+
+		range = list_first_entry(&si->range_staged_ranges,
+					 struct smoothfs_staged_range, link);
+		list_del(&range->link);
+		kfree(range);
+	}
+}
+
+static int smoothfs_range_stage_unlink_path(struct path *path)
+{
+	struct dentry *parent;
+	int err;
+
+	if (!path->dentry)
+		return 0;
+
+	parent = dget_parent(path->dentry);
+	inode_lock(d_inode(parent));
+	err = vfs_unlink(&nop_mnt_idmap, d_inode(parent), path->dentry, NULL);
+	inode_unlock(d_inode(parent));
+	dput(parent);
+	if (err == -ENOENT)
+		err = 0;
+	return err;
+}
+
+static int smoothfs_write_full(struct file *file, char *buf, size_t len,
+			       loff_t *pos)
+{
+	size_t done = 0;
+
+	while (done < len) {
+		ssize_t n;
+
+		n = kernel_write(file, buf + done, len - done, pos);
+		if (n <= 0)
+			return n ? n : -EIO;
+		done += n;
+	}
+	return 0;
+}
+
+static int smoothfs_write_staging_drain_one_range(struct smoothfs_sb_info *sbi,
+						  struct inode *inode)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct smoothfs_staged_range *range;
+	struct file *stage = NULL;
+	struct file *dest = NULL;
+	struct path stage_path = {};
+	struct path lower_path = {};
+	char *buf = NULL;
+	u8 tier;
+	s64 drained = 0;
+	int err = 0;
+	bool cleared = false;
+
+	mutex_lock(&si->range_staging_lock);
+	if (!READ_ONCE(si->range_staged))
+		goto out_unlock;
+	tier = READ_ONCE(si->range_staged_source_tier);
+	if (!smoothfs_write_staging_drain_tier_active(sbi, tier))
+		goto out_unlock;
+	if (!si->range_staged_path.dentry || !si->lower_path.dentry) {
+		err = -ENOENT;
+		goto out_unlock;
+	}
+
+	stage_path = si->range_staged_path;
+	path_get(&stage_path);
+	lower_path = si->lower_path;
+	path_get(&lower_path);
+
+	stage = dentry_open(&stage_path, O_RDONLY, current_cred());
+	if (IS_ERR(stage)) {
+		err = PTR_ERR(stage);
+		stage = NULL;
+		goto out_unlock;
+	}
+	dest = dentry_open(&lower_path, O_RDWR, current_cred());
+	if (IS_ERR(dest)) {
+		err = PTR_ERR(dest);
+		dest = NULL;
+		goto out_unlock;
+	}
+	buf = kmalloc(SMOOTHFS_RANGE_READ_CHUNK, GFP_KERNEL);
+	if (!buf) {
+		err = -ENOMEM;
+		goto out_unlock;
+	}
+
+	list_for_each_entry(range, &si->range_staged_ranges, link) {
+		loff_t pos = range->start;
+
+		while (pos < range->end) {
+			size_t want = min_t(loff_t, SMOOTHFS_RANGE_READ_CHUNK,
+					    range->end - pos);
+			loff_t read_pos = pos;
+			loff_t write_pos = pos;
+			ssize_t n;
+
+			n = kernel_read(stage, buf, want, &read_pos);
+			if (n <= 0) {
+				err = n ? n : -EIO;
+				goto out_unlock;
+			}
+			err = smoothfs_write_full(dest, buf, n, &write_pos);
+			if (err)
+				goto out_unlock;
+			pos += n;
+			drained += n;
+		}
+	}
+	err = vfs_fsync(dest, 0);
+	if (err)
+		goto out_unlock;
+
+	si->range_staged_path.dentry = NULL;
+	si->range_staged_path.mnt = NULL;
+	smoothfs_range_staged_ranges_clear(si);
+	WRITE_ONCE(si->range_staged, false);
+	WRITE_ONCE(si->range_staged_source_tier, SMOOTHFS_MAX_TIERS);
+	cleared = true;
+
+out_unlock:
+	kfree(buf);
+	if (dest)
+		fput(dest);
+	if (stage)
+		fput(stage);
+	if (lower_path.dentry)
+		path_put(&lower_path);
+	mutex_unlock(&si->range_staging_lock);
+
+	if (cleared) {
+		int unlink_err;
+
+		unlink_err = smoothfs_range_stage_unlink_path(&stage_path);
+		path_put(&stage_path);
+		if (unlink_err)
+			return unlink_err;
+		atomic64_sub(drained, &sbi->staged_bytes);
+		atomic64_sub(drained, &sbi->range_staged_bytes);
+		atomic64_set(&sbi->last_drain_ns, ktime_get_real_ns());
+		smoothfs_write_staging_set_reason(sbi, "range-staged-drain");
+		if (!smoothfs_write_staging_has_work(sbi))
+			atomic64_set(&sbi->oldest_staged_write_ns, 0);
+	} else if (stage_path.dentry) {
+		path_put(&stage_path);
+	}
+	return err;
+}
+
+static int smoothfs_write_staging_drain_ranges(struct smoothfs_sb_info *sbi)
+{
+	struct inode *inode;
+	int err;
+
+	while ((inode = smoothfs_write_staging_find_drainable_range(sbi)) != NULL) {
+		err = smoothfs_write_staging_drain_one_range(sbi, inode);
 		iput(inode);
 		if (err)
 			return err;

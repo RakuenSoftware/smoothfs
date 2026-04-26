@@ -55,4 +55,16 @@ else
 	echo "  ok    direct read refused while range-staged"
 fi
 
+echo "=== drain staged range after source tier is externally active ==="
+echo 0x3 > "$SYSFS/write_staging_drain_active_tier_mask"
+spill_assert grep -qx 'abcXYZghij' "$SPILL_ROOT/slow/range.txt"
+spill_assert grep -qx 'abcXYZghij' "$SPILL_ROOT/server/range.txt"
+spill_assert test "$(cat "$SYSFS/range_staged_bytes")" = "0"
+spill_assert test "$(cat "$SYSFS/staged_bytes")" = "0"
+if [ "$(cat "$SYSFS/last_drain_at")" -le 0 ]; then
+	echo "  FAIL  last_drain_at=$(cat "$SYSFS/last_drain_at")"
+	spill_rc=1
+fi
+spill_assert test "$(cat "$SYSFS/last_drain_reason")" = "range-staged-drain"
+
 spill_finish "write_staging_range"
