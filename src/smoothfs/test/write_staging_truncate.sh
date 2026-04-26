@@ -40,6 +40,7 @@ spill_assert grep -qx 'cold-original' "$SPILL_ROOT/slow/cold.txt"
 
 staged_bytes=$(cat "$SYSFS/staged_bytes")
 staged_rehomes=$(cat "$SYSFS/staged_rehomes_total")
+staged_rehomes_pending=$(cat "$SYSFS/staged_rehomes_pending")
 drainable_rehomes=$(cat "$SYSFS/write_staging_drainable_rehomes")
 drain_pressure=$(cat "$SYSFS/write_staging_drain_pressure")
 drainable_mask=$(cat "$SYSFS/write_staging_drainable_tier_mask")
@@ -59,6 +60,7 @@ if [ "$staged_rehomes" -le 0 ]; then
 else
 	echo "  ok    staged_rehomes_total=$staged_rehomes"
 fi
+spill_assert test "$staged_rehomes_pending" = "1"
 spill_assert test "$drain_pressure" = "0"
 spill_assert test "$drainable_mask" = "0x0"
 spill_assert test "$drainable_rehomes" = "0"
@@ -66,6 +68,7 @@ echo 0x3 > "$SYSFS/write_staging_drain_active_tier_mask"
 spill_assert test ! -e "$SPILL_ROOT/slow/cold.txt"
 spill_assert test "$(cat "$SYSFS/write_staging_drainable_tier_mask")" = "0x0"
 spill_assert test "$(cat "$SYSFS/write_staging_drainable_rehomes")" = "0"
+spill_assert test "$(cat "$SYSFS/staged_rehomes_pending")" = "0"
 spill_assert test "$(cat "$SYSFS/staged_bytes")" = "0"
 spill_assert test "$(cat "$SYSFS/oldest_staged_write_at")" = "0"
 if [ "$(cat "$SYSFS/last_drain_at")" -le 0 ]; then
