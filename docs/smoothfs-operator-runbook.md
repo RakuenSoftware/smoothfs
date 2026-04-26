@@ -145,7 +145,9 @@ non-truncating writes and draining back to HDD are follow-up work.
 SmoothNAS can also write `metadata_active_tier_mask` to suppress metadata-only
 walks of standby tiers. Bit `0` is the fastest tier and is always forced on.
 For a two-tier pool, writing `0x1` keeps browse/readdir fallback on the fastest
-tier and skips tier 1 until SmoothNAS observes it externally active.
+tier and skips tier 1 until SmoothNAS observes it externally active. If a
+cold-tier dentry is already resolved, `stat` returns smoothfs's cached inode
+attributes instead of refreshing from an inactive lower tier.
 
 ### Destroying a pool
 

@@ -81,7 +81,7 @@ Other filesystems (fat / ntfs-3g / overlayfs / fuse / etc.) are not capability-g
 | Sysfs status/control | Supported | `/sys/fs/smoothfs/<uuid>/write_staging_supported`, `write_staging_enabled`, `write_staging_full_pct`, `staged_bytes`, `oldest_staged_write_at`, `last_drain_at`, `last_drain_reason` |
 | New writes to new files | Supported | New files land on the fastest tier until that tier reaches `write_staging_full_pct`, then spill to the next tier. |
 | Truncate-for-write rehome | Supported | With write staging enabled, an `O_TRUNC` write to a regular file placed on a colder tier is rehomed to the fastest tier before the colder lower file is opened, unless the fastest tier is at the full threshold. |
-| Metadata tier activity gate | Supported | SmoothNAS can write `metadata_active_tier_mask`; smoothfs skips inactive tiers for fallback lookup and union readdir, and reports skipped probes via `metadata_tier_skips`. |
+| Metadata tier activity gate | Supported | SmoothNAS can write `metadata_active_tier_mask`; smoothfs skips inactive tiers for fallback lookup and union readdir, serves cached `getattr` for already-resolved inactive-tier dentries, and reports skipped probes via `metadata_tier_skips`. |
 | Range-level staging | Pending | Non-truncating writes still use the current lower file. |
 | Drain back to HDD | Pending | Draining staged data must only run when SmoothNAS has observed the HDD active due to external activity. |
 
