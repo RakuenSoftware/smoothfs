@@ -89,6 +89,17 @@ static bool smoothfs_tier_near_enospc(struct smoothfs_sb_info *sbi, u8 tier)
 	return st.f_bavail * 100 <= st.f_blocks * SMOOTHFS_SPILL_HEADROOM_PCT;
 }
 
+static u8 smoothfs_next_create_tier(struct smoothfs_sb_info *sbi)
+{
+	u32 cursor;
+
+	if (sbi->ntiers <= 1)
+		return sbi->fastest_tier;
+
+	cursor = (u32)atomic_inc_return(&sbi->create_tier_cursor);
+	return (sbi->fastest_tier + (cursor % sbi->ntiers)) % sbi->ntiers;
+}
+
 static int smoothfs_ensure_oid_persisted(struct smoothfs_inode_info *si)
 {
 	u8 oid[SMOOTHFS_OID_LEN];
@@ -487,11 +498,15 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 	char *parent_rel_path = NULL;
 	u8 parent_tier;
 	u8 tier;
+	u8 start_tier;
+	u8 attempt;
+	bool fallback_placement = false;
 	int err = -ENOSPC;
 
 	parent_tier = smoothfs_tier_of(sbi, SMOOTHFS_I(dir)->lower_path.mnt);
 	if (parent_tier >= sbi->ntiers)
 		parent_tier = sbi->fastest_tier;
+	start_tier = smoothfs_next_create_tier(sbi);
 
 	rel_path = smoothfs_rel_path_from_dentry(dentry);
 	parent_rel_path = smoothfs_rel_path_from_dentry(dentry->d_parent);
@@ -500,20 +515,26 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		goto out;
 	}
 
-	for (tier = sbi->fastest_tier; tier < sbi->ntiers; tier++) {
-		bool materialize_parent = tier != parent_tier;
-		bool cold_placement = tier != sbi->fastest_tier;
+	for (attempt = 0; attempt < sbi->ntiers; attempt++) {
+		bool materialize_parent;
 
-		if (tier != sbi->ntiers - 1 && smoothfs_tier_near_enospc(sbi, tier))
+		tier = (start_tier + attempt) % sbi->ntiers;
+		materialize_parent = tier != parent_tier;
+
+		if (tier != sbi->ntiers - 1 && smoothfs_tier_near_enospc(sbi, tier)) {
+			fallback_placement = true;
 			continue;
+		}
 
 		if (materialize_parent) {
 			err = smoothfs_materialize_parent_on_tier(idmap, dir->i_sb,
 								  sbi, tier,
 								  parent_rel_path,
 								  &parent_path);
-			if (err == -ENOSPC)
+			if (err == -ENOSPC) {
+				fallback_placement = true;
 				continue;
+			}
 			if (err)
 				goto out;
 		} else {
@@ -536,8 +557,10 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		if (err) {
 			dput(lower);
 			path_put(&parent_path);
-			if (err == -ENOSPC)
+			if (err == -ENOSPC) {
+				fallback_placement = true;
 				continue;
+			}
 			goto out;
 		}
 
@@ -560,7 +583,7 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 			path_put(&parent_path);
 			goto out;
 		}
-		if (cold_placement)
+		if (fallback_placement && tier != start_tier)
 			smoothfs_spill_note_success(sbi, inode, parent_tier, tier);
 
 		smoothfs_set_lower_dentry(dentry, lower);
