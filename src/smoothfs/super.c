@@ -27,6 +27,8 @@
 
 #include "smoothfs.h"
 
+#define SMOOTHFS_DEFAULT_FULL_PCT 98
+
 extern struct kobject *smoothfs_sysfs_root;
 
 struct smoothfs_sysfs_pool {
@@ -142,6 +144,63 @@ static ssize_t staged_rehomes_total_show(struct kobject *kobj,
 
 	return sysfs_emit(buf, "%lld\n",
 		(long long)atomic64_read(&pool->sbi->staged_rehomes_total));
+}
+
+static bool smoothfs_write_staging_has_work(struct smoothfs_sb_info *sbi)
+{
+	return atomic64_read(&sbi->staged_bytes) > 0 ||
+	       atomic64_read(&sbi->staged_rehomes_total) > 0;
+}
+
+static bool smoothfs_write_staging_fastest_pressure(struct smoothfs_sb_info *sbi)
+{
+	struct kstatfs st;
+	u8 tier = sbi->fastest_tier;
+	u8 full_pct = READ_ONCE(sbi->write_staging_full_pct);
+	int err;
+
+	if (!smoothfs_write_staging_has_work(sbi))
+		return false;
+	if (tier >= sbi->ntiers)
+		return false;
+
+	err = vfs_statfs(&sbi->tiers[tier].lower_path, &st);
+	if (err || st.f_blocks == 0)
+		return false;
+
+	if (full_pct == 0 || full_pct > 100)
+		full_pct = SMOOTHFS_DEFAULT_FULL_PCT;
+	return (st.f_blocks - st.f_bavail) * 100 >= st.f_blocks * full_pct;
+}
+
+static ssize_t write_staging_drain_pressure_show(struct kobject *kobj,
+						 struct kobj_attribute *attr,
+						 char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%d\n",
+		smoothfs_write_staging_fastest_pressure(pool->sbi) ? 1 : 0);
+}
+
+static ssize_t write_staging_drainable_tier_mask_show(struct kobject *kobj,
+						      struct kobj_attribute *attr,
+						      char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+	struct smoothfs_sb_info *sbi = pool->sbi;
+	u32 mask = 0;
+	u32 valid_mask;
+
+	if (smoothfs_write_staging_has_work(sbi) &&
+	    sbi->ntiers > 0 && sbi->ntiers <= SMOOTHFS_MAX_TIERS) {
+		valid_mask = BIT(sbi->ntiers) - 1;
+		mask = READ_ONCE(sbi->write_staging_drain_active_tier_mask);
+		mask &= valid_mask;
+		mask &= ~BIT(sbi->fastest_tier);
+	}
+
+	return sysfs_emit(buf, "0x%x\n", mask);
 }
 
 static ssize_t oldest_staged_write_at_show(struct kobject *kobj,
@@ -268,6 +327,10 @@ static struct kobj_attribute staged_bytes_attr =
 	__ATTR_RO(staged_bytes);
 static struct kobj_attribute staged_rehomes_total_attr =
 	__ATTR_RO(staged_rehomes_total);
+static struct kobj_attribute write_staging_drain_pressure_attr =
+	__ATTR_RO(write_staging_drain_pressure);
+static struct kobj_attribute write_staging_drainable_tier_mask_attr =
+	__ATTR_RO(write_staging_drainable_tier_mask);
 static struct kobj_attribute oldest_staged_write_at_attr =
 	__ATTR_RO(oldest_staged_write_at);
 static struct kobj_attribute last_drain_at_attr =
@@ -290,6 +353,8 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&write_staging_full_pct_attr.attr,
 	&staged_bytes_attr.attr,
 	&staged_rehomes_total_attr.attr,
+	&write_staging_drain_pressure_attr.attr,
+	&write_staging_drainable_tier_mask_attr.attr,
 	&oldest_staged_write_at_attr.attr,
 	&last_drain_at_attr.attr,
 	&last_drain_reason_attr.attr,
