@@ -745,6 +745,21 @@ void smoothfs_write_staging_note_write(struct smoothfs_sb_info *sbi,
 	smoothfs_write_staging_set_reason(sbi, "staged-write");
 }
 
+void smoothfs_write_staging_note_range_write(struct smoothfs_sb_info *sbi,
+					     ssize_t bytes)
+{
+	u64 now;
+
+	if (bytes <= 0)
+		return;
+	now = ktime_get_real_ns();
+	atomic64_add(bytes, &sbi->staged_bytes);
+	atomic64_add(bytes, &sbi->range_staged_bytes);
+	atomic64_inc(&sbi->range_staged_writes);
+	atomic64_cmpxchg(&sbi->oldest_staged_write_ns, 0, now);
+	smoothfs_write_staging_set_reason(sbi, "range-staged-write");
+}
+
 const struct rhashtable_params smoothfs_oid_rht_params = {
 	.head_offset = offsetof(struct smoothfs_inode_info, hash_node),
 	.key_offset  = offsetof(struct smoothfs_inode_info, oid),
@@ -1041,6 +1056,12 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	si->mappings_quiesced = false;
 	si->write_staged = false;
 	si->write_staged_drain_tier = SMOOTHFS_MAX_TIERS;
+	si->range_staged = false;
+	si->range_staged_source_tier = SMOOTHFS_MAX_TIERS;
+	si->range_staged_path.mnt = NULL;
+	si->range_staged_path.dentry = NULL;
+	mutex_init(&si->range_staging_lock);
+	INIT_LIST_HEAD(&si->range_staged_ranges);
 	si->rel_path = NULL;
 	atomic_set(&si->replay_pinned, 0);
 	INIT_LIST_HEAD(&si->sb_link);
@@ -1079,6 +1100,19 @@ static void smoothfs_evict_inode(struct inode *inode)
 		path_put(&si->lower_path);
 		si->lower_path.dentry = NULL;
 		si->lower_path.mnt = NULL;
+	}
+	if (si->range_staged_path.dentry) {
+		path_put(&si->range_staged_path);
+		si->range_staged_path.dentry = NULL;
+		si->range_staged_path.mnt = NULL;
+	}
+	while (!list_empty(&si->range_staged_ranges)) {
+		struct smoothfs_staged_range *range;
+
+		range = list_first_entry(&si->range_staged_ranges,
+					 struct smoothfs_staged_range, link);
+		list_del(&range->link);
+		kfree(range);
 	}
 	kfree(si->rel_path);
 	si->rel_path = NULL;
