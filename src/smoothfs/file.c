@@ -23,8 +23,6 @@
 #include "smoothfs.h"
 
 #define SMOOTHFS_DEFAULT_FULL_PCT 98
-#define SMOOTHFS_RANGE_READ_CHUNK (256 * 1024)
-
 static bool smoothfs_tier_near_enospc(struct smoothfs_sb_info *sbi, u8 tier)
 {
 	struct kstatfs st;
