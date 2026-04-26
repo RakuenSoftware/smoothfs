@@ -165,9 +165,11 @@ attributes instead of refreshing from an inactive lower tier.
 The separate `write_staging_drain_active_tier_mask` is the data-drain gate.
 SmoothNAS should write a bit only after it has observed that tier's backing
 devices active due to external activity. The fastest-tier bit is always forced
-on by the kernel. Future staged-data drain work uses this mask rather than the
-metadata browse mask so directory visibility and data-drain permission can move
-independently.
+on by the kernel. When a colder tier becomes drain-active, smoothfs also drains
+truncate-rehome staging records for that tier by removing the stale original
+lower file and clearing the per-inode staged state. Future range-level staged
+data drain work uses this mask rather than the metadata browse mask so directory
+visibility and data-drain permission can move independently.
 
 ### Destroying a pool
 

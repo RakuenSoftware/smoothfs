@@ -63,8 +63,16 @@ spill_assert test "$drain_pressure" = "0"
 spill_assert test "$drainable_mask" = "0x0"
 spill_assert test "$drainable_rehomes" = "0"
 echo 0x3 > "$SYSFS/write_staging_drain_active_tier_mask"
-spill_assert test "$(cat "$SYSFS/write_staging_drainable_tier_mask")" = "0x2"
-spill_assert test "$(cat "$SYSFS/write_staging_drainable_rehomes")" = "1"
+spill_assert test ! -e "$SPILL_ROOT/slow/cold.txt"
+spill_assert test "$(cat "$SYSFS/write_staging_drainable_tier_mask")" = "0x0"
+spill_assert test "$(cat "$SYSFS/write_staging_drainable_rehomes")" = "0"
+spill_assert test "$(cat "$SYSFS/staged_bytes")" = "0"
+spill_assert test "$(cat "$SYSFS/oldest_staged_write_at")" = "0"
+if [ "$(cat "$SYSFS/last_drain_at")" -le 0 ]; then
+	echo "  FAIL  last_drain_at=$(cat "$SYSFS/last_drain_at")"
+	spill_rc=1
+fi
+spill_assert test "$(cat "$SYSFS/last_drain_reason")" = "truncate-rehome-drain"
 if [ "$oldest" -le 0 ]; then
 	echo "  FAIL  oldest_staged_write_at=$oldest"
 	spill_rc=1
