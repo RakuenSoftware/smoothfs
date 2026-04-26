@@ -83,6 +83,7 @@ struct smoothfs_tier {
 	struct path  lower_path;     /* root of the lower mount */
 	const char  *lower_id;       /* tier_targets.id from SQLite, kstrdup'd */
 	atomic_t     active_writes;
+	atomic_t     pending_writes;
 };
 
 /* Movement state, mirroring §0.3 of the Phase 0 contract. */
@@ -253,6 +254,7 @@ struct smoothfs_inode_info {
 	atomic_t        open_count;
 	atomic64_t      read_bytes;
 	atomic64_t      write_bytes;
+	atomic_t        write_reservation;
 	u64             last_access_ns;
 
 	/* Last drained snapshot — drain emits the delta. */
@@ -300,6 +302,19 @@ static __always_inline struct path *smoothfs_lower_path(struct inode *inode)
 static __always_inline struct dentry *smoothfs_lower_dentry(struct dentry *dentry)
 {
 	return dentry->d_fsdata;
+}
+
+static inline void smoothfs_clear_write_reservation(struct smoothfs_sb_info *sbi,
+						    struct smoothfs_inode_info *si)
+{
+	u8 tier;
+
+	if (!atomic_xchg(&si->write_reservation, 0))
+		return;
+
+	tier = READ_ONCE(si->current_tier);
+	if (tier < sbi->ntiers)
+		atomic_dec(&sbi->tiers[tier].pending_writes);
 }
 
 /*

@@ -50,7 +50,10 @@ static int smoothfs_open(struct inode *inode, struct file *file)
 
 static int smoothfs_release(struct inode *inode, struct file *file)
 {
-	atomic_dec(&SMOOTHFS_I(inode)->open_count);
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+
+	if (atomic_dec_and_test(&si->open_count))
+		smoothfs_clear_write_reservation(SMOOTHFS_SB(inode->i_sb), si);
 	return smoothfs_release_lower(file);
 }
 
@@ -110,6 +113,7 @@ again:
 	tier = smoothfs_tier_of(sbi, lower->f_path.mnt);
 	if (tier < sbi->ntiers)
 		atomic_inc(&sbi->tiers[tier].active_writes);
+	smoothfs_clear_write_reservation(sbi, si);
 	ret = smoothfs_compat_write_iter(lower, &iocb->ki_pos, from);
 	if (tier < sbi->ntiers)
 		atomic_dec(&sbi->tiers[tier].active_writes);

@@ -92,21 +92,34 @@ static bool smoothfs_tier_near_enospc(struct smoothfs_sb_info *sbi, u8 tier)
 static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 {
 	u8 tier;
+	u8 best_tier;
+	int best_load;
 
 	if (sbi->ntiers <= 1)
 		return sbi->fastest_tier;
 
-	if (atomic_read(&sbi->tiers[sbi->fastest_tier].active_writes) == 0)
-		return sbi->fastest_tier;
+	best_tier = sbi->fastest_tier;
+	best_load = atomic_read(&sbi->tiers[best_tier].active_writes) +
+		    atomic_read(&sbi->tiers[best_tier].pending_writes);
+	if (best_load == 0)
+		return best_tier;
 
 	for (tier = 0; tier < sbi->ntiers; tier++) {
-		if (tier == sbi->fastest_tier)
+		int load;
+
+		if (tier == best_tier)
 			continue;
-		if (atomic_read(&sbi->tiers[tier].active_writes) == 0)
+		load = atomic_read(&sbi->tiers[tier].active_writes) +
+		       atomic_read(&sbi->tiers[tier].pending_writes);
+		if (load == 0)
 			return tier;
+		if (load < best_load) {
+			best_load = load;
+			best_tier = tier;
+		}
 	}
 
-	return sbi->fastest_tier;
+	return best_tier;
 }
 
 static int smoothfs_ensure_oid_persisted(struct smoothfs_inode_info *si)
@@ -592,6 +605,8 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 			path_put(&parent_path);
 			goto out;
 		}
+		atomic_set(&SMOOTHFS_I(inode)->write_reservation, 1);
+		atomic_inc(&sbi->tiers[tier].pending_writes);
 		if (fallback_placement && tier != start_tier)
 			smoothfs_spill_note_success(sbi, inode, parent_tier, tier);
 
@@ -736,12 +751,17 @@ static int smoothfs_unlink(struct inode *dir, struct dentry *dentry)
 	struct dentry *removing;
 	struct inode *lower_dir = NULL;
 	struct smoothfs_inode_info *si = SMOOTHFS_I(d_inode(dentry));
+	struct inode *lower_inode;
 	int err;
 
 	removing = smoothfs_compat_start_removing(lower_parent, lower, &lower_dir);
 	if (IS_ERR(removing))
 		return PTR_ERR(removing);
-	err = vfs_unlink(&nop_mnt_idmap, lower_dir, removing, NULL);
+	lower_inode = d_inode(removing);
+	if (lower_inode && lower_inode->i_nlink == 0)
+		err = 0;
+	else
+		err = vfs_unlink(&nop_mnt_idmap, lower_dir, removing, NULL);
 	smoothfs_compat_end_removing(removing, lower_dir);
 
 	if (!err) {

@@ -431,6 +431,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	atomic_set(&si->open_count, 0);
 	atomic64_set(&si->read_bytes, 0);
 	atomic64_set(&si->write_bytes, 0);
+	atomic_set(&si->write_reservation, 0);
 	si->last_access_ns = 0;
 	init_waitqueue_head(&si->cutover_wq);
 	si->mappings_quiesced = false;
@@ -454,6 +455,7 @@ static void smoothfs_evict_inode(struct inode *inode)
 	clear_inode(inode);
 
 	if (sbi) {
+		smoothfs_clear_write_reservation(sbi, si);
 		smoothfs_oid_map_remove(sbi, si);
 		if (si->lower_path.dentry && si->lower_path.mnt) {
 			u8 tier_idx = smoothfs_tier_of(sbi, si->lower_path.mnt);
