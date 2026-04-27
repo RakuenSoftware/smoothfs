@@ -104,6 +104,9 @@ active movement model is separate work gated on production soak.
 - Prepared LUN worker admission now requires an explicit plan `RelPath` when
   DB `rel_path` is already known, preventing direct-worker callers from
   bypassing DB path consistency checks with an empty rel_path.
+- Prepared LUN worker admission now requires explicit non-placeholder
+  `RelPath` for all `RePinLUN` plans before `MOVE_PLAN`, so direct worker
+  callers cannot fall back to kernel inspect rel_path.
 
 ## Gating
 
