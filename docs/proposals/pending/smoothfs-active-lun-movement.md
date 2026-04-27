@@ -81,6 +81,9 @@ active movement model is separate work gated on production soak.
 - Worker-side prepared LUN moves now require the DB row to still record a
   placed `pin_lun` object on the plan source tier before `MOVE_PLAN`, closing
   the direct-worker bypass around the quiesced LUN plan builder.
+- Prepared LUN worker admission now also checks the kernel source tier rank
+  against the plan source rank before `MOVE_PLAN`, so stale placement is
+  rejected even for direct worker callers.
 
 ## Gating
 

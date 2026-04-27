@@ -117,6 +117,10 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		if err := w.requireLUNMoveRecord(ctx, p, oid); err != nil {
 			return err
 		}
+		if ins.CurrentTier != p.SourceTierRank {
+			return fmt.Errorf("%w: kernel source tier rank %d plan source tier rank %d",
+				ErrLUNPlacementStale, ins.CurrentTier, p.SourceTierRank)
+		}
 	}
 	if p.RelPath == "" || p.RelPath == oid {
 		if ins.RelPath == "" {
