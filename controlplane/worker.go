@@ -118,13 +118,13 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	dstPath := filepath.Join(p.DestLowerDir, p.RelPath)
 
 	if err := w.client.MovePlan(p.PoolUUID, p.ObjectID, p.DestTierRank, p.TransactionSeq); err != nil {
-		return fmt.Errorf("move_plan: %w", err)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("move_plan: %w", err))
 	}
 	w.logTransition(ctx, p, "", string(StatePlanAccepted), "")
 	w.persistObject(ctx, oid, p, StatePlanAccepted)
 
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-		return w.abort(ctx, p, fmt.Errorf("mkdir dest parent: %w", err))
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("mkdir dest parent: %w", err))
 	}
 	w.logTransition(ctx, p, string(StatePlanAccepted), string(StateDestinationReserved), "")
 	w.persistObject(ctx, oid, p, StateDestinationReserved)
@@ -132,13 +132,13 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	srcStatBefore, err := os.Stat(srcPath)
 	if err != nil {
 		os.Remove(dstPath)
-		return w.abort(ctx, p, fmt.Errorf("pre-copy stat: %w", err))
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("pre-copy stat: %w", err))
 	}
 
 	srcSum, err := w.copyWithChecksum(srcPath, dstPath)
 	if err != nil {
 		os.Remove(dstPath)
-		return w.abort(ctx, p, fmt.Errorf("copy: %w", err))
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("copy: %w", err))
 	}
 	w.logTransition(ctx, p, string(StateDestinationReserved), string(StateCopyInProgress), "")
 	w.persistObject(ctx, oid, p, StateCopyInProgress)
@@ -146,29 +146,29 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	dstSum, err := fileSHA256(dstPath)
 	if err != nil {
 		os.Remove(dstPath)
-		return w.abort(ctx, p, fmt.Errorf("verify dst: %w", err))
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("verify dst: %w", err))
 	}
 	if dstSum != srcSum {
 		os.Remove(dstPath)
-		return w.abort(ctx, p, errors.New("checksum mismatch"))
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errors.New("checksum mismatch"))
 	}
 
 	srcStatAfter, err := os.Stat(srcPath)
 	if err != nil {
 		os.Remove(dstPath)
-		return w.abort(ctx, p, fmt.Errorf("post-copy stat: %w", err))
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("post-copy stat: %w", err))
 	}
 	if !srcStatAfter.ModTime().Equal(srcStatBefore.ModTime()) ||
 		srcStatAfter.Size() != srcStatBefore.Size() {
 		os.Remove(dstPath)
-		return w.abort(ctx, p, errSourceRaced)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errSourceRaced)
 	}
 	w.logTransition(ctx, p, string(StateCopyInProgress), string(StateCopyVerified), "")
 	w.persistObject(ctx, oid, p, StateCopyVerified)
 
 	if err := w.client.MoveCutover(p.PoolUUID, p.ObjectID, p.TransactionSeq); err != nil {
 		os.Remove(dstPath)
-		return w.abort(ctx, p, fmt.Errorf("move_cutover: %w", err))
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("move_cutover: %w", err))
 	}
 	w.logTransition(ctx, p, string(StateCopyVerified), string(StateSwitched), "")
 	w.persistObject(ctx, oid, p, StateSwitched)
@@ -208,6 +208,29 @@ func (w *Worker) abort(ctx context.Context, p MovementPlan, cause error) error {
 		  WHERE object_id = ?`,
 		cause.Error(), oid)
 	return cause
+}
+
+func (w *Worker) rollbackLUNBeforeSwitch(ctx context.Context, p MovementPlan, srcPath, oid string, cause error) error {
+	if !p.RePinLUN {
+		return w.abort(ctx, p, cause)
+	}
+	var errs []error
+	if err := w.setLUNPin(srcPath); err != nil {
+		errs = append(errs, fmt.Errorf("repin source lun: %w", err))
+	} else {
+		w.persistLUNPin(ctx, oid)
+	}
+	if p.LUNTargetID != "" {
+		if w.resumeLUNTarget == nil {
+			errs = append(errs, fmt.Errorf("%w: target %s", ErrLUNResumeRequired, p.LUNTargetID))
+		} else if err := w.resumeLUNTarget(ctx, p.LUNTargetID); err != nil {
+			errs = append(errs, fmt.Errorf("resume lun target %s: %w", p.LUNTargetID, err))
+		}
+	}
+	if len(errs) > 0 {
+		return w.abort(ctx, p, errors.Join(append([]error{cause}, errs...)...))
+	}
+	return w.abort(ctx, p, cause)
 }
 
 func (w *Worker) failAfterSwitch(ctx context.Context, p MovementPlan, cause error) error {
