@@ -124,6 +124,10 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return fmt.Errorf("%w: kernel source tier rank %d plan source tier rank %d",
 				ErrLUNPlacementStale, ins.CurrentTier, p.SourceTierRank)
 		}
+		if ins.RelPath != "" && p.RelPath != "" && ins.RelPath != p.RelPath {
+			return fmt.Errorf("%w: kernel source rel_path %q plan rel_path %q",
+				ErrLUNPlacementStale, ins.RelPath, p.RelPath)
+		}
 	}
 	if p.RelPath == "" || p.RelPath == oid {
 		if ins.RelPath == "" {
