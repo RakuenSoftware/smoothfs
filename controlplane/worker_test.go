@@ -298,6 +298,46 @@ func TestWorkerRePinPlanRejectsStaleKernelSourceRelPath(t *testing.T) {
 	}
 }
 
+func TestWorkerRePinPlanRejectsStaleDBRelPath(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, _ := seedPool(t, sqlDB)
+	var oid [OIDLen]byte
+	oid[0] = 0x5e
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, "luns/db-path.img")
+
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			CurrentTier: 0,
+			PinState:    PinNone,
+			RelPath:     "luns/db-path.img",
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0,
+		SourceTierRank: 0,
+		SourceLowerDir: t.TempDir(),
+		DestTierID:     "slow",
+		DestTierRank:   1,
+		DestLowerDir:   t.TempDir(),
+		RelPath:        "luns/plan-path.img",
+		TransactionSeq: 21,
+		RePinLUN:       true,
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if !errors.Is(err, ErrLUNPlacementStale) {
+		t.Fatalf("Execute error = %v, want ErrLUNPlacementStale", err)
+	}
+	if client.movePlanned {
+		t.Fatal("worker called MovePlan with stale DB rel_path")
+	}
+}
+
 func TestWorkerRePinPlanRejectsStaleKernelSourcePath(t *testing.T) {
 	sqlDB := testDB(t)
 	nsID, tier0, _ := seedPool(t, sqlDB)
