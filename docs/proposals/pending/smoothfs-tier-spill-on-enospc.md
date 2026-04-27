@@ -293,7 +293,7 @@ emitted on spill use existing states:
 - **On unlink/rmdir of a spilled object:** one
   `SMOOTHFS_MS_CLEANUP_COMPLETE` as today.
 
-Placement replay (§0.4 of `smoothfs-phase-0-contract.md`) continues
+Placement replay (§0.4 of `../completed/smoothfs-phase-0-contract.md`) continues
 to be authoritative: at mount, any orphan scanned off a lower
 filesystem is associated with its oid-xattr and creates an in-memory
 replay record. Spill creates do not change the set of replay
@@ -362,7 +362,7 @@ Five crash points to reason about:
    Orphan file on tier `t` with no oid. `smoothfs_placement_replay`'s
    tree scan encounters it, sees no oid xattr, synthesises one, and
    creates a replay record. This is the same recovery path used for
-   legacy pre-smoothfs files in `smoothfs-phase-0-contract.md`
+   legacy pre-smoothfs files in `../completed/smoothfs-phase-0-contract.md`
    §0.4.4. No special case needed.
 2. **Crash between oid set and placement record write.** Orphan
    file with a valid oid. Replay tree scan finds it and emits the
