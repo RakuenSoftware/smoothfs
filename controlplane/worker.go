@@ -34,11 +34,13 @@ type MovementPlan struct {
 	DestLowerDir   string
 	RelPath        string
 	TransactionSeq uint64
+	RePinLUN       bool
 }
 
 type Worker struct {
-	db     *sql.DB
-	client movementClient
+	db        *sql.DB
+	client    movementClient
+	setLUNPin func(string) error
 }
 
 type movementClient interface {
@@ -48,7 +50,7 @@ type movementClient interface {
 }
 
 func NewWorker(db *sql.DB, client movementClient) *Worker {
-	return &Worker{db: db, client: client}
+	return &Worker{db: db, client: client, setLUNPin: setLUNPin}
 }
 
 // Execute runs one movement plan. Exported so the legacy in-tree
@@ -152,6 +154,12 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	}
 	w.logTransition(ctx, p, string(StateCopyVerified), string(StateSwitched), "")
 	w.persistObject(ctx, oid, p, StateSwitched)
+	if p.RePinLUN {
+		if err := w.setLUNPin(dstPath); err != nil {
+			return w.failAfterSwitch(ctx, p, fmt.Errorf("repin lun: %w", err))
+		}
+		w.persistLUNPin(ctx, oid)
+	}
 
 	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
 		w.logTransition(ctx, p, string(StateSwitched), string(StateCleanupInProgress), err.Error())
@@ -173,6 +181,22 @@ func (w *Worker) abort(ctx context.Context, p MovementPlan, cause error) error {
 		        updated_at = datetime('now')
 		  WHERE object_id = ?`,
 		cause.Error(), oid)
+	return cause
+}
+
+func (w *Worker) failAfterSwitch(ctx context.Context, p MovementPlan, cause error) error {
+	w.logTransition(ctx, p, string(StateSwitched), string(StateFailed), cause.Error())
+	oid := hex.EncodeToString(p.ObjectID[:])
+	_, _ = w.db.ExecContext(ctx,
+		`UPDATE smoothfs_objects
+		    SET current_tier_id = ?,
+		        intended_tier_id = NULL,
+		        movement_state = 'failed',
+		        failure_reason = ?,
+		        last_movement_at = datetime('now'),
+		        updated_at = datetime('now')
+		  WHERE object_id = ?`,
+		p.DestTierID, cause.Error(), oid)
 	return cause
 }
 
@@ -202,6 +226,15 @@ func (w *Worker) persistObject(ctx context.Context, oid string, p MovementPlan, 
 		oid, p.NamespaceID, p.SourceTierID, p.DestTierID, string(state), p.TransactionSeq)
 }
 
+func (w *Worker) persistLUNPin(ctx context.Context, oid string) {
+	_, _ = w.db.ExecContext(ctx,
+		`UPDATE smoothfs_objects
+		    SET pin_state = 'pin_lun',
+		        updated_at = datetime('now')
+		  WHERE object_id = ?`,
+		oid)
+}
+
 func (w *Worker) finalize(ctx context.Context, oid string, p MovementPlan) {
 	_, _ = w.db.ExecContext(ctx,
 		`UPDATE smoothfs_objects
@@ -210,7 +243,7 @@ func (w *Worker) finalize(ctx context.Context, oid string, p MovementPlan) {
 		        movement_state    = 'placed',
 		        last_movement_at  = datetime('now'),
 		        last_committed_cutover_gen = last_committed_cutover_gen + 1,
-		        failure_reason    = NULL,
+		        failure_reason    = '',
 		        updated_at        = datetime('now')
 		  WHERE object_id = ?`,
 		p.DestTierID, oid)
