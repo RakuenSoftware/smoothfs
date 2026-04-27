@@ -119,6 +119,33 @@ Heft quiesce op + heractiveert heat drain.
 tierd-cli smoothfs reconcile --pool <uuid> --reason "handmatige controle klaar"
 ```
 
+### Active-LUN movement (Phase 8)
+
+De normale movement overslaat `PIN_LUN` objecten. Active-LUN movement is een
+opt-in, target-gequiesce flow:
+
+1. Quiesce/stop de iSCSI target zodat actieve I/O afloopt.
+2. Zorg dat `trusted.smoothfs.lun` door SmoothNAS uit de backing file is gehaald
+   vóórdat er een movement plan wordt gemaakt.
+3. Vraag via de SmoothNAS controlelaag een prepared movement aan voor dat backing
+   object (de CLI/UI voor deze aanvraag zit buiten deze repo).
+4. tierd kopieert en switched, plaatst daarna opnieuw `trusted.smoothfs.lun` op de
+   destination en hervat de target pas als de destination pin controle slaagt.
+
+Controleer in de standaard levenscyclus tooling:
+
+- `smoothfs_movement_log` bevat `failed` wanneer destination verificatie of resume
+  faalt.
+- `pin_state='pin_lun'` in `smoothfs_objects` toont pin-status na recovery:
+    ```bash
+    sqlite3 /var/lib/tierd/tierd.db \
+      "SELECT object_id, pin_state, movement_state FROM smoothfs_objects WHERE pin_state='pin_lun' ORDER BY updated_at DESC LIMIT 20;"
+    ```
+- `getfattr -n trusted.smoothfs.lun <destination-pad>` moet `0x01` tonen.
+
+Als tierd tijdens een move opnieuw start, reconcilieert recovery de movement-states
+en past PINs indien mogelijk opnieuw toe vóór het hervatten van normale movement.
+
 ### Movement log
 
 Storage → smoothfs Pools → Movement log (onder pool lijst). Toont de laatste 100 state

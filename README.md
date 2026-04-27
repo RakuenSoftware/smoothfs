@@ -1,60 +1,73 @@
 # smoothfs
 
-`smoothfs` is the standalone repository for RakuenSoftware's stacked
-tiering filesystem and its userspace control-plane contract.
+smoothfs is the storage engine behind SmoothNAS tiering. It gives SmoothNAS one
+place to keep fast and slow data together while moving files between tiers
+automatically.
 
-This repo owns:
+What people use it for:
 
-- the Go module `github.com/RakuenSoftware/smoothfs`
-- the `controlplane` package used by appliance consumers such as
-  `RakuenSoftware/smoothnas`
-- the kernel module and DKMS packaging under [`src/smoothfs`](src/smoothfs)
-- the Samba VFS module under [`src/smoothfs/samba-vfs`](src/smoothfs/samba-vfs)
-- smoothfs-owned operator and design docs under [`docs`](docs)
+- keep hot data on SSD/NVMe and cold data on slower media
+- preserve familiar NFS/SMB/iSCSI behavior while storage placement is optimized
+- reduce cost without changing NAS workflows
+- provide safer movement with explicit state transitions and recovery paths
 
-## Layout
+For SmoothNAS operators this means:
 
-- [`client.go`](client.go), [`events.go`](events.go), [`uapi.go`](uapi.go),
-  [`pools.go`](pools.go): low-coupling userspace contract
-- [`controlplane`](controlplane): planner, worker, recovery, service wiring
-- [`src/smoothfs`](src/smoothfs): out-of-tree kernel module, DKMS package,
-  Samba VFS module, shell harnesses
-- [`docs`](docs): support matrix, operator runbook, historical phase docs
+- better performance where it matters
+- simpler storage growth on mixed hardware
+- predictable operations because active-LUN movement and recovery flows are explicit
 
-Documentation is maintained in English with Dutch translation files available:
+## Why it is useful
 
-- `docs/smoothfs-support-matrix.md` / [`docs/smoothfs-support-matrix.nd.md`](docs/smoothfs-support-matrix.nd.md)
-- `docs/smoothfs-operator-runbook.md` / [`docs/smoothfs-operator-runbook.nd.md`](docs/smoothfs-operator-runbook.nd.md)
+- **One namespace, multiple media classes**: one mount path and one view for users.
+- **Policy driven**: heat + policy determines movement while preserving POSIX
+  correctness.
+- **Production-aware controls**: quiesce/reconcile, movement logs, and explicit
+  active-LUN workflow prevent surprise behavior.
+- **Integrated package path**: kernel module, userspace daemon, and support
+  scripts are delivered in Debian artifacts for SmoothNAS deployments.
 
-## Consumer contract
+## For SmoothNAS
 
-Appliance repos should import published smoothfs packages instead of
-copying implementations in-tree.
+SmoothNAS should consume this repository as an external component instead of
+duplicating its implementation.
 
-Primary consumer paths in `RakuenSoftware/smoothnas`:
+- kernel filesystem + movement engine: `src/smoothfs`
+- userspace control-plane: `controlplane`
+- API contracts: [`client.go`](client.go), [`events.go`](events.go),
+  [`uapi.go`](uapi.go), [`pools.go`](pools.go)
+- operator docs and phased delivery notes: [`docs`](docs)
 
-- `github.com/RakuenSoftware/smoothfs`
-- `github.com/RakuenSoftware/smoothfs/controlplane`
+## Documentation
 
-SmoothNAS-specific end-to-end coverage stays in the appliance repo and
-imports this module directly.
+English:
+
+- [support matrix](docs/smoothfs-support-matrix.md)
+- [operator runbook](docs/smoothfs-operator-runbook.md)
+- [architecture](docs/architecture.md)
+- [deep technical readme in `src`](src/README.md)
+
+Dutch:
+
+- [ondersteuningsmatrix](docs/smoothfs-support-matrix.nd.md)
+- [runbook](docs/smoothfs-operator-runbook.nd.md)
+- [architectuur](docs/architecture.nd.md)
+- [technische uitleg in `src`](src/README.nd.md)
 
 ## Verification
-
-Go packages:
 
 ```bash
 go test ./...
 ```
 
-Kernel / packaging / Samba harnesses live under [`src/smoothfs/test`](src/smoothfs/test)
-and are intended to run on a prepared Linux host with the required
-kernel, filesystem, Samba, and iSCSI prerequisites.
+Runtime behavior and kernel packaging tests are in [`src/smoothfs/test`](src/smoothfs/test)
+and are intended for prepared Linux hosts with matching kernel/filesystem/Samba/iSCSI
+prerequisites.
 
-## Release notes
+## Repo layout
 
-- Debian packaging metadata lives under [`src/smoothfs/debian`](src/smoothfs/debian)
-  and [`src/smoothfs/samba-vfs/debian`](src/smoothfs/samba-vfs/debian).
-- The appliance integration docs remain in `RakuenSoftware/smoothnas`;
-  this repo owns the smoothfs implementation and implementation-specific
-  support material.
+- `src/smoothfs`: kernel module, DKMS, Samba VFS integration, and test harnesses
+- `controlplane`: planner/worker/recovery service logic
+- `docs`: operator and design documentation
+- `tierd` directory in SmoothNAS consumes these contracts
+

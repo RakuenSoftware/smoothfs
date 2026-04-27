@@ -130,7 +130,7 @@ active movement model is separate work gated on production soak.
 
 ## Gating
 
-Phase 8 does not start until Phase 6 has seen production time on at least one
-real pool and no LUN-adjacent correctness bugs have surfaced. Until then,
-active-LUN movement remains unsupported in v1, as documented in
+Phase 8 is implemented as an operator-gated movement flow. It is rollout-gated
+outside controlled production soak and remains subject to the same safety checks
+before re-enabling active targets as documented in
 `docs/smoothfs-support-matrix.md`.
