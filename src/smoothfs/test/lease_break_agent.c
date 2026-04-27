@@ -15,9 +15,9 @@
  *      need --force)
  *   4. fires fsnotify(FS_MODIFY) on the smoothfs inode
  *
- * This agent is what the Phase 5.3 future-proposal's Samba VFS module
- * (see docs/proposals/pending/smoothfs-samba-vfs-module.md) will
- * replace: the VFS module plugs the same logic into SMB_VFS_SET_LEASE
+ * This agent is the Phase 5.3 reference that the completed Samba VFS
+ * module (see docs/proposals/completed/smoothfs-samba-vfs-module.md)
+ * replaces: the VFS module plugs the same logic into SMB_VFS_SET_LEASE
  * and the share-mode break path so the CIFS client sees a clean
  * oplock/lease break before the new tier's bytes become visible.
  *
