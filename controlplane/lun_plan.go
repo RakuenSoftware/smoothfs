@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/google/uuid"
 )
@@ -107,6 +108,9 @@ func BuildQuiescedLUNMovementPlan(
 	}
 	dest, ok := tiersByID[destTierID]
 	if !ok || dest.TargetID == cur.TargetID {
+		return MovementPlan{}, ErrDestinationTierBad
+	}
+	if filepath.Clean(dest.LowerDir) == filepath.Clean(cur.LowerDir) {
 		return MovementPlan{}, ErrDestinationTierBad
 	}
 
