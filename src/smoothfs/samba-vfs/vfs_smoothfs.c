@@ -3,7 +3,7 @@
  *
  * Transparent passthrough with smoothfs-aware overrides — this is the
  * Phase 5.8+ Samba integration scoped in
- * docs/proposals/pending/smoothfs-samba-vfs-module.md. Loading this
+ * docs/proposals/completed/smoothfs-samba-vfs-module.md. Loading this
  * module must not change any observable behaviour of a share over a
  * non-smoothfs lower; every smbtorture MUST_PASS test that passes
  * today without the module must still pass with
