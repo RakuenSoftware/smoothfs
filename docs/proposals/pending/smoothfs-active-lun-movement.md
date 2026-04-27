@@ -69,6 +69,9 @@ active movement model is separate work gated on production soak.
   resuming the target before reporting the movement failure.
 - The rollback path now keeps the target stopped if source re-pin fails,
   preventing a live LIO target from reopening an unpinned backing file.
+- Quiesced LUN plan building now rejects stale placement when kernel
+  inspection reports a current tier rank that does not match the DB source
+  tier.
 
 ## Gating
 

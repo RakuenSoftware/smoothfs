@@ -13,6 +13,7 @@ import (
 var (
 	ErrLUNRecordRequired  = errors.New("tracked LUN record required for active LUN movement")
 	ErrDestinationTierBad = errors.New("destination tier is not valid for active LUN movement")
+	ErrLUNPlacementStale  = errors.New("quiesced LUN placement is stale")
 )
 
 // ObjectInspector is the narrow kernel query surface needed to prove a LUN
@@ -99,6 +100,10 @@ func BuildQuiescedLUNMovementPlan(
 	cur, ok := tiersByID[row.currentTier]
 	if !ok {
 		return MovementPlan{}, fmt.Errorf("current tier %q is not registered for pool %s", row.currentTier, pool.UUID)
+	}
+	if ins.CurrentTier != cur.Rank {
+		return MovementPlan{}, fmt.Errorf("%w: kernel tier rank %d db tier rank %d",
+			ErrLUNPlacementStale, ins.CurrentTier, cur.Rank)
 	}
 	dest, ok := tiersByID[destTierID]
 	if !ok || dest.TargetID == cur.TargetID {

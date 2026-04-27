@@ -162,6 +162,46 @@ func TestBuildQuiescedLUNMovementPlanRequiresLUNRecord(t *testing.T) {
 	}
 }
 
+func TestBuildQuiescedLUNMovementPlanRejectsStaleKernelTier(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
+	pool := &Pool{
+		UUID:        uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		Name:        "pool-a",
+		NamespaceID: nsID,
+		Tiers: []TierInfo{
+			{Rank: 0, TargetID: tier0ID, LowerDir: t.TempDir()},
+			{Rank: 1, TargetID: tier1ID, LowerDir: t.TempDir()},
+		},
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x79
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			('79000000000000000000000000000000', ?, ?, 'placed', 'pin_lun', 'luns/db.img')`,
+		nsID, tier0ID)
+	if err != nil {
+		t.Fatalf("insert lun object: %v", err)
+	}
+
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			CurrentTier: 1,
+			PinState:    PinNone,
+			RelPath:     "luns/db.img",
+		},
+	}
+
+	_, err = BuildQuiescedLUNMovementPlan(
+		context.Background(), sqlDB, client, pool, oid, tier1ID)
+	if !errors.Is(err, ErrLUNPlacementStale) {
+		t.Fatalf("error = %v, want ErrLUNPlacementStale", err)
+	}
+}
+
 func TestPrepareQuiescedLUNMovementPlanClearsPinAndBuildsPlan(t *testing.T) {
 	sqlDB := testDB(t)
 	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
