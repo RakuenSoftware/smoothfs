@@ -276,11 +276,11 @@ func (w *Worker) rollbackLUNBeforeSwitch(ctx context.Context, p MovementPlan, sr
 }
 
 func (w *Worker) requireLUNMoveRecord(ctx context.Context, p MovementPlan, oid string) error {
-	var namespaceID, currentTierID, pinState, movementState string
+	var namespaceID, currentTierID, pinState, movementState, relPath string
 	err := w.db.QueryRowContext(ctx, `
-		SELECT namespace_id, current_tier_id, pin_state, movement_state
+		SELECT namespace_id, current_tier_id, pin_state, movement_state, rel_path
 		  FROM smoothfs_objects
-		 WHERE object_id = ?`, oid).Scan(&namespaceID, &currentTierID, &pinState, &movementState)
+		 WHERE object_id = ?`, oid).Scan(&namespaceID, &currentTierID, &pinState, &movementState, &relPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: object %s", ErrLUNRecordRequired, oid)
 	}
@@ -300,6 +300,10 @@ func (w *Worker) requireLUNMoveRecord(ctx context.Context, p MovementPlan, oid s
 	if currentTierID != p.SourceTierID {
 		return fmt.Errorf("%w: db source tier %q plan source tier %q",
 			ErrLUNPlacementStale, currentTierID, p.SourceTierID)
+	}
+	if relPath != "" && p.RelPath != "" && relPath != p.RelPath {
+		return fmt.Errorf("%w: db rel_path %q plan rel_path %q",
+			ErrLUNPlacementStale, relPath, p.RelPath)
 	}
 	return nil
 }

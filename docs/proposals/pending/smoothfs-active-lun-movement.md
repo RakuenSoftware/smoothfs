@@ -98,6 +98,9 @@ active movement model is separate work gated on production soak.
 - Prepared LUN worker admission now rejects no-op destination tiers before
   `MOVE_PLAN`, so direct worker callers cannot bypass the builder's
   destination-tier validation.
+- Prepared LUN worker admission now checks DB `rel_path` against non-empty
+  plan `RelPath` before `MOVE_PLAN`, rejecting stale direct-worker plan paths
+  even when kernel inspect omits a path hint.
 
 ## Gating
 
