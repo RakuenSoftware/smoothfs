@@ -301,9 +301,14 @@ func (w *Worker) requireLUNMoveRecord(ctx context.Context, p MovementPlan, oid s
 		return fmt.Errorf("%w: db source tier %q plan source tier %q",
 			ErrLUNPlacementStale, currentTierID, p.SourceTierID)
 	}
-	if relPath != "" && p.RelPath != "" && relPath != p.RelPath {
-		return fmt.Errorf("%w: db rel_path %q plan rel_path %q",
-			ErrLUNPlacementStale, relPath, p.RelPath)
+	if relPath != "" {
+		if p.RelPath == "" || p.RelPath == oid {
+			return fmt.Errorf("%w: object %s requires explicit rel_path", ErrLUNPlacementStale, oid)
+		}
+		if relPath != p.RelPath {
+			return fmt.Errorf("%w: db rel_path %q plan rel_path %q",
+				ErrLUNPlacementStale, relPath, p.RelPath)
+		}
 	}
 	return nil
 }
