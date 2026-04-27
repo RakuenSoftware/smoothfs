@@ -16,6 +16,10 @@ import (
 
 var errSourceRaced = errors.New("source mtime changed during copy; cutover aborted")
 
+// ErrLUNQuiesceRequired marks the Phase 8 safety gate: a LUN backing file
+// must be quiesced and unpinned before the generic movement worker may plan it.
+var ErrLUNQuiesceRequired = errors.New("lun backing file requires target quiesce before movement")
+
 // MovementPlan is one queued promote/demote, dispatched by the planner
 // and consumed by a Worker.
 type MovementPlan struct {
@@ -34,10 +38,16 @@ type MovementPlan struct {
 
 type Worker struct {
 	db     *sql.DB
-	client *Client
+	client movementClient
 }
 
-func NewWorker(db *sql.DB, client *Client) *Worker {
+type movementClient interface {
+	Inspect(poolUUID uuid.UUID, oid [OIDLen]byte) (*InspectResult, error)
+	MovePlan(poolUUID uuid.UUID, oid [OIDLen]byte, destTier uint8, seq uint64) error
+	MoveCutover(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error
+}
+
+func NewWorker(db *sql.DB, client movementClient) *Worker {
 	return &Worker{db: db, client: client}
 }
 
@@ -65,11 +75,17 @@ func (w *Worker) Run(ctx context.Context, plans <-chan MovementPlan) {
 
 func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	oid := hex.EncodeToString(p.ObjectID[:])
+	ins, err := w.client.Inspect(p.PoolUUID, p.ObjectID)
+	if err != nil {
+		return fmt.Errorf("inspect before movement: %w", err)
+	}
+	if ins == nil {
+		return fmt.Errorf("inspect before movement returned nil for object %s", oid)
+	}
+	if ins.PinState == PinLUN {
+		return fmt.Errorf("%w: object %s", ErrLUNQuiesceRequired, oid)
+	}
 	if p.RelPath == "" || p.RelPath == oid {
-		ins, err := w.client.Inspect(p.PoolUUID, p.ObjectID)
-		if err != nil {
-			return fmt.Errorf("inspect for rel_path: %w", err)
-		}
 		if ins.RelPath == "" {
 			return fmt.Errorf("kernel returned empty rel_path for object %s", oid)
 		}

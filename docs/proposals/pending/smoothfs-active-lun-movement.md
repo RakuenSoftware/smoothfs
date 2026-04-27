@@ -1,6 +1,6 @@
 # Proposal: smoothfs — Active-LUN Movement Model
 
-**Status:** Deferred
+**Status:** In progress
 **Parent:** [`smoothfs-stacked-tiering.md`](../completed/smoothfs-stacked-tiering.md)
 
 ---
@@ -30,6 +30,13 @@ active movement model is separate work gated on production soak.
 - **Correctness tests:** hold an open SCSI session, quiesce, move the backing
   file, reopen, and verify byte-identical reads. Add a fault-injection run
   that kills tierd mid-move and verifies recovery.
+
+## Progress
+
+- Worker-side movement admission refuses `PIN_LUN` objects before issuing
+  `MOVE_PLAN`, returning `ErrLUNQuiesceRequired`. This closes the bypass where
+  a direct worker caller could submit a LUN movement even though the planner
+  already skips pinned objects.
 
 ## Gating
 

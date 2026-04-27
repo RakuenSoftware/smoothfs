@@ -32,6 +32,12 @@ const (
 	StateCleanupComplete     = root.StateCleanupComplete
 	StateFailed              = root.StateFailed
 	StateStale               = root.StateStale
+	PinNone                  = root.PinNone
+	PinHot                   = root.PinHot
+	PinCold                  = root.PinCold
+	PinHardlink              = root.PinHardlink
+	PinLease                 = root.PinLease
+	PinLUN                   = root.PinLUN
 )
 
 var (
