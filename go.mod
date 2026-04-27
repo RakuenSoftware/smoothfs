@@ -7,6 +7,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/mdlayher/genetlink v1.3.2
 	github.com/mdlayher/netlink v1.9.0
+	golang.org/x/sys v0.41.0
 )
 
 require (
@@ -14,5 +15,4 @@ require (
 	github.com/mdlayher/socket v0.5.1 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.3.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
 )

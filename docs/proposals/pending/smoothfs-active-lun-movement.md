@@ -37,6 +37,10 @@ active movement model is separate work gated on production soak.
   `MOVE_PLAN`, returning `ErrLUNQuiesceRequired`. This closes the bypass where
   a direct worker caller could submit a LUN movement even though the planner
   already skips pinned objects.
+- Movement plans can now request destination re-pin for a quiesced LUN move.
+  The worker installs `trusted.smoothfs.lun` on the destination file after
+  `MOVE_CUTOVER` succeeds and before cleanup/finalization marks the move
+  complete.
 
 ## Gating
 
