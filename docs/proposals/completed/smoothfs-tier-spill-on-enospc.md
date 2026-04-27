@@ -1,9 +1,16 @@
 # Proposal: smoothfs — Tier Spill on Near-ENOSPC
 
-**Status:** Pending
-**Parent:** [`smoothfs-stacked-tiering.md`](./smoothfs-stacked-tiering.md)
+**Status:** Complete
+**Parent:** [`smoothfs-stacked-tiering.md`](../pending/smoothfs-stacked-tiering.md)
 **Depends on:** Phase 1 (inode passthrough), Phase 2 (movement cutover). No
 new dependency on Phase 5 (xattr) beyond what is already live.
+
+Completed by the kernel create/mkdir spill fallback, cross-tier lookup,
+placement/replay integration, sysfs and netlink spill observability, and
+the tier-spill shell harnesses under `src/smoothfs/test/`. The current tree
+also includes union readdir coverage (`tier_spill_union_readdir.sh`), so
+§8 below is retained as historical rollout context rather than the current
+user-visible behavior.
 
 ---
 
@@ -316,7 +323,7 @@ kernel. After this proposal:
 
 No kernel-side change to netlink/UAPI.
 
-## 8. Readdir interaction
+## 8. Historical Readdir Interaction
 
 `smoothfs_iterate_shared` today delegates to the canonical-tier
 lower's `iterate_shared`. Spilled files on non-canonical tiers are
@@ -404,37 +411,27 @@ If the operator requires stricter defaults, the intermediate-dir
 mode can be made a mount option (`spill_mkdir_mode=0700`). Not in
 this proposal.
 
-## 11. Tests (MUST PASS before merge)
+## 11. Implemented Test Coverage
 
 Under `src/smoothfs/test/`:
 
-1. **`tier_spill/basic_create.sh`** — create a 2-tier smoothfs pool,
-   fill tier 0 to 98 % with a single large file, create a second
-   large file; second file must succeed, must appear on tier 1 per
-   `/sys/class/bdi/` accounting, must be readable end-to-end with
-   correct sha256, must appear in `smoothfs_lookup` by name.
-2. **`tier_spill/nested_parent.sh`** — same but the second file
-   lives at `/a/b/c/d.bin`. Verify `/a`, `/b`, `/c` exist on tier 1
-   as directories after the spill.
-3. **`tier_spill/rename_xdev.sh`** — after a spill, attempt a
-   cross-tier rename; expect `-EXDEV`. `rsync --remove-source-files`
-   must continue via copy+unlink.
-4. **`tier_spill/unlink_finds_right_tier.sh`** — after a spill,
-   `unlink` the spilled file; verify tier 1 backing is cleaned up
-   and placement record becomes `CLEANUP_COMPLETE`.
-5. **`tier_spill/readdir_limitation.sh`** — after a spill, confirm
-   that `readdir` does NOT show spilled files and the test
-   explicitly asserts this so the limitation can't silently
-   disappear. The same test confirms `ls` by name still works
-   (§4.2 lookup). When Phase 2 union readdir lands, this test
-   flips its assertion.
-6. **`tier_spill/crash_replay.sh`** — run an fsync-interposed
-   create on tier 1, kill the kernel module, reload, remount;
-   verify the spilled file is re-discovered by placement replay.
-7. **`tier_spill/no_delete_during_spill.sh`** — live-level integration
-   test against `backup.go`: attempt an `rsync --delete` against a
-   spill-active destination; expect the tierd backup handler to
-   refuse with an explicit error pointing at this proposal's §8.
+1. **`tier_spill_basic_create.sh`** — create a 2-tier smoothfs pool,
+   fill tier 0 to the spill threshold, create a second file, and
+   verify it lands on tier 1 and reads back through smoothfs with the
+   expected sha256.
+2. **`tier_spill_nested_parent.sh`** — create a spilled file under
+   `/a/b/c/` and verify the colder tier materializes the parent chain.
+3. **`tier_spill_rename_xdev.sh`** — after a spill, attempt a
+   cross-tier rename and verify it fails with `EXDEV`.
+4. **`tier_spill_unlink_finds_right_tier.sh`** — after a spill,
+   unlink the file and verify the colder-tier backing object is gone.
+5. **`tier_spill_union_readdir.sh`** — after a spill, confirm that
+   `readdir` shows spilled files, preserving ordinary directory
+   listings once a file lands on a colder tier.
+6. **`tier_spill_crash_replay.sh`** — remount after a spill and verify
+   the spilled file is rediscovered by placement replay.
+7. **`metadata_tier_activity_gate.sh`** — verify metadata-tier activity
+   accounting around fallback lookup and union readdir.
 
 Existing Phase-1 tests (create/mkdir/unlink/rename) must continue
 to pass with spill enabled but never triggered (tier 0 has ample
