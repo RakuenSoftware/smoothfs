@@ -113,3 +113,29 @@ func BuildQuiescedLUNMovementPlan(
 		RePinLUN:       true,
 	}, nil
 }
+
+// PrepareQuiescedLUNMovementPlan clears the LUN pin xattr for an already
+// stopped or drained target and then builds the opt-in movement plan. If plan
+// construction fails after the pin was cleared, it attempts to re-pin the
+// backing file before returning the planning error.
+func PrepareQuiescedLUNMovementPlan(
+	ctx context.Context,
+	db *sql.DB,
+	client ObjectInspector,
+	pool *Pool,
+	oid [OIDLen]byte,
+	backingPath string,
+	destTierID string,
+) (MovementPlan, error) {
+	if err := ClearLUNPin(backingPath); err != nil {
+		return MovementPlan{}, err
+	}
+	plan, err := BuildQuiescedLUNMovementPlan(ctx, db, client, pool, oid, destTierID)
+	if err != nil {
+		if pinErr := setLUNPin(backingPath); pinErr != nil {
+			return MovementPlan{}, errors.Join(err, pinErr)
+		}
+		return MovementPlan{}, err
+	}
+	return plan, nil
+}
