@@ -89,9 +89,16 @@ func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 	worker := NewWorker(sqlDB, client)
 	var pinnedPath string
 	var pinBeforeCutover bool
+	var resumedTarget string
+	var resumeBeforePin bool
 	worker.setLUNPin = func(path string) error {
 		pinnedPath = path
 		pinBeforeCutover = !client.cutoverCalled
+		return nil
+	}
+	worker.resumeLUNTarget = func(ctx context.Context, targetID string) error {
+		resumedTarget = targetID
+		resumeBeforePin = pinnedPath == ""
 		return nil
 	}
 
@@ -108,6 +115,7 @@ func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 		RelPath:        relPath,
 		TransactionSeq: 8,
 		RePinLUN:       true,
+		LUNTargetID:    "iqn.2026-04.com.smoothnas:web-app",
 	}
 
 	if err := worker.Execute(context.Background(), plan); err != nil {
@@ -118,6 +126,12 @@ func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 	}
 	if pinBeforeCutover {
 		t.Fatal("worker re-pinned LUN before cutover completed")
+	}
+	if resumedTarget != "iqn.2026-04.com.smoothnas:web-app" {
+		t.Fatalf("resumed target = %q, want target ID from plan", resumedTarget)
+	}
+	if resumeBeforePin {
+		t.Fatal("worker resumed LUN target before destination re-pin")
 	}
 	got, err := os.ReadFile(dstPath)
 	if err != nil {
