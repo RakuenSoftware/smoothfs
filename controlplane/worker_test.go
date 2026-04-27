@@ -11,13 +11,23 @@ import (
 )
 
 type fakeMovementClient struct {
-	inspectResult *InspectResult
-	movePlanErr   error
-	movePlanned   bool
-	cutoverCalled bool
+	inspectResult  *InspectResult
+	inspectResults []*InspectResult
+	inspectCalls   int
+	movePlanErr    error
+	movePlanned    bool
+	cutoverCalled  bool
 }
 
 func (f *fakeMovementClient) Inspect(uuid.UUID, [OIDLen]byte) (*InspectResult, error) {
+	if len(f.inspectResults) > 0 {
+		idx := f.inspectCalls
+		if idx >= len(f.inspectResults) {
+			idx = len(f.inspectResults) - 1
+		}
+		f.inspectCalls++
+		return f.inspectResults[idx], nil
+	}
 	return f.inspectResult, nil
 }
 
@@ -95,9 +105,16 @@ func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 	var oid [OIDLen]byte
 	oid[0] = 0x51
 	client := &fakeMovementClient{
-		inspectResult: &InspectResult{
-			PinState: PinNone,
-			RelPath:  relPath,
+		inspectResults: []*InspectResult{
+			{
+				PinState: PinNone,
+				RelPath:  relPath,
+			},
+			{
+				CurrentTier: 1,
+				PinState:    PinNone,
+				RelPath:     relPath,
+			},
 		},
 	}
 	var pinnedPath string
@@ -194,9 +211,16 @@ func TestWorkerFailsPreparedLUNMoveWithoutResumer(t *testing.T) {
 	var oid [OIDLen]byte
 	oid[0] = 0x52
 	client := &fakeMovementClient{
-		inspectResult: &InspectResult{
-			PinState: PinNone,
-			RelPath:  relPath,
+		inspectResults: []*InspectResult{
+			{
+				PinState: PinNone,
+				RelPath:  relPath,
+			},
+			{
+				CurrentTier: 1,
+				PinState:    PinNone,
+				RelPath:     relPath,
+			},
 		},
 	}
 	worker := NewWorker(sqlDB, client)
@@ -240,6 +264,103 @@ func TestWorkerFailsPreparedLUNMoveWithoutResumer(t *testing.T) {
 	}
 	if reason == "" {
 		t.Fatal("failure_reason should be populated")
+	}
+}
+
+func TestWorkerDoesNotRePinOrResumeStaleLUNDestination(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, tier1 := seedPool(t, sqlDB)
+
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	relPath := filepath.Join("luns", "web-app.img")
+	srcPath := filepath.Join(srcRoot, relPath)
+	if err := os.MkdirAll(filepath.Dir(srcPath), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(srcPath, []byte("lun payload"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x55
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			('55000000000000000000000000000000', ?, ?, 'placed', 'pin_lun', ?)`,
+		nsID, tier0, relPath)
+	if err != nil {
+		t.Fatalf("insert lun object: %v", err)
+	}
+
+	client := &fakeMovementClient{
+		inspectResults: []*InspectResult{
+			{
+				PinState: PinNone,
+				RelPath:  relPath,
+			},
+			{
+				CurrentTier: 0,
+				PinState:    PinNone,
+				RelPath:     relPath,
+			},
+		},
+	}
+	var pinnedPath string
+	var resumedTarget string
+	resumer := &fakeLUNTargetResumer{
+		onResume: func(targetID string) {
+			resumedTarget = targetID
+		},
+	}
+	worker := NewWorkerWithLUNResumer(sqlDB, client, resumer)
+	worker.setLUNPin = func(path string) error {
+		pinnedPath = path
+		return nil
+	}
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0,
+		SourceTierRank: 0,
+		SourceLowerDir: srcRoot,
+		DestTierID:     tier1,
+		DestTierRank:   1,
+		DestLowerDir:   dstRoot,
+		RelPath:        relPath,
+		TransactionSeq: 12,
+		RePinLUN:       true,
+		LUNTargetID:    "iqn.2026-04.com.smoothnas:web-app",
+	}
+
+	err = worker.Execute(context.Background(), plan)
+	if !errors.Is(err, ErrLUNDestinationStale) {
+		t.Fatalf("Execute error = %v, want ErrLUNDestinationStale", err)
+	}
+	if pinnedPath != "" {
+		t.Fatalf("pinned path = %q, want no re-pin", pinnedPath)
+	}
+	if resumedTarget != "" {
+		t.Fatalf("resumed target = %q, want no resume", resumedTarget)
+	}
+
+	var currentTier, movementState, pinState string
+	if err := sqlDB.QueryRow(`SELECT current_tier_id, movement_state, pin_state
+		FROM smoothfs_objects WHERE object_id = ?`,
+		"55000000000000000000000000000000").Scan(&currentTier, &movementState, &pinState); err != nil {
+		t.Fatalf("read object state: %v", err)
+	}
+	if currentTier != tier1 {
+		t.Fatalf("current_tier_id = %q, want %q", currentTier, tier1)
+	}
+	if movementState != string(StateFailed) {
+		t.Fatalf("movement_state = %q, want %q", movementState, StateFailed)
+	}
+	if pinState != string(PinLUN) {
+		t.Fatalf("pin_state = %q, want %q", pinState, PinLUN)
 	}
 }
 

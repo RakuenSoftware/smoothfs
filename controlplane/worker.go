@@ -24,6 +24,10 @@ var ErrLUNQuiesceRequired = errors.New("lun backing file requires target quiesce
 // cannot be completed because no resumer was wired into the worker.
 var ErrLUNResumeRequired = errors.New("lun target resume hook required after movement")
 
+// ErrLUNDestinationStale marks a prepared LUN movement whose post-cutover
+// kernel view does not match the destination recorded in the movement plan.
+var ErrLUNDestinationStale = errors.New("lun destination placement is stale after cutover")
+
 // MovementPlan is one queued promote/demote, dispatched by the planner
 // and consumed by a Worker.
 type MovementPlan struct {
@@ -173,6 +177,9 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	w.logTransition(ctx, p, string(StateCopyVerified), string(StateSwitched), "")
 	w.persistObject(ctx, oid, p, StateSwitched)
 	if p.RePinLUN {
+		if err := w.verifyLUNDestination(p, oid); err != nil {
+			return w.failAfterSwitch(ctx, p, err)
+		}
 		if err := w.setLUNPin(dstPath); err != nil {
 			return w.failAfterSwitch(ctx, p, fmt.Errorf("repin lun: %w", err))
 		}
@@ -233,6 +240,25 @@ func (w *Worker) rollbackLUNBeforeSwitch(ctx context.Context, p MovementPlan, sr
 		return w.abort(ctx, p, errors.Join(append([]error{cause}, errs...)...))
 	}
 	return w.abort(ctx, p, cause)
+}
+
+func (w *Worker) verifyLUNDestination(p MovementPlan, oid string) error {
+	ins, err := w.client.Inspect(p.PoolUUID, p.ObjectID)
+	if err != nil {
+		return fmt.Errorf("inspect after lun cutover: %w", err)
+	}
+	if ins == nil {
+		return fmt.Errorf("inspect after lun cutover returned nil for object %s", oid)
+	}
+	if ins.CurrentTier != p.DestTierRank {
+		return fmt.Errorf("%w: kernel tier rank %d dest tier rank %d",
+			ErrLUNDestinationStale, ins.CurrentTier, p.DestTierRank)
+	}
+	if ins.RelPath != "" && p.RelPath != "" && ins.RelPath != p.RelPath {
+		return fmt.Errorf("%w: kernel rel_path %q plan rel_path %q",
+			ErrLUNDestinationStale, ins.RelPath, p.RelPath)
+	}
+	return nil
 }
 
 func (w *Worker) failAfterSwitch(ctx context.Context, p MovementPlan, cause error) error {
