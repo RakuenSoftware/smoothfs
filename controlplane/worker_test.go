@@ -307,3 +307,68 @@ func TestWorkerRePinsSourceAndResumesTargetBeforeSwitchFailure(t *testing.T) {
 		t.Fatalf("resumed target = %q, want target ID from plan", resumedTarget)
 	}
 }
+
+func TestWorkerDoesNotResumeTargetWhenSourceRePinFails(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, tier1 := seedPool(t, sqlDB)
+
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	relPath := filepath.Join("luns", "web-app.img")
+	srcPath := filepath.Join(srcRoot, relPath)
+	if err := os.MkdirAll(filepath.Dir(srcPath), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(srcPath, []byte("lun payload"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x54
+	movePlanErr := errors.New("kernel refused plan")
+	repinErr := errors.New("repin failed")
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			PinState: PinNone,
+			RelPath:  relPath,
+		},
+		movePlanErr: movePlanErr,
+	}
+	var resumedTarget string
+	resumer := &fakeLUNTargetResumer{
+		onResume: func(targetID string) {
+			resumedTarget = targetID
+		},
+	}
+	worker := NewWorkerWithLUNResumer(sqlDB, client, resumer)
+	worker.setLUNPin = func(path string) error {
+		if path != srcPath {
+			t.Fatalf("pinned path = %q, want source %q", path, srcPath)
+		}
+		return repinErr
+	}
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0,
+		SourceTierRank: 0,
+		SourceLowerDir: srcRoot,
+		DestTierID:     tier1,
+		DestTierRank:   1,
+		DestLowerDir:   dstRoot,
+		RelPath:        relPath,
+		TransactionSeq: 11,
+		RePinLUN:       true,
+		LUNTargetID:    "iqn.2026-04.com.smoothnas:web-app",
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if err == nil || !errors.Is(err, movePlanErr) || !errors.Is(err, repinErr) {
+		t.Fatalf("Execute error = %v, want move_plan and re-pin errors", err)
+	}
+	if resumedTarget != "" {
+		t.Fatalf("resumed target = %q, want no resume when source re-pin fails", resumedTarget)
+	}
+}

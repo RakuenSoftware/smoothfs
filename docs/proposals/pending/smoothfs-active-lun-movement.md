@@ -67,6 +67,8 @@ active movement model is separate work gated on production soak.
 - Worker pre-cutover failures for prepared LUN moves now roll back the quiesce
   window by re-installing `trusted.smoothfs.lun` on the source file and
   resuming the target before reporting the movement failure.
+- The rollback path now keeps the target stopped if source re-pin fails,
+  preventing a live LIO target from reopening an unpinned backing file.
 
 ## Gating
 

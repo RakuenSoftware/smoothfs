@@ -215,12 +215,14 @@ func (w *Worker) rollbackLUNBeforeSwitch(ctx context.Context, p MovementPlan, sr
 		return w.abort(ctx, p, cause)
 	}
 	var errs []error
+	repinned := false
 	if err := w.setLUNPin(srcPath); err != nil {
 		errs = append(errs, fmt.Errorf("repin source lun: %w", err))
 	} else {
+		repinned = true
 		w.persistLUNPin(ctx, oid)
 	}
-	if p.LUNTargetID != "" {
+	if p.LUNTargetID != "" && repinned {
 		if w.resumeLUNTarget == nil {
 			errs = append(errs, fmt.Errorf("%w: target %s", ErrLUNResumeRequired, p.LUNTargetID))
 		} else if err := w.resumeLUNTarget(ctx, p.LUNTargetID); err != nil {
