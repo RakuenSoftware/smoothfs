@@ -41,6 +41,9 @@ active movement model is separate work gated on production soak.
   The worker installs `trusted.smoothfs.lun` on the destination file after
   `MOVE_CUTOVER` succeeds and before cleanup/finalization marks the move
   complete.
+- Quiesced LUN movement now has a dedicated plan builder. It requires the
+  kernel pin to be cleared, requires the DB row to still record `pin_lun` as
+  the re-pin obligation, and emits only an opt-in plan with `RePinLUN` set.
 
 ## Gating
 
