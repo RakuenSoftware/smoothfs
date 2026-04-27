@@ -28,6 +28,10 @@ var ErrLUNResumeRequired = errors.New("lun target resume hook required after mov
 // kernel view does not match the destination recorded in the movement plan.
 var ErrLUNDestinationStale = errors.New("lun destination placement is stale after cutover")
 
+// ErrLUNPinNotVisible marks a prepared LUN movement whose destination re-pin
+// did not become visible in the kernel before target resume.
+var ErrLUNPinNotVisible = errors.New("lun destination pin is not visible after re-pin")
+
 // MovementPlan is one queued promote/demote, dispatched by the planner
 // and consumed by a Worker.
 type MovementPlan struct {
@@ -183,6 +187,9 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		if err := w.setLUNPin(dstPath); err != nil {
 			return w.failAfterSwitch(ctx, p, fmt.Errorf("repin lun: %w", err))
 		}
+		if err := w.verifyLUNRePin(p, oid); err != nil {
+			return w.failAfterSwitch(ctx, p, err)
+		}
 		w.persistLUNPin(ctx, oid)
 		if p.LUNTargetID != "" {
 			if w.resumeLUNTarget == nil {
@@ -257,6 +264,28 @@ func (w *Worker) verifyLUNDestination(p MovementPlan, oid string) error {
 	if ins.RelPath != "" && p.RelPath != "" && ins.RelPath != p.RelPath {
 		return fmt.Errorf("%w: kernel rel_path %q plan rel_path %q",
 			ErrLUNDestinationStale, ins.RelPath, p.RelPath)
+	}
+	return nil
+}
+
+func (w *Worker) verifyLUNRePin(p MovementPlan, oid string) error {
+	ins, err := w.client.Inspect(p.PoolUUID, p.ObjectID)
+	if err != nil {
+		return fmt.Errorf("inspect after lun re-pin: %w", err)
+	}
+	if ins == nil {
+		return fmt.Errorf("inspect after lun re-pin returned nil for object %s", oid)
+	}
+	if ins.CurrentTier != p.DestTierRank {
+		return fmt.Errorf("%w: kernel tier rank %d dest tier rank %d",
+			ErrLUNDestinationStale, ins.CurrentTier, p.DestTierRank)
+	}
+	if ins.RelPath != "" && p.RelPath != "" && ins.RelPath != p.RelPath {
+		return fmt.Errorf("%w: kernel rel_path %q plan rel_path %q",
+			ErrLUNDestinationStale, ins.RelPath, p.RelPath)
+	}
+	if ins.PinState != PinLUN {
+		return fmt.Errorf("%w: kernel pin_state=%q", ErrLUNPinNotVisible, ins.PinState)
 	}
 	return nil
 }
