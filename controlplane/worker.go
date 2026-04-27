@@ -317,6 +317,13 @@ func (w *Worker) verifyLUNDestination(p MovementPlan, oid string) error {
 		return fmt.Errorf("%w: kernel rel_path %q plan rel_path %q",
 			ErrLUNDestinationStale, ins.RelPath, p.RelPath)
 	}
+	if ins.CurrentTierPath != "" && p.RelPath != "" {
+		planDestPath := filepath.Clean(filepath.Join(p.DestLowerDir, p.RelPath))
+		if filepath.Clean(ins.CurrentTierPath) != planDestPath {
+			return fmt.Errorf("%w: kernel destination path %q plan destination path %q",
+				ErrLUNDestinationStale, ins.CurrentTierPath, planDestPath)
+		}
+	}
 	return nil
 }
 
@@ -335,6 +342,13 @@ func (w *Worker) verifyLUNRePin(p MovementPlan, oid string) error {
 	if ins.RelPath != "" && p.RelPath != "" && ins.RelPath != p.RelPath {
 		return fmt.Errorf("%w: kernel rel_path %q plan rel_path %q",
 			ErrLUNDestinationStale, ins.RelPath, p.RelPath)
+	}
+	if ins.CurrentTierPath != "" && p.RelPath != "" {
+		planDestPath := filepath.Clean(filepath.Join(p.DestLowerDir, p.RelPath))
+		if filepath.Clean(ins.CurrentTierPath) != planDestPath {
+			return fmt.Errorf("%w: kernel destination path %q plan destination path %q",
+				ErrLUNDestinationStale, ins.CurrentTierPath, planDestPath)
+		}
 	}
 	if ins.PinState != PinLUN {
 		return fmt.Errorf("%w: kernel pin_state=%q", ErrLUNPinNotVisible, ins.PinState)
