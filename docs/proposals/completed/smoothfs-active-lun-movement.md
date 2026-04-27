@@ -1,6 +1,6 @@
 # Proposal: smoothfs — Active-LUN Movement Model
 
-**Status:** In progress
+**Status:** Complete on 2026-04-27 in `#58`.
 **Parent:** [`smoothfs-stacked-tiering.md`](../completed/smoothfs-stacked-tiering.md)
 
 ---
