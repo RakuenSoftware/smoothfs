@@ -20,12 +20,17 @@ type Service struct {
 	planner     *Planner
 	planChan    chan MovementPlan
 	workerCount int
+	lunResumer  LUNTargetResumer
 
 	mu    sync.Mutex
 	pools map[string]*Pool
 }
 
 func NewService(ctx context.Context, db *sql.DB, workerCount int) (*Service, error) {
+	return NewServiceWithLUNResumer(ctx, db, workerCount, nil)
+}
+
+func NewServiceWithLUNResumer(ctx context.Context, db *sql.DB, workerCount int, resumer LUNTargetResumer) (*Service, error) {
 	if workerCount <= 0 {
 		workerCount = 4
 	}
@@ -51,8 +56,28 @@ func NewService(ctx context.Context, db *sql.DB, workerCount int) (*Service, err
 		planner:     NewPlanner(db, planChan, cfg),
 		planChan:    planChan,
 		workerCount: workerCount,
+		lunResumer:  resumer,
 		pools:       make(map[string]*Pool),
 	}, nil
+}
+
+func (s *Service) SetLUNResumer(resumer LUNTargetResumer) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lunResumer = resumer
+}
+
+func (s *Service) newWorker() *Worker {
+	if s == nil {
+		return nil
+	}
+	if s.lunResumer == nil {
+		return NewWorker(s.db, s.client)
+	}
+	return NewWorkerWithLUNResumer(s.db, s.client, s.lunResumer)
 }
 
 func (s *Service) Close() error {
@@ -126,7 +151,7 @@ func (s *Service) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			NewWorker(s.db, s.client).Run(ctx, s.planChan)
+			s.newWorker().Run(ctx, s.planChan)
 		}()
 	}
 

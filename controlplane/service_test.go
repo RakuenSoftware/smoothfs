@@ -102,3 +102,26 @@ func TestDiscoverPoolFallsBackToBackingRefWhenMountEventIsPartial(t *testing.T) 
 		t.Fatalf("tier[1].LowerDir = %q, want /mnt/slow", pool.Tiers[1].LowerDir)
 	}
 }
+
+func TestServiceUsesLUNResumerInWorkerFactory(t *testing.T) {
+	svc := &Service{lunResumer: &fakeLUNTargetResumer{}}
+	w := svc.newWorker()
+	if w == nil {
+		t.Fatal("newWorker() = nil")
+	}
+	if w.resumeLUNTarget == nil {
+		t.Fatal("worker resumeLUNTarget is nil when LUN resumer is configured")
+	}
+}
+
+func TestServiceCanSetLUNResumerAfterConstruction(t *testing.T) {
+	svc := &Service{}
+	svc.SetLUNResumer(&fakeLUNTargetResumer{})
+	w := svc.newWorker()
+	if w == nil {
+		t.Fatal("newWorker() = nil")
+	}
+	if w.resumeLUNTarget == nil {
+		t.Fatal("worker resumeLUNTarget is nil after SetLUNResumer")
+	}
+}
