@@ -1,6 +1,32 @@
 # Proposal: smoothfs — Tier Spill on Near-ENOSPC
 
-**Status:** Pending
+**Status:** Done. Implementation has fully landed:
+- `smoothfs_create` and `smoothfs_mkdir` in `src/smoothfs/inode.c` walk
+  the tier list on `-ENOSPC` (see `inode.c:697..794` for create and
+  `inode.c:984..1079` for mkdir), call `smoothfs_spill_note_success`
+  on the first tier with room, and `smoothfs_spill_note_failed_all_tiers`
+  if the whole pool refuses.
+- `smoothfs_ensure_dir_path_on_tier` (§5.1) materialises parent chains
+  on the spill tier before the child create.
+- Per-pool sysfs counters `spill_creates_total`,
+  `spill_creates_failed_all_tiers`, and `any_spill_since_mount` are
+  exported alongside the rest of the pool sysfs bundle in `super.c`.
+- `SMOOTHFS_CMD_SPILL` netlink event is emitted on every successful
+  spill (see `netlink.c`).
+- Union readdir landed: spilled files appear in `readdir` on the
+  smoothfs mount (`tier_spill_union_readdir.sh` asserts this).
+- All §11 tests are present: `tier_spill_basic_create.sh`,
+  `tier_spill_nested_parent.sh`, `tier_spill_rename_xdev.sh`,
+  `tier_spill_unlink_finds_right_tier.sh`,
+  `tier_spill_union_readdir.sh`, and `tier_spill_crash_replay.sh`.
+- The §11.7 SmoothNAS-side `--delete` guard against spill-active
+  destinations is implemented in tierd at
+  `tierd/internal/api/backup.go:661` with regression coverage in
+  `backup_delete_guard_test.go`.
+
+This document is kept in `pending/` as historical record matching the
+project convention used by `smoothfs-samba-vfs-module.md`.
+
 **Parent:** [`smoothfs-stacked-tiering.md`](./smoothfs-stacked-tiering.md)
 **Depends on:** Phase 1 (inode passthrough), Phase 2 (movement cutover). No
 new dependency on Phase 5 (xattr) beyond what is already live.
