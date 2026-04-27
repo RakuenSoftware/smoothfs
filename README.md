@@ -23,8 +23,8 @@ This repo owns:
 
 Documentation is maintained in English with Dutch translation files available:
 
-- `docs/smoothfs-support-matrix.md` / [`docs/smoothfs-support-matrix.nl.md`](docs/smoothfs-support-matrix.nl.md)
-- `docs/smoothfs-operator-runbook.md` / [`docs/smoothfs-operator-runbook.nl.md`](docs/smoothfs-operator-runbook.nl.md)
+- `docs/smoothfs-support-matrix.md` / [`docs/smoothfs-support-matrix.nd.md`](docs/smoothfs-support-matrix.nd.md)
+- `docs/smoothfs-operator-runbook.md` / [`docs/smoothfs-operator-runbook.nd.md`](docs/smoothfs-operator-runbook.nd.md)
 
 ## Consumer contract
 
