@@ -962,9 +962,16 @@ func TestWorkerRePinsSourceAndResumesTargetBeforeSwitchFailure(t *testing.T) {
 	oid[0] = 0x53
 	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, relPath)
 	client := &fakeMovementClient{
-		inspectResult: &InspectResult{
-			PinState: PinNone,
-			RelPath:  relPath,
+		inspectResults: []*InspectResult{
+			{
+				PinState: PinNone,
+				RelPath:  relPath,
+			},
+			{
+				CurrentTier: 0,
+				PinState:    PinLUN,
+				RelPath:     relPath,
+			},
 		},
 		movePlanErr: errors.New("kernel refused plan"),
 	}
@@ -1006,6 +1013,80 @@ func TestWorkerRePinsSourceAndResumesTargetBeforeSwitchFailure(t *testing.T) {
 	}
 	if resumedTarget != "iqn.2026-04.com.smoothnas:web-app" {
 		t.Fatalf("resumed target = %q, want target ID from plan", resumedTarget)
+	}
+}
+
+func TestWorkerDoesNotResumeTargetWhenSourceRePinNotVisible(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, tier1 := seedPool(t, sqlDB)
+
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	relPath := filepath.Join("luns", "web-app.img")
+	srcPath := filepath.Join(srcRoot, relPath)
+	if err := os.MkdirAll(filepath.Dir(srcPath), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(srcPath, []byte("lun payload"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x61
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, relPath)
+	movePlanErr := errors.New("kernel refused plan")
+	client := &fakeMovementClient{
+		inspectResults: []*InspectResult{
+			{
+				PinState: PinNone,
+				RelPath:  relPath,
+			},
+			{
+				CurrentTier: 0,
+				PinState:    PinNone,
+				RelPath:     relPath,
+			},
+		},
+		movePlanErr: movePlanErr,
+	}
+	var pinnedPath string
+	var resumedTarget string
+	resumer := &fakeLUNTargetResumer{
+		onResume: func(targetID string) {
+			resumedTarget = targetID
+		},
+	}
+	worker := NewWorkerWithLUNResumer(sqlDB, client, resumer)
+	worker.setLUNPin = func(path string) error {
+		pinnedPath = path
+		return nil
+	}
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0,
+		SourceTierRank: 0,
+		SourceLowerDir: srcRoot,
+		DestTierID:     tier1,
+		DestTierRank:   1,
+		DestLowerDir:   dstRoot,
+		RelPath:        relPath,
+		TransactionSeq: 24,
+		RePinLUN:       true,
+		LUNTargetID:    "iqn.2026-04.com.smoothnas:web-app",
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if err == nil || !errors.Is(err, movePlanErr) || !errors.Is(err, ErrLUNSourcePinNotVisible) {
+		t.Fatalf("Execute error = %v, want move_plan and ErrLUNSourcePinNotVisible", err)
+	}
+	if pinnedPath != srcPath {
+		t.Fatalf("pinned path = %q, want source %q", pinnedPath, srcPath)
+	}
+	if resumedTarget != "" {
+		t.Fatalf("resumed target = %q, want no resume when source re-pin is not visible", resumedTarget)
 	}
 }
 

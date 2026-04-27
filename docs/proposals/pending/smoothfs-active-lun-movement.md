@@ -107,6 +107,9 @@ active movement model is separate work gated on production soak.
 - Prepared LUN worker admission now requires explicit non-placeholder
   `RelPath` for all `RePinLUN` plans before `MOVE_PLAN`, so direct worker
   callers cannot fall back to kernel inspect rel_path.
+- Pre-cutover rollback now verifies that source re-pin is visible in kernel
+  inspect before target resume, preventing resume onto an unpinned source file
+  when xattr writes succeed but pin state does not converge.
 
 ## Gating
 
