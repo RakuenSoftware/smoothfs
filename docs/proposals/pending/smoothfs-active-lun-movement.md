@@ -50,6 +50,9 @@ active movement model is separate work gated on production soak.
 - Quiesced LUN plan preparation now composes pin clear plus plan build and
   fails closed: if plan construction cannot proceed after clearing the xattr,
   the helper re-installs `trusted.smoothfs.lun` before returning the error.
+- The control-plane preparation path now requires a `LUNTargetQuiescer`
+  implementation to stop or drain the target before the pin is cleared, and
+  resumes the target if plan preparation fails.
 
 ## Gating
 
