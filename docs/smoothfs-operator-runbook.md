@@ -1,5 +1,7 @@
 # smoothfs operator runbook
 
+[Nederlandse versie](smoothfs-operator-runbook.nl.md)
+
 Day-to-day procedures for running smoothfs in the SmoothNAS appliance
 integration. Covers install, pool lifecycle, share creation, routine
 maintenance, kernel upgrades, and troubleshooting. Pair with

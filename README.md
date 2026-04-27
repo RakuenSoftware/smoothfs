@@ -21,6 +21,11 @@ This repo owns:
   Samba VFS module, shell harnesses
 - [`docs`](docs): support matrix, operator runbook, historical phase docs
 
+Documentation is maintained in English with Dutch translation files available:
+
+- `docs/smoothfs-support-matrix.md` / [`docs/smoothfs-support-matrix.nl.md`](docs/smoothfs-support-matrix.nl.md)
+- `docs/smoothfs-operator-runbook.md` / [`docs/smoothfs-operator-runbook.nl.md`](docs/smoothfs-operator-runbook.nl.md)
+
 ## Consumer contract
 
 Appliance repos should import published smoothfs packages instead of
