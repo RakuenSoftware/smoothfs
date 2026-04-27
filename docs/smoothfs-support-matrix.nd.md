@@ -4,7 +4,8 @@ Deze pagina beschrijft welke componentversies het smoothfs project testte voor d
 SmoothNAS integratie. Alles daarbuiten kan werken, maar valt niet onder support.
 
 Laatste review: tegen Phase 7.10 plus disk-spindown write-staging truncate rehome
-(Phase 0–7 volledig; Phase 8 blijft op productie-soak wachtend).
+en actieve LUN fase-8 movement recovery (Phase 0–8 volledig; phase 8 blijft
+rollout-gated buiten gecontroleerde productie-soak).
 
 [English version](smoothfs-support-matrix.md)
 
@@ -80,7 +81,7 @@ door de capability gate; smoothfs weigert mounten daarop met `EOPNOTSUPP`.
 | **NFS v3 / v4.2** | Supported | 4.0–4.5 (cthon04 clean, connectable filehandles) |
 | **SMB 2/3** | Supported | 5.0–5.8.4 (smbtorture 16/16 MUST_PASS, Samba VFS met lease pin + FileId + fanotify lease-break) |
 | **iSCSI (file-backed LUN)** | Supported | 6.0–6.5 (O_DIRECT conformance, LIO fileio round-trip, `PIN_LUN` contract, target restart) |
-| Active-LUN movement | **Niet supported in v1** | Phase 8 (gated op Phase 6 soak) |
+| Active-LUN movement | **Ondersteund (opt-in)** | Fase 8: gecontroleerde productie-soak + expliciete operator workflow |
 
 ## Disk Spindown Write Staging
 
@@ -94,8 +95,20 @@ door de capability gate; smoothfs weigert mounten daarop met `EOPNOTSUPP`.
 | Range-level staging | Partial | Buffered niet-truncating writes naar niet-gepinde cold-tier reguliere files kunnen gewijzigde ranges op de snelste tier stage; oude bytes worden later correct via range read-merge gelezen. Zodra ranges staged zijn, wordt direct I/O en mmap geweigerd zodat bypass niet meer mogelijk is. Persistente replay is nog pending. |
 | Range-level drain terug naar HDD | Partial | Als SmoothNAS `write_staging_drain_active_tier_mask` met bronbit zet, kopieert smoothfs in-memory staged ranges terug naar die bron-lower file, fsynct en ruimt staged-range state en snelle sidecar op. Remount/crash recovery voor range-level data blijft pending; SmoothNAS moet bits alleen zetten na externe activiteit. |
 
-LUN backing files worden automatisch gepint met `PIN_LUN` en tierd weigert ze te verplaatsen.
-Operators die een LUN moeten verplaatsen, moeten de target quiescen, pin handmatig verwijderen, verplaatsen en opnieuw pinnen. Geautomatiseerde active-LUN flow hoort in Phase 8.
+LUN backing files worden automatisch gepint met `PIN_LUN` en de normale planner
+beweging slaat ze over.
+Fase 8 introduceert een gecontroleerde active-LUN flow:
+
+- stop/drain de iSCSI target zodat de backing file quiesced is,
+- verwijder `PIN_LUN` en bereid een movement plan voor terwijl de object-rij nog
+  `pin_lun` bevat,
+- verplaats naar de target tier (`MovePlan` + `MoveCutover`),
+- pin de destination backing file opnieuw met `PIN_LUN`,
+- hervat de target pas nadat de destination pin validatie slaagt.
+
+Als een movement onderbroken raakt, herstelt startup recovery de pin-state
+consistentie door `PIN_LUN` opnieuw toe te passen op het uiteindelijke tier pad
+voor in-flight rijen.
 
 ## Secure Boot
 

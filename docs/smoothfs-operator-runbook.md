@@ -111,6 +111,32 @@ Lifts the quiesce + re-arms heat drain.
 tierd-cli smoothfs reconcile --pool <uuid> --reason "manual inspection complete"
 ```
 
+### Active-LUN movement (Phase 8)
+
+Regular movement ignores `PIN_LUN` objects. Active-LUN movement is
+an opt-in, target-quiesced operation:
+
+1. Quiesce/stop the iSCSI target so active I/O drains.
+2. Ensure SmoothNAS clears `trusted.smoothfs.lun` before movement planning.
+3. Issue the prepared movement for that backing object through your SmoothNAS control path (this repo does not define that CLI/UI command here).
+4. tierd copies and cuts over, then re-pins `trusted.smoothfs.lun` on the
+   destination and only resumes the target once destination pin is verified.
+
+Check this in normal lifecycle tools:
+
+- `smoothfs_movement_log` has `failed` if destination verification or
+  resume fails.
+- `pin_state='pin_lun'` in `smoothfs_objects` confirms re-pin persistence after
+  recovery:
+    ```bash
+    sqlite3 /var/lib/tierd/tierd.db \
+      "SELECT object_id, pin_state, movement_state FROM smoothfs_objects WHERE pin_state='pin_lun' ORDER BY updated_at DESC LIMIT 20;"
+    ```
+- `getfattr -n trusted.smoothfs.lun <destination-path>` must report `0x01`.
+
+If tierd restarts mid-move, startup recovery reconciles state transitions and
+re-applies PINs where possible before normal movement resumes.
+
 ### Movement log
 
 Storage → smoothfs Pools → Movement log (below the pool list). Renders newest 100 transitions from `smoothfs_movement_log` across all pools. Each row shows the state transition, object_id, and source/dest tier. Use this to confirm quiesce stopped planner activity and reconcile resumed it.

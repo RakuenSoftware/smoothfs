@@ -8,7 +8,7 @@ plus the four lower filesystems we test against. This page pins the
 combinations the smoothfs project tests for the SmoothNAS integration;
 anything outside this set may work but has no support commitment.
 
-Last reviewed against Phase 7.10 plus disk-spindown write-staging truncate rehome (Phase 0–7 complete; Phase 8 gated on production soak).
+Last reviewed against Phase 7.10 plus disk-spindown write-staging truncate rehome and active-LUN phase-8 movement recovery (Phase 0–8 complete; phase 8 remains rollout-gated outside controlled production soak).
 
 ## Appliance OS
 
@@ -74,7 +74,7 @@ Other filesystems (fat / ntfs-3g / overlayfs / fuse / etc.) are not capability-g
 | **NFS v3 / v4.2** | Supported | 4.0–4.5 (cthon04 clean, connectable filehandles) |
 | **SMB 2/3** | Supported | 5.0–5.8.4 (smbtorture 16/16 MUST_PASS, Samba VFS module with lease pin + FileId + fanotify lease-break) |
 | **iSCSI (file-backed LUN)** | Supported | 6.0–6.5 (O_DIRECT conformance, LIO fileio round-trip, `PIN_LUN` contract, target restart) |
-| Active-LUN movement | **Unsupported in v1** | Phase 8 (gated on Phase 6 soak) |
+| Active-LUN movement | **Supported (opt-in)** | Phase 8 gated by controlled production soak and operator workflow |
 
 ## Disk Spindown Write Staging
 
@@ -88,7 +88,16 @@ Other filesystems (fat / ntfs-3g / overlayfs / fuse / etc.) are not capability-g
 | Range-level staging | Partial | Buffered non-truncating writes to unpinned cold-tier regular files can stage changed ranges on the fastest tier while preserving old-byte reads through range read-merge. Once ranges are staged, direct I/O and mmap are refused so callers cannot bypass the merge layer. Persistence replay remains pending. |
 | Range-level drain back to HDD | Partial | When SmoothNAS writes `write_staging_drain_active_tier_mask` with the source tier bit set, smoothfs copies in-memory staged ranges back to that source lower file, fsyncs, clears staged-range state, and removes the fastest-tier sidecar. Remount/crash recovery remains pending, and SmoothNAS must only set non-fast bits after external activity has already woken the tier. |
 
-LUN backing files are auto-pinned with `PIN_LUN` and tierd refuses to move them. Operators who need to move a LUN must quiesce the target, clear the pin manually, move, re-pin. The automated active-LUN path is Phase 8.
+LUN backing files are auto-pinned with `PIN_LUN` and normal planner movement skips them.
+Phase 8 introduces a controlled active-LUN flow:
+
+- stop/drain the iSCSI target so the backing file is quiesced,
+- clear `PIN_LUN` and prepare a movement plan while the object row still records `pin_lun`,
+- move to destination tier (`MovePlan` + `MoveCutover`),
+- re-pin the destination backing file with `PIN_LUN`,
+- resume the target only after destination pin verification passes.
+
+If a movement is interrupted, startup recovery preserves pin state consistency by re-applying `PIN_LUN` to the final tier path for in-flight rows.
 
 ## Secure Boot
 
