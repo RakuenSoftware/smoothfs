@@ -5,8 +5,8 @@
 # stock-Samba share over a smoothfs mount (the Phase 5.1 topology).
 # Establishes the baseline Phase 5.4 gate: the tests in MUST_PASS below
 # have to pass with zero bugs surfaced by smoothfs; tests in the
-# VFS_MODULE_REQUIRED list are deferred until the Phase 5.3 future
-# proposal (docs/proposals/pending/smoothfs-samba-vfs-module.md) lands.
+# VFS_MODULE_REQUIRED list are covered by the completed Samba VFS
+# module proposal (docs/proposals/completed/smoothfs-samba-vfs-module.md).
 #
 # Reasoning for the curated set:
 #   - Stock Samba doesn't install a smoothfs-specific VFS module yet,
