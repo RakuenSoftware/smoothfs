@@ -95,6 +95,9 @@ active movement model is separate work gated on production soak.
 - Post-cutover destination verification now also checks kernel
   `CurrentTierPath` against the computed destination file path before re-pin
   or resume, preventing stale destination path hints from passing.
+- Prepared LUN worker admission now rejects no-op destination tiers before
+  `MOVE_PLAN`, so direct worker callers cannot bypass the builder's
+  destination-tier validation.
 
 ## Gating
 

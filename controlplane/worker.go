@@ -114,6 +114,9 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		return fmt.Errorf("%w: object %s", ErrLUNQuiesceRequired, oid)
 	}
 	if p.RePinLUN {
+		if p.DestTierID == p.SourceTierID || p.DestTierRank == p.SourceTierRank {
+			return ErrDestinationTierBad
+		}
 		if err := w.requireLUNMoveRecord(ctx, p, oid); err != nil {
 			return err
 		}
