@@ -32,6 +32,10 @@ var ErrLUNDestinationStale = errors.New("lun destination placement is stale afte
 // did not become visible in the kernel before target resume.
 var ErrLUNPinNotVisible = errors.New("lun destination pin is not visible after re-pin")
 
+// ErrLUNSourcePinNotVisible marks a prepared LUN movement whose rollback
+// source re-pin did not become visible before target resume.
+var ErrLUNSourcePinNotVisible = errors.New("lun source pin is not visible after rollback re-pin")
+
 // MovementPlan is one queued promote/demote, dispatched by the planner
 // and consumed by a Worker.
 type MovementPlan struct {
@@ -262,6 +266,8 @@ func (w *Worker) rollbackLUNBeforeSwitch(ctx context.Context, p MovementPlan, sr
 	repinned := false
 	if err := w.setLUNPin(srcPath); err != nil {
 		errs = append(errs, fmt.Errorf("repin source lun: %w", err))
+	} else if err := w.verifyLUNSourceRePin(p, oid); err != nil {
+		errs = append(errs, err)
 	} else {
 		repinned = true
 		w.persistLUNPin(ctx, oid)
@@ -277,6 +283,35 @@ func (w *Worker) rollbackLUNBeforeSwitch(ctx context.Context, p MovementPlan, sr
 		return w.abort(ctx, p, errors.Join(append([]error{cause}, errs...)...))
 	}
 	return w.abort(ctx, p, cause)
+}
+
+func (w *Worker) verifyLUNSourceRePin(p MovementPlan, oid string) error {
+	ins, err := w.client.Inspect(p.PoolUUID, p.ObjectID)
+	if err != nil {
+		return fmt.Errorf("inspect after source lun re-pin: %w", err)
+	}
+	if ins == nil {
+		return fmt.Errorf("inspect after source lun re-pin returned nil for object %s", oid)
+	}
+	if ins.CurrentTier != p.SourceTierRank {
+		return fmt.Errorf("%w: kernel source tier rank %d plan source tier rank %d",
+			ErrLUNPlacementStale, ins.CurrentTier, p.SourceTierRank)
+	}
+	if ins.RelPath != "" && p.RelPath != "" && ins.RelPath != p.RelPath {
+		return fmt.Errorf("%w: kernel source rel_path %q plan rel_path %q",
+			ErrLUNPlacementStale, ins.RelPath, p.RelPath)
+	}
+	if ins.CurrentTierPath != "" && p.RelPath != "" {
+		planSourcePath := filepath.Clean(filepath.Join(p.SourceLowerDir, p.RelPath))
+		if filepath.Clean(ins.CurrentTierPath) != planSourcePath {
+			return fmt.Errorf("%w: kernel source path %q plan source path %q",
+				ErrLUNPlacementStale, ins.CurrentTierPath, planSourcePath)
+		}
+	}
+	if ins.PinState != PinLUN {
+		return fmt.Errorf("%w: kernel pin_state=%q", ErrLUNSourcePinNotVisible, ins.PinState)
+	}
+	return nil
 }
 
 func (w *Worker) requireLUNMoveRecord(ctx context.Context, p MovementPlan, oid string) error {
