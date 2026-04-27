@@ -86,6 +86,9 @@ active movement model is separate work gated on production soak.
   rejected even for direct worker callers.
 - Prepared LUN worker admission now also requires kernel `PinNone` before
   `MOVE_PLAN`, rejecting any non-quiesced pin state for direct worker callers.
+- Prepared LUN worker admission now rejects source rel_path drift between
+  kernel inspect and plan input before `MOVE_PLAN`, preventing stale-path
+  direct worker submissions.
 
 ## Gating
 
