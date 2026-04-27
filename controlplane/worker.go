@@ -114,6 +114,10 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		return fmt.Errorf("%w: object %s", ErrLUNQuiesceRequired, oid)
 	}
 	if p.RePinLUN {
+		if p.RelPath == "" || p.RelPath == oid {
+			return fmt.Errorf("%w: object %s requires explicit rel_path in movement plan",
+				ErrLUNPlacementStale, oid)
+		}
 		if p.DestTierID == p.SourceTierID || p.DestTierRank == p.SourceTierRank {
 			return ErrDestinationTierBad
 		}
