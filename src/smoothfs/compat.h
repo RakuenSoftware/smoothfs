@@ -27,7 +27,7 @@
  *  4. Update src/smoothfs/dkms.conf BUILD_EXCLUSIVE_KERNEL to match
  *     the new floor regex.
  *
- *  5. Update docs/proposals/pending/smoothfs-stacked-tiering.md
+ *  5. Update docs/proposals/completed/smoothfs-stacked-tiering.md
  *     §Implementation Status with the floor bump.
  *
  *  6. Smoke test on the test server, then commit.

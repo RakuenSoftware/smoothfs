@@ -2,7 +2,7 @@
 /*
  * smoothfs - native kernel stacked tiering filesystem (Phase 1 scaffold)
  *
- * Per docs/proposals/pending/smoothfs-stacked-tiering.md and
+ * Per docs/proposals/completed/smoothfs-stacked-tiering.md and
  * docs/proposals/completed/smoothfs-phase-0-contract.md.
  *
  * Phase 1 scope: passthrough stacked filesystem over a single lower per

@@ -1,7 +1,7 @@
 # Proposal: smoothfs — Phase 0 Contract and Conformance Spec
 
 **Status:** Complete
-**Parent:** [`smoothfs-stacked-tiering.md`](../pending/smoothfs-stacked-tiering.md)
+**Parent:** [`smoothfs-stacked-tiering.md`](./smoothfs-stacked-tiering.md)
 
 ---
 
