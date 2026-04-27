@@ -12,6 +12,7 @@ import (
 
 type fakeMovementClient struct {
 	inspectResult *InspectResult
+	movePlanErr   error
 	movePlanned   bool
 	cutoverCalled bool
 }
@@ -22,7 +23,7 @@ func (f *fakeMovementClient) Inspect(uuid.UUID, [OIDLen]byte) (*InspectResult, e
 
 func (f *fakeMovementClient) MovePlan(uuid.UUID, [OIDLen]byte, uint8, uint64) error {
 	f.movePlanned = true
-	return nil
+	return f.movePlanErr
 }
 
 func (f *fakeMovementClient) MoveCutover(uuid.UUID, [OIDLen]byte, uint64) error {
@@ -239,5 +240,70 @@ func TestWorkerFailsPreparedLUNMoveWithoutResumer(t *testing.T) {
 	}
 	if reason == "" {
 		t.Fatal("failure_reason should be populated")
+	}
+}
+
+func TestWorkerRePinsSourceAndResumesTargetBeforeSwitchFailure(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, tier1 := seedPool(t, sqlDB)
+
+	srcRoot := t.TempDir()
+	dstRoot := t.TempDir()
+	relPath := filepath.Join("luns", "web-app.img")
+	srcPath := filepath.Join(srcRoot, relPath)
+	if err := os.MkdirAll(filepath.Dir(srcPath), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(srcPath, []byte("lun payload"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x53
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			PinState: PinNone,
+			RelPath:  relPath,
+		},
+		movePlanErr: errors.New("kernel refused plan"),
+	}
+	var pinnedPath string
+	var resumedTarget string
+	resumer := &fakeLUNTargetResumer{
+		onResume: func(targetID string) {
+			resumedTarget = targetID
+		},
+	}
+	worker := NewWorkerWithLUNResumer(sqlDB, client, resumer)
+	worker.setLUNPin = func(path string) error {
+		pinnedPath = path
+		return nil
+	}
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0,
+		SourceTierRank: 0,
+		SourceLowerDir: srcRoot,
+		DestTierID:     tier1,
+		DestTierRank:   1,
+		DestLowerDir:   dstRoot,
+		RelPath:        relPath,
+		TransactionSeq: 10,
+		RePinLUN:       true,
+		LUNTargetID:    "iqn.2026-04.com.smoothnas:web-app",
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if err == nil || !errors.Is(err, client.movePlanErr) {
+		t.Fatalf("Execute error = %v, want move_plan error", err)
+	}
+	if pinnedPath != srcPath {
+		t.Fatalf("pinned path = %q, want source %q", pinnedPath, srcPath)
+	}
+	if resumedTarget != "iqn.2026-04.com.smoothnas:web-app" {
+		t.Fatalf("resumed target = %q, want target ID from plan", resumedTarget)
 	}
 }
