@@ -20,6 +20,10 @@ var errSourceRaced = errors.New("source mtime changed during copy; cutover abort
 // must be quiesced and unpinned before the generic movement worker may plan it.
 var ErrLUNQuiesceRequired = errors.New("lun backing file requires target quiesce before movement")
 
+// ErrLUNResumeRequired marks a prepared LUN movement whose target lifecycle
+// cannot be completed because no resumer was wired into the worker.
+var ErrLUNResumeRequired = errors.New("lun target resume hook required after movement")
+
 // MovementPlan is one queued promote/demote, dispatched by the planner
 // and consumed by a Worker.
 type MovementPlan struct {
@@ -51,8 +55,20 @@ type movementClient interface {
 	MoveCutover(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error
 }
 
+type LUNTargetResumer interface {
+	Resume(ctx context.Context, targetID string) error
+}
+
 func NewWorker(db *sql.DB, client movementClient) *Worker {
 	return &Worker{db: db, client: client, setLUNPin: setLUNPin}
+}
+
+func NewWorkerWithLUNResumer(db *sql.DB, client movementClient, resumer LUNTargetResumer) *Worker {
+	w := NewWorker(db, client)
+	if resumer != nil {
+		w.resumeLUNTarget = resumer.Resume
+	}
+	return w
 }
 
 // Execute runs one movement plan. Exported so the legacy in-tree
@@ -161,7 +177,10 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return w.failAfterSwitch(ctx, p, fmt.Errorf("repin lun: %w", err))
 		}
 		w.persistLUNPin(ctx, oid)
-		if p.LUNTargetID != "" && w.resumeLUNTarget != nil {
+		if p.LUNTargetID != "" {
+			if w.resumeLUNTarget == nil {
+				return w.failAfterSwitch(ctx, p, fmt.Errorf("%w: target %s", ErrLUNResumeRequired, p.LUNTargetID))
+			}
 			if err := w.resumeLUNTarget(ctx, p.LUNTargetID); err != nil {
 				return w.failAfterSwitch(ctx, p, fmt.Errorf("resume lun target %s: %w", p.LUNTargetID, err))
 			}
