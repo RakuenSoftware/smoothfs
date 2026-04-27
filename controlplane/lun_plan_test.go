@@ -348,6 +348,9 @@ func TestPrepareStoppedLUNMovementPlanStopsBeforeClear(t *testing.T) {
 	if !plan.RePinLUN {
 		t.Fatal("plan should request LUN re-pin")
 	}
+	if plan.LUNTargetID != "iqn.2026-04.com.smoothnas:db" {
+		t.Fatalf("plan LUNTargetID = %q, want target ID", plan.LUNTargetID)
+	}
 
 	want := []string{
 		"stop:iqn.2026-04.com.smoothnas:db",

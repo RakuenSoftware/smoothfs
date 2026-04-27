@@ -171,5 +171,6 @@ func PrepareStoppedLUNMovementPlan(
 		}
 		return MovementPlan{}, err
 	}
+	plan.LUNTargetID = targetID
 	return plan, nil
 }

@@ -53,6 +53,9 @@ active movement model is separate work gated on production soak.
 - The control-plane preparation path now requires a `LUNTargetQuiescer`
   implementation to stop or drain the target before the pin is cleared, and
   resumes the target if plan preparation fails.
+- Prepared LUN movement plans now carry the target ID through to the worker,
+  letting the worker resume the target only after destination cutover and
+  `trusted.smoothfs.lun` re-pin have completed.
 
 ## Gating
 

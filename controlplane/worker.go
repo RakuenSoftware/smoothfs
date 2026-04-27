@@ -35,12 +35,14 @@ type MovementPlan struct {
 	RelPath        string
 	TransactionSeq uint64
 	RePinLUN       bool
+	LUNTargetID    string
 }
 
 type Worker struct {
-	db        *sql.DB
-	client    movementClient
-	setLUNPin func(string) error
+	db              *sql.DB
+	client          movementClient
+	setLUNPin       func(string) error
+	resumeLUNTarget func(context.Context, string) error
 }
 
 type movementClient interface {
@@ -159,6 +161,11 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return w.failAfterSwitch(ctx, p, fmt.Errorf("repin lun: %w", err))
 		}
 		w.persistLUNPin(ctx, oid)
+		if p.LUNTargetID != "" && w.resumeLUNTarget != nil {
+			if err := w.resumeLUNTarget(ctx, p.LUNTargetID); err != nil {
+				return w.failAfterSwitch(ctx, p, fmt.Errorf("resume lun target %s: %w", p.LUNTargetID, err))
+			}
+		}
 	}
 
 	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
