@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -174,6 +175,46 @@ func TestWorkerRePinPlanRejectsStaleKernelSourceRank(t *testing.T) {
 	}
 	if client.movePlanned {
 		t.Fatal("worker called MovePlan with stale kernel source tier")
+	}
+}
+
+func TestWorkerRePinPlanRequiresKernelUnpinned(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, _ := seedPool(t, sqlDB)
+	var oid [OIDLen]byte
+	oid[0] = 0x59
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, "luns/web-app.img")
+
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			CurrentTier: 0,
+			PinState:    PinHot,
+			RelPath:     "luns/web-app.img",
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0,
+		SourceTierRank: 0,
+		SourceLowerDir: t.TempDir(),
+		DestTierID:     "slow",
+		DestTierRank:   1,
+		DestLowerDir:   t.TempDir(),
+		RelPath:        "luns/web-app.img",
+		TransactionSeq: 16,
+		RePinLUN:       true,
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if err == nil || !strings.Contains(err.Error(), "incompatible pin state") {
+		t.Fatalf("Execute error = %v, want incompatible pin state", err)
+	}
+	if client.movePlanned {
+		t.Fatal("worker called MovePlan with non-none kernel pin state")
 	}
 }
 
