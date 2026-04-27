@@ -122,6 +122,10 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return fmt.Errorf("%w: object %s requires explicit rel_path in movement plan",
 				ErrLUNPlacementStale, oid)
 		}
+		if p.SourceLowerDir == "" || p.DestLowerDir == "" {
+			return fmt.Errorf("%w: object %s requires explicit lower directories in movement plan",
+				ErrLUNPlacementStale, oid)
+		}
 		if p.DestTierID == p.SourceTierID || p.DestTierRank == p.SourceTierRank {
 			return ErrDestinationTierBad
 		}

@@ -110,6 +110,9 @@ active movement model is separate work gated on production soak.
 - Pre-cutover rollback now verifies that source re-pin is visible in kernel
   inspect before target resume, preventing resume onto an unpinned source file
   when xattr writes succeed but pin state does not converge.
+- Prepared LUN worker admission now requires explicit source and destination
+  lower directories before `MOVE_PLAN`, preventing direct-worker plan payloads
+  from falling back to implicit relative paths.
 
 ## Gating
 
