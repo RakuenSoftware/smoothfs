@@ -72,6 +72,9 @@ active movement model is separate work gated on production soak.
 - Quiesced LUN plan building now rejects stale placement when kernel
   inspection reports a current tier rank that does not match the DB source
   tier.
+- Prepared LUN moves now re-inspect placement after cutover and before
+  re-pin or target resume, failing closed if the kernel still reports a stale
+  destination tier or rel_path.
 
 ## Gating
 
