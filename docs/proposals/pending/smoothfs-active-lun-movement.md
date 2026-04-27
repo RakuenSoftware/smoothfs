@@ -75,6 +75,9 @@ active movement model is separate work gated on production soak.
 - Prepared LUN moves now re-inspect placement after cutover and before
   re-pin or target resume, failing closed if the kernel still reports a stale
   destination tier or rel_path.
+- Destination re-pin is now verified with a final kernel inspect before the
+  worker records `pin_lun` or resumes the target, so a successful xattr write
+  is not trusted until `PIN_LUN` is visible.
 
 ## Gating
 
