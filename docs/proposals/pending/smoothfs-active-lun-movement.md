@@ -56,6 +56,10 @@ active movement model is separate work gated on production soak.
 - Prepared LUN movement plans now carry the target ID through to the worker,
   letting the worker resume the target only after destination cutover and
   `trusted.smoothfs.lun` re-pin have completed.
+- Workers now expose a `NewWorkerWithLUNResumer` wiring point and fail prepared
+  LUN moves with `ErrLUNResumeRequired` if a target ID is present but no
+  resumer is installed, avoiding silent completion with the target still
+  stopped.
 
 ## Gating
 
