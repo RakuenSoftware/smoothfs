@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -121,6 +122,13 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		if p.RelPath == "" || p.RelPath == oid {
 			return fmt.Errorf("%w: object %s requires explicit rel_path in movement plan",
 				ErrLUNPlacementStale, oid)
+		}
+		cleanRelPath := filepath.Clean(p.RelPath)
+		if filepath.IsAbs(p.RelPath) || cleanRelPath != p.RelPath ||
+			cleanRelPath == "." || cleanRelPath == ".." ||
+			strings.HasPrefix(cleanRelPath, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("%w: object %s rel_path=%q is not normalized relative path",
+				ErrLUNPlacementStale, oid, p.RelPath)
 		}
 		if p.SourceLowerDir == "" || p.DestLowerDir == "" {
 			return fmt.Errorf("%w: object %s requires explicit lower directories in movement plan",
