@@ -2,6 +2,8 @@ package controlplane
 
 import (
 	"context"
+	"database/sql"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -39,6 +41,19 @@ func (f *fakeMovementClient) MovePlan(uuid.UUID, [OIDLen]byte, uint8, uint64) er
 func (f *fakeMovementClient) MoveCutover(uuid.UUID, [OIDLen]byte, uint64) error {
 	f.cutoverCalled = true
 	return nil
+}
+
+func seedWorkerLUNObject(t *testing.T, sqlDB *sql.DB, nsID, tierID string, oid [OIDLen]byte, relPath string) {
+	t.Helper()
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			(?, ?, ?, 'placed', 'pin_lun', ?)`,
+		hex.EncodeToString(oid[:]), nsID, tierID, relPath)
+	if err != nil {
+		t.Fatalf("insert lun object: %v", err)
+	}
 }
 
 type fakeLUNTargetResumer struct {
@@ -86,6 +101,42 @@ func TestWorkerRefusesPinnedLUNBeforeMovePlan(t *testing.T) {
 	}
 }
 
+func TestWorkerRePinPlanRequiresLUNRecord(t *testing.T) {
+	sqlDB := testDB(t)
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			PinState: PinNone,
+			RelPath:  "luns/web-app.img",
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+
+	var oid [OIDLen]byte
+	oid[0] = 0x57
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    "ns",
+		SourceTierID:   "fast",
+		SourceTierRank: 0,
+		SourceLowerDir: t.TempDir(),
+		DestTierID:     "slow",
+		DestTierRank:   1,
+		DestLowerDir:   t.TempDir(),
+		RelPath:        "luns/web-app.img",
+		TransactionSeq: 14,
+		RePinLUN:       true,
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if !errors.Is(err, ErrLUNRecordRequired) {
+		t.Fatalf("Execute error = %v, want ErrLUNRecordRequired", err)
+	}
+	if client.movePlanned {
+		t.Fatal("worker called MovePlan without a DB LUN record")
+	}
+}
+
 func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 	sqlDB := testDB(t)
 	nsID, tier0, tier1 := seedPool(t, sqlDB)
@@ -104,6 +155,7 @@ func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 
 	var oid [OIDLen]byte
 	oid[0] = 0x51
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, relPath)
 	client := &fakeMovementClient{
 		inspectResults: []*InspectResult{
 			{
@@ -215,6 +267,7 @@ func TestWorkerFailsPreparedLUNMoveWithoutResumer(t *testing.T) {
 
 	var oid [OIDLen]byte
 	oid[0] = 0x52
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, relPath)
 	client := &fakeMovementClient{
 		inspectResults: []*InspectResult{
 			{
@@ -494,6 +547,7 @@ func TestWorkerRePinsSourceAndResumesTargetBeforeSwitchFailure(t *testing.T) {
 
 	var oid [OIDLen]byte
 	oid[0] = 0x53
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, relPath)
 	client := &fakeMovementClient{
 		inspectResult: &InspectResult{
 			PinState: PinNone,
@@ -559,6 +613,7 @@ func TestWorkerDoesNotResumeTargetWhenSourceRePinFails(t *testing.T) {
 
 	var oid [OIDLen]byte
 	oid[0] = 0x54
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, relPath)
 	movePlanErr := errors.New("kernel refused plan")
 	repinErr := errors.New("repin failed")
 	client := &fakeMovementClient{

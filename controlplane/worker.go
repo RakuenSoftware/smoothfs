@@ -113,6 +113,11 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	if ins.PinState == PinLUN {
 		return fmt.Errorf("%w: object %s", ErrLUNQuiesceRequired, oid)
 	}
+	if p.RePinLUN {
+		if err := w.requireLUNMoveRecord(ctx, p, oid); err != nil {
+			return err
+		}
+	}
 	if p.RelPath == "" || p.RelPath == oid {
 		if ins.RelPath == "" {
 			return fmt.Errorf("kernel returned empty rel_path for object %s", oid)
@@ -247,6 +252,35 @@ func (w *Worker) rollbackLUNBeforeSwitch(ctx context.Context, p MovementPlan, sr
 		return w.abort(ctx, p, errors.Join(append([]error{cause}, errs...)...))
 	}
 	return w.abort(ctx, p, cause)
+}
+
+func (w *Worker) requireLUNMoveRecord(ctx context.Context, p MovementPlan, oid string) error {
+	var namespaceID, currentTierID, pinState, movementState string
+	err := w.db.QueryRowContext(ctx, `
+		SELECT namespace_id, current_tier_id, pin_state, movement_state
+		  FROM smoothfs_objects
+		 WHERE object_id = ?`, oid).Scan(&namespaceID, &currentTierID, &pinState, &movementState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: object %s", ErrLUNRecordRequired, oid)
+	}
+	if err != nil {
+		return fmt.Errorf("read lun movement record: %w", err)
+	}
+	if namespaceID != p.NamespaceID {
+		return fmt.Errorf("%w: object %s namespace=%q plan_namespace=%q",
+			ErrLUNRecordRequired, oid, namespaceID, p.NamespaceID)
+	}
+	if pinState != string(PinLUN) {
+		return fmt.Errorf("%w: object %s pin_state=%q", ErrLUNRecordRequired, oid, pinState)
+	}
+	if movementState != string(StatePlaced) {
+		return fmt.Errorf("%w: object %s movement_state=%q", ErrLUNRecordRequired, oid, movementState)
+	}
+	if currentTierID != p.SourceTierID {
+		return fmt.Errorf("%w: db source tier %q plan source tier %q",
+			ErrLUNPlacementStale, currentTierID, p.SourceTierID)
+	}
+	return nil
 }
 
 func (w *Worker) verifyLUNDestination(p MovementPlan, oid string) error {

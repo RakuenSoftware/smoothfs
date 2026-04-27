@@ -78,6 +78,9 @@ active movement model is separate work gated on production soak.
 - Destination re-pin is now verified with a final kernel inspect before the
   worker records `pin_lun` or resumes the target, so a successful xattr write
   is not trusted until `PIN_LUN` is visible.
+- Worker-side prepared LUN moves now require the DB row to still record a
+  placed `pin_lun` object on the plan source tier before `MOVE_PLAN`, closing
+  the direct-worker bypass around the quiesced LUN plan builder.
 
 ## Gating
 
