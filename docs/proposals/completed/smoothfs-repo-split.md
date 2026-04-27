@@ -1,6 +1,12 @@
 # Proposal: split smoothfs into its own project
 
-**Status:** Pending
+**Status:** Complete
+
+Completed in this repository as the standalone `github.com/RakuenSoftware/smoothfs`
+module. The repo now owns the kernel module, Samba VFS module, control-plane
+package, smoothfs-specific docs, Debian packaging metadata, root `make test`
+entry point, and GitHub Actions Go contract check. SmoothNAS consumes this
+surface as an appliance integrator.
 
 ---
 
