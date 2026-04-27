@@ -1,6 +1,6 @@
 # smoothfs support matrix
 
-[Dutch version](smoothfs-support-matrix.nl.md)
+[Dutch version](smoothfs-support-matrix.nd.md)
 
 The smoothfs stack has three independently-versioned moving parts —
 the kernel module, the Samba VFS module, and the tierd control plane —
