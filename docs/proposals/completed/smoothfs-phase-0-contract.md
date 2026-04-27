@@ -1,7 +1,7 @@
 # Proposal: smoothfs — Phase 0 Contract and Conformance Spec
 
-**Status:** Pending
-**Parent:** [`smoothfs-stacked-tiering.md`](./smoothfs-stacked-tiering.md)
+**Status:** Complete
+**Parent:** [`smoothfs-stacked-tiering.md`](../pending/smoothfs-stacked-tiering.md)
 
 ---
 
@@ -520,7 +520,7 @@ The parent proposal §0.10 says Phase 1 may not start until five things are true
 
 | Exit criterion | Status | Evidence / next step |
 |---|---|---|
-| Phase 0 contract document exists | **complete (this document)** | landed in `docs/proposals/pending/smoothfs-phase-0-contract.md` |
+| Phase 0 contract document exists | **complete (this document)** | landed in `docs/proposals/completed/smoothfs-phase-0-contract.md` |
 | Reviewed and accepted by a named engineering reviewer with VFS / stacked-filesystem experience | **outstanding** | reviewer slot empty; PR description must name reviewer before merge |
 | Conformance test plan exists with named owner | **partial** — plan exists (§0.9), owner TBD | named owner must be set in `docs/proposals/pending/smoothfs-phase-0-baseline.md` when that file is created |
 | Performance regression harness exists and produces a baseline number against the current FUSE stack | **outstanding** | next deliverable; produces `smoothfs-phase-0-baseline.md` |

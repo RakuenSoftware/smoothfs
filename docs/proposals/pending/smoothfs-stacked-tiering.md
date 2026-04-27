@@ -10,7 +10,7 @@ This section tracks what has shipped against this proposal. Updated as work land
 
 ### Phase 0 — Contract and Conformance Spec — **complete**
 
-[`smoothfs-phase-0-contract.md`](./smoothfs-phase-0-contract.md) closes §0.1–0.10 with unambiguous rulings on object identity, placement authority, the nine-state movement transaction model, per-case concurrency semantics, heat/policy contract, lower-fs capability matrix (XFS-on-LV, ZFS expected values), NFS/SMB/iSCSI invariants, deterministic crash repair per state, and the conformance test plan. Appendix B specifies the schema migration Phase 1 must add.
+[`smoothfs-phase-0-contract.md`](../completed/smoothfs-phase-0-contract.md) closes §0.1–0.10 with unambiguous rulings on object identity, placement authority, the nine-state movement transaction model, per-case concurrency semantics, heat/policy contract, lower-fs capability matrix (XFS-on-LV, ZFS expected values), NFS/SMB/iSCSI invariants, deterministic crash repair per state, and the conformance test plan. Appendix B specifies the schema migration Phase 1 must add.
 
 ### Phase 1 — Core Stacked Filesystem — **scaffold landed and validated**
 
