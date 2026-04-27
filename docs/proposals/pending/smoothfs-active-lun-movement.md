@@ -116,6 +116,8 @@ active movement model is separate work gated on production soak.
 - Prepared LUN worker admission now requires those lower directories to be
   absolute paths, rejecting relative direct-worker payloads before
   `MOVE_PLAN`.
+- Prepared LUN worker admission now rejects missing source or destination tier
+  IDs before `MOVE_PLAN`, preventing malformed direct-worker tier payloads.
 
 ## Gating
 

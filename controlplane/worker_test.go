@@ -178,6 +178,46 @@ func TestWorkerRePinPlanRejectsDestinationTierNoOp(t *testing.T) {
 	}
 }
 
+func TestWorkerRePinPlanRequiresDestinationTierID(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, _ := seedPool(t, sqlDB)
+	var oid [OIDLen]byte
+	oid[0] = 0x64
+	seedWorkerLUNObject(t, sqlDB, nsID, tier0, oid, "luns/web-app.img")
+
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			CurrentTier: 0,
+			PinState:    PinNone,
+			RelPath:     "luns/web-app.img",
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0,
+		SourceTierRank: 0,
+		SourceLowerDir: t.TempDir(),
+		DestTierID:     "",
+		DestTierRank:   1,
+		DestLowerDir:   t.TempDir(),
+		RelPath:        "luns/web-app.img",
+		TransactionSeq: 27,
+		RePinLUN:       true,
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if !errors.Is(err, ErrDestinationTierBad) {
+		t.Fatalf("Execute error = %v, want ErrDestinationTierBad", err)
+	}
+	if client.movePlanned {
+		t.Fatal("worker called MovePlan with empty destination tier ID")
+	}
+}
+
 func TestWorkerRePinPlanRejectsStaleKernelSourceRank(t *testing.T) {
 	sqlDB := testDB(t)
 	nsID, tier0, _ := seedPool(t, sqlDB)
