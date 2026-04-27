@@ -130,6 +130,9 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return fmt.Errorf("%w: object %s requires absolute lower directories in movement plan",
 				ErrLUNPlacementStale, oid)
 		}
+		if p.SourceTierID == "" || p.DestTierID == "" {
+			return ErrDestinationTierBad
+		}
 		if p.DestTierID == p.SourceTierID || p.DestTierRank == p.SourceTierRank {
 			return ErrDestinationTierBad
 		}
