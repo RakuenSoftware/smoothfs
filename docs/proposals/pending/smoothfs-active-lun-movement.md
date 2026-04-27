@@ -89,6 +89,9 @@ active movement model is separate work gated on production soak.
 - Prepared LUN worker admission now rejects source rel_path drift between
   kernel inspect and plan input before `MOVE_PLAN`, preventing stale-path
   direct worker submissions.
+- Prepared LUN worker admission now also verifies kernel `CurrentTierPath`
+  against the computed source file path before `MOVE_PLAN`, blocking
+  stale-path direct worker submissions even when rel_path strings match.
 
 ## Gating
 
