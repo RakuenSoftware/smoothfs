@@ -44,6 +44,9 @@ active movement model is separate work gated on production soak.
 - Quiesced LUN movement now has a dedicated plan builder. It requires the
   kernel pin to be cleared, requires the DB row to still record `pin_lun` as
   the re-pin obligation, and emits only an opt-in plan with `RePinLUN` set.
+- The control-plane library now exposes idempotent `ClearLUNPin` cleanup for
+  the administrative quiesce path, clearing `trusted.smoothfs.lun` after the
+  target has been stopped or drained.
 
 ## Gating
 
