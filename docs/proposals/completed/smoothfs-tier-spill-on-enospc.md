@@ -1,7 +1,7 @@
 # Proposal: smoothfs — Tier Spill on Near-ENOSPC
 
 **Status:** Complete
-**Parent:** [`smoothfs-stacked-tiering.md`](../pending/smoothfs-stacked-tiering.md)
+**Parent:** [`smoothfs-stacked-tiering.md`](./smoothfs-stacked-tiering.md)
 **Depends on:** Phase 1 (inode passthrough), Phase 2 (movement cutover). No
 new dependency on Phase 5 (xattr) beyond what is already live.
 
