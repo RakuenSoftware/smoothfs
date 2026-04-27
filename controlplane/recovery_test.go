@@ -147,6 +147,45 @@ func TestRecoverLeavesTerminalStatesAlone(t *testing.T) {
 	}
 }
 
+func TestRecoverPreservesFailedLUNAtDestination(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, tier1 := seedPool(t, sqlDB)
+
+	var oid [OIDLen]byte
+	oid[0] = 0x41
+	seedMidMove(t, sqlDB, nsID, tier0, tier1, StateFailed, 1, oid)
+	if _, err := sqlDB.Exec(`
+		UPDATE smoothfs_objects
+		   SET pin_state = 'pin_lun',
+		       failure_reason = ?
+		 WHERE object_id = ?`,
+		ErrLUNResumeRequired.Error(),
+		hex.EncodeToString(oid[:])); err != nil {
+		t.Fatalf("mark failed lun: %v", err)
+	}
+
+	if err := Recover(context.Background(), sqlDB); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	cur, intended, gotState, lastGen, reason := readObjectState(t, sqlDB, oid)
+	if gotState != string(StateFailed) {
+		t.Fatalf("state = %q, want %q", gotState, StateFailed)
+	}
+	if cur.String != tier1 {
+		t.Fatalf("current_tier = %q, want %q (dest)", cur.String, tier1)
+	}
+	if intended.Valid {
+		t.Fatalf("intended_tier should be NULL, got %q", intended.String)
+	}
+	if lastGen != 0 {
+		t.Fatalf("last_committed_cutover_gen = %d, want unchanged 0", lastGen)
+	}
+	if reason != ErrLUNResumeRequired.Error() {
+		t.Fatalf("failure_reason = %q, want preserved", reason)
+	}
+}
+
 func TestRecoverSkipsPostCutoverWithoutDest(t *testing.T) {
 	sqlDB := testDB(t)
 	nsID, tier0, _ := seedPool(t, sqlDB)
