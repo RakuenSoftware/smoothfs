@@ -228,6 +228,19 @@ struct smoothfs_sb_info {
 	atomic64_t          oldest_staged_write_ns;
 	atomic64_t          last_drain_ns;
 	atomic64_t          metadata_tier_skips;
+	/* Range-staging crash/remount recovery (Phase 6O). Counters are
+	 * snapshot-once at mount-time replay; recovery_pending decrements
+	 * as recovered ranges drain. recovered_range_tier_mask is a
+	 * bitmask of source tiers seen at replay (does not narrow as
+	 * drains complete — operators read it once to know which tiers
+	 * must come drain-active to flush recovered bytes). */
+	atomic64_t          range_staging_recovered_bytes;
+	atomic64_t          range_staging_recovered_writes;
+	atomic64_t          range_staging_recovery_pending;
+	atomic64_t          oldest_recovered_write_ns;
+	atomic64_t          last_recovery_ns;
+	atomic_t            recovered_range_tier_mask;
+	char                last_recovery_reason[64];
 	spinlock_t          write_staging_lock;
 	u32                 metadata_active_tier_mask;
 	u32                 write_staging_drain_active_tier_mask;
@@ -322,6 +335,7 @@ struct smoothfs_inode_info {
 	bool            write_staged;
 	u8              write_staged_drain_tier;
 	bool            range_staged;
+	bool            range_staged_recovered;  /* set on remount replay; drain decrements recovery_pending */
 	u8              range_staged_source_tier;
 	struct path     range_staged_path;
 	struct mutex    range_staging_lock;
@@ -527,6 +541,20 @@ int  smoothfs_placement_record(struct smoothfs_sb_info *sbi,
 			       u8 intended_tier, bool sync);
 int  smoothfs_placement_replay(struct super_block *sb,
 			       struct smoothfs_sb_info *sbi);
+
+/* range_staging.c — Phase 6O recovery. Persists per-inode range-staging
+ * metadata to a sidecar file alongside the .stage data file, replays it
+ * on mount, and lets the existing drain path flush recovered ranges once
+ * the source tier becomes drain-active. */
+int  smoothfs_range_staging_persist(struct smoothfs_sb_info *sbi,
+				    const u8 oid[SMOOTHFS_OID_LEN],
+				    u8 source_tier,
+				    const struct list_head *ranges,
+				    u64 oldest_write_ns);
+void smoothfs_range_staging_clear(struct smoothfs_sb_info *sbi,
+				  const u8 oid[SMOOTHFS_OID_LEN]);
+int  smoothfs_range_staging_replay(struct super_block *sb,
+				   struct smoothfs_sb_info *sbi);
 
 /* netlink.c */
 int  smoothfs_netlink_init(void);

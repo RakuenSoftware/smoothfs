@@ -15,6 +15,7 @@ smoothfs-y := \
 	lock.o \
 	oid.o \
 	placement.o \
+	range_staging.o \
 	netlink.o \
 	lower.o \
 	probe.o \

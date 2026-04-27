@@ -173,6 +173,11 @@ static ssize_t smoothfs_range_stage_write(struct kiocb *iocb,
 		if (end > i_size_read(inode))
 			i_size_write(inode, end);
 		smoothfs_write_staging_note_range_write(sbi, ret);
+		/* Persist the updated range list so a crash before drain
+		 * can be recovered on the next mount (Phase 6O). */
+		(void)smoothfs_range_staging_persist(sbi, si->oid, source_tier,
+						     &si->range_staged_ranges,
+						     (u64)ktime_get_real_ns());
 	}
 	kfree(new_range);
 	fput(stage);

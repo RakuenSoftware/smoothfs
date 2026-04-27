@@ -406,6 +406,89 @@ static ssize_t metadata_tier_skips_show(struct kobject *kobj,
 		(long long)atomic64_read(&pool->sbi->metadata_tier_skips));
 }
 
+/* Phase 6O — range-staging recovery status (read-only). */
+static ssize_t range_staging_recovery_supported_show(struct kobject *kobj,
+						     struct kobj_attribute *attr,
+						     char *buf)
+{
+	(void)kobj;
+	(void)attr;
+	return sysfs_emit(buf, "1\n");
+}
+
+static ssize_t range_staging_recovered_bytes_show(struct kobject *kobj,
+						  struct kobj_attribute *attr,
+						  char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->range_staging_recovered_bytes));
+}
+
+static ssize_t range_staging_recovered_writes_show(struct kobject *kobj,
+						   struct kobj_attribute *attr,
+						   char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->range_staging_recovered_writes));
+}
+
+static ssize_t range_staging_recovery_pending_show(struct kobject *kobj,
+						   struct kobj_attribute *attr,
+						   char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->range_staging_recovery_pending));
+}
+
+static ssize_t recovered_range_tier_mask_show(struct kobject *kobj,
+					      struct kobj_attribute *attr,
+					      char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "0x%x\n",
+		(unsigned int)atomic_read(&pool->sbi->recovered_range_tier_mask));
+}
+
+static ssize_t oldest_recovered_write_at_show(struct kobject *kobj,
+					      struct kobj_attribute *attr,
+					      char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->oldest_recovered_write_ns));
+}
+
+static ssize_t last_recovery_at_show(struct kobject *kobj,
+				     struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->last_recovery_ns));
+}
+
+static ssize_t last_recovery_reason_show(struct kobject *kobj,
+					 struct kobj_attribute *attr,
+					 char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+	struct smoothfs_sb_info *sbi = pool->sbi;
+	char reason[sizeof(sbi->last_recovery_reason)];
+
+	spin_lock(&sbi->write_staging_lock);
+	strscpy(reason, sbi->last_recovery_reason, sizeof(reason));
+	spin_unlock(&sbi->write_staging_lock);
+	return sysfs_emit(buf, "%s\n", reason);
+}
+
 static struct kobj_attribute spill_creates_total_attr =
 	__ATTR_RO(spill_creates_total);
 static struct kobj_attribute spill_creates_failed_all_tiers_attr =
@@ -448,6 +531,22 @@ static struct kobj_attribute write_staging_drain_active_tier_mask_attr =
 	__ATTR_RW(write_staging_drain_active_tier_mask);
 static struct kobj_attribute metadata_tier_skips_attr =
 	__ATTR_RO(metadata_tier_skips);
+static struct kobj_attribute range_staging_recovery_supported_attr =
+	__ATTR_RO(range_staging_recovery_supported);
+static struct kobj_attribute range_staging_recovered_bytes_attr =
+	__ATTR_RO(range_staging_recovered_bytes);
+static struct kobj_attribute range_staging_recovered_writes_attr =
+	__ATTR_RO(range_staging_recovered_writes);
+static struct kobj_attribute range_staging_recovery_pending_attr =
+	__ATTR_RO(range_staging_recovery_pending);
+static struct kobj_attribute recovered_range_tier_mask_attr =
+	__ATTR_RO(recovered_range_tier_mask);
+static struct kobj_attribute oldest_recovered_write_at_attr =
+	__ATTR_RO(oldest_recovered_write_at);
+static struct kobj_attribute last_recovery_at_attr =
+	__ATTR_RO(last_recovery_at);
+static struct kobj_attribute last_recovery_reason_attr =
+	__ATTR_RO(last_recovery_reason);
 
 static struct attribute *smoothfs_pool_attrs[] = {
 	&spill_creates_total_attr.attr,
@@ -471,6 +570,14 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&metadata_active_tier_mask_attr.attr,
 	&write_staging_drain_active_tier_mask_attr.attr,
 	&metadata_tier_skips_attr.attr,
+	&range_staging_recovery_supported_attr.attr,
+	&range_staging_recovered_bytes_attr.attr,
+	&range_staging_recovered_writes_attr.attr,
+	&range_staging_recovery_pending_attr.attr,
+	&recovered_range_tier_mask_attr.attr,
+	&oldest_recovered_write_at_attr.attr,
+	&last_recovery_at_attr.attr,
+	&last_recovery_reason_attr.attr,
 	NULL,
 };
 
@@ -810,6 +917,8 @@ static int smoothfs_write_staging_drain_one_range(struct smoothfs_sb_info *sbi,
 	s64 drained = 0;
 	int err = 0;
 	bool cleared = false;
+	bool was_recovered = false;
+	u8 oid_snapshot[SMOOTHFS_OID_LEN];
 
 	mutex_lock(&si->range_staging_lock);
 	if (!READ_ONCE(si->range_staged))
@@ -876,6 +985,11 @@ static int smoothfs_write_staging_drain_one_range(struct smoothfs_sb_info *sbi,
 	smoothfs_range_staged_ranges_clear(si);
 	WRITE_ONCE(si->range_staged, false);
 	WRITE_ONCE(si->range_staged_source_tier, SMOOTHFS_MAX_TIERS);
+	if (READ_ONCE(si->range_staged_recovered)) {
+		was_recovered = true;
+		WRITE_ONCE(si->range_staged_recovered, false);
+	}
+	memcpy(oid_snapshot, si->oid, SMOOTHFS_OID_LEN);
 	cleared = true;
 
 out_unlock:
@@ -895,8 +1009,18 @@ out_unlock:
 		path_put(&stage_path);
 		if (unlink_err)
 			return unlink_err;
+		/* Phase 6O: drop the per-inode recovery sidecar so a
+		 * future remount doesn't try to replay an already-drained
+		 * range. */
+		smoothfs_range_staging_clear(sbi, oid_snapshot);
 		atomic64_sub(drained, &sbi->staged_bytes);
 		atomic64_sub(drained, &sbi->range_staged_bytes);
+		if (was_recovered) {
+			s64 pending = atomic64_sub_return(drained,
+				&sbi->range_staging_recovery_pending);
+			if (pending < 0)
+				atomic64_set(&sbi->range_staging_recovery_pending, 0);
+		}
 		atomic64_set(&sbi->last_drain_ns, ktime_get_real_ns());
 		smoothfs_write_staging_set_reason(sbi, "range-staged-drain");
 		if (!smoothfs_write_staging_has_work(sbi))
@@ -1256,6 +1380,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	si->write_staged = false;
 	si->write_staged_drain_tier = SMOOTHFS_MAX_TIERS;
 	si->range_staged = false;
+	si->range_staged_recovered = false;
 	si->range_staged_source_tier = SMOOTHFS_MAX_TIERS;
 	si->range_staged_path.mnt = NULL;
 	si->range_staged_path.dentry = NULL;
@@ -1505,6 +1630,13 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	atomic64_set(&sbi->oldest_staged_write_ns, 0);
 	atomic64_set(&sbi->last_drain_ns, 0);
 	atomic64_set(&sbi->metadata_tier_skips, 0);
+	atomic64_set(&sbi->range_staging_recovered_bytes, 0);
+	atomic64_set(&sbi->range_staging_recovered_writes, 0);
+	atomic64_set(&sbi->range_staging_recovery_pending, 0);
+	atomic64_set(&sbi->oldest_recovered_write_ns, 0);
+	atomic64_set(&sbi->last_recovery_ns, 0);
+	atomic_set(&sbi->recovered_range_tier_mask, 0);
+	sbi->last_recovery_reason[0] = '\0';
 	spin_lock_init(&sbi->write_staging_lock);
 	WRITE_ONCE(sbi->metadata_active_tier_mask, BIT(sbi->fastest_tier));
 	WRITE_ONCE(sbi->write_staging_drain_active_tier_mask,
@@ -1562,6 +1694,12 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		smoothfs_placement_close(sbi);
 		goto out_tiers;
 	}
+
+	/* Phase 6O: replay buffered range-staging metadata. Restores
+	 * read-merge state for inodes that had unflushed staged ranges
+	 * at the previous unmount/crash. Failures here do NOT abort the
+	 * mount — recovery is best-effort and does not gate availability. */
+	(void)smoothfs_range_staging_replay(sb, sbi);
 
 	atomic64_set(&sbi->transaction_seq, 1);
 	sbi->quiesced = false;
