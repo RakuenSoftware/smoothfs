@@ -1,0 +1,106 @@
+#!/bin/bash
+# Range-staging crash/replay smoke harness (Phase 6O).
+#
+# Stages a range write while the source tier is NOT drain-active, then
+# simulates a crash by unmounting + reloading the module, remounts the
+# pool, and verifies that:
+#
+#   1. The read-merge view is restored (smoothfs reports the staged
+#      bytes overlaid on the original lower file) WITHOUT touching the
+#      source tier (no drain has happened yet).
+#   2. range_staging_recovered_bytes / _writes report the replay.
+#   3. range_staging_recovery_pending equals the staged bytes.
+#   4. recovered_range_tier_mask names the source tier.
+#   5. After SmoothNAS marks the source tier drain-active, the recovered
+#      range drains to the source tier and recovery_pending returns to 0.
+#
+# A second crash mid-drain is exercised by re-staging a fresh range and
+# unmounting again before drain-active completes — the new mount must
+# also recover that range without data loss.
+#
+# This is a pragmatic harness rather than a true crash injector. The
+# unmount + rmmod cycle still exercises the mount-time replay path that
+# is the load-bearing piece of the 6O acceptance criteria.
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/tier_spill_lib.sh"
+
+UUID=00000000-0000-0000-0000-00000000f207
+SPILL_ROOT=${SPILL_ROOT:-/tmp/smoothfs-write-staging-range-replay}
+export SPILL_ROOT SPILL_UUID=$UUID
+trap spill_cleanup EXIT
+
+remount_pool() {
+	umount "$SPILL_ROOT/server"
+	rmmod smoothfs
+	modprobe smoothfs
+	mount -t smoothfs \
+		-o "pool=writestagerangereplay,uuid=$UUID,tiers=$SPILL_ROOT/fast:$SPILL_ROOT/slow" \
+		none "$SPILL_ROOT/server"
+}
+
+echo "=== laying down 2-tier XFS smoothfs ==="
+spill_setup_pool writestagerangereplay "$UUID"
+
+SYSFS="/sys/fs/smoothfs/$UUID"
+if [ ! -d "$SYSFS" ]; then
+	echo "  FAIL  missing smoothfs sysfs pool $SYSFS"
+	exit 1
+fi
+echo 1 > "$SYSFS/write_staging_enabled"
+echo 98 > "$SYSFS/write_staging_full_pct"
+spill_assert test "$(cat "$SYSFS/range_staging_recovery_supported")" = "1"
+
+printf 'abcdefghij\n' > "$SPILL_ROOT/slow/range.txt"
+spill_assert test ! -e "$SPILL_ROOT/fast/range.txt"
+
+echo "=== buffered range-stage write through smoothfs ==="
+printf 'XYZ' | dd of="$SPILL_ROOT/server/range.txt" bs=1 seek=3 conv=notrunc status=none
+spill_assert grep -qx 'abcdefghij' "$SPILL_ROOT/slow/range.txt"
+spill_assert grep -qx 'abcXYZghij' "$SPILL_ROOT/server/range.txt"
+spill_assert test "$(cat "$SYSFS/range_staged_bytes")" = "3"
+
+echo "=== crash before drain: unmount + rmmod + remount ==="
+remount_pool
+
+SYSFS="/sys/fs/smoothfs/$UUID"
+spill_assert test -d "$SYSFS"
+spill_assert test "$(cat "$SYSFS/range_staging_recovered_bytes")" = "3"
+spill_assert test "$(cat "$SYSFS/range_staging_recovered_writes")" = "1"
+spill_assert test "$(cat "$SYSFS/range_staging_recovery_pending")" = "3"
+recovery_reason=$(cat "$SYSFS/last_recovery_reason")
+spill_assert test "$recovery_reason" = "remount-replay"
+mask=$(cat "$SYSFS/recovered_range_tier_mask")
+if [ "$mask" != "0x2" ]; then
+	echo "  FAIL  recovered_range_tier_mask=$mask, want 0x2"
+	spill_rc=1
+fi
+
+echo "=== read-merge view available pre-drain (no source-tier wake) ==="
+spill_assert grep -qx 'abcXYZghij' "$SPILL_ROOT/server/range.txt"
+spill_assert grep -qx 'abcdefghij' "$SPILL_ROOT/slow/range.txt"
+
+echo "=== drain after source tier is marked active ==="
+echo 0x3 > "$SYSFS/write_staging_drain_active_tier_mask"
+spill_assert grep -qx 'abcXYZghij' "$SPILL_ROOT/slow/range.txt"
+spill_assert test "$(cat "$SYSFS/range_staged_bytes")" = "0"
+spill_assert test "$(cat "$SYSFS/range_staging_recovery_pending")" = "0"
+spill_assert test "$(cat "$SYSFS/last_drain_reason")" = "range-staged-drain"
+
+echo "=== crash during drain: re-stage + unmount mid-cycle ==="
+echo 0x1 > "$SYSFS/write_staging_drain_active_tier_mask"
+printf '123' | dd of="$SPILL_ROOT/server/range.txt" bs=1 seek=6 conv=notrunc status=none
+spill_assert test "$(cat "$SYSFS/range_staged_bytes")" = "3"
+remount_pool
+
+SYSFS="/sys/fs/smoothfs/$UUID"
+spill_assert test "$(cat "$SYSFS/range_staging_recovered_bytes")" = "3"
+spill_assert grep -qx 'abcXYZ123ij' "$SPILL_ROOT/server/range.txt"
+
+echo 0x3 > "$SYSFS/write_staging_drain_active_tier_mask"
+spill_assert grep -qx 'abcXYZ123ij' "$SPILL_ROOT/slow/range.txt"
+spill_assert test "$(cat "$SYSFS/range_staging_recovery_pending")" = "0"
+
+spill_finish "write_staging_range_crash_replay"
