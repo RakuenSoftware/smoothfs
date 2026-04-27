@@ -128,6 +128,13 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return fmt.Errorf("%w: kernel source rel_path %q plan rel_path %q",
 				ErrLUNPlacementStale, ins.RelPath, p.RelPath)
 		}
+		if ins.CurrentTierPath != "" && p.RelPath != "" {
+			planSourcePath := filepath.Clean(filepath.Join(p.SourceLowerDir, p.RelPath))
+			if filepath.Clean(ins.CurrentTierPath) != planSourcePath {
+				return fmt.Errorf("%w: kernel source path %q plan source path %q",
+					ErrLUNPlacementStale, ins.CurrentTierPath, planSourcePath)
+			}
+		}
 	}
 	if p.RelPath == "" || p.RelPath == oid {
 		if ins.RelPath == "" {
