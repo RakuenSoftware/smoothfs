@@ -47,6 +47,9 @@ active movement model is separate work gated on production soak.
 - The control-plane library now exposes idempotent `ClearLUNPin` cleanup for
   the administrative quiesce path, clearing `trusted.smoothfs.lun` after the
   target has been stopped or drained.
+- Quiesced LUN plan preparation now composes pin clear plus plan build and
+  fails closed: if plan construction cannot proceed after clearing the xattr,
+  the helper re-installs `trusted.smoothfs.lun` before returning the error.
 
 ## Gating
 
