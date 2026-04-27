@@ -64,6 +64,9 @@ active movement model is separate work gated on production soak.
   destination: the object is left failed for operator attention, but
   `current_tier_id` is advanced to the destination so the DB reflects the
   already cut-over, re-pinned backing file.
+- Recovery also re-applies `trusted.smoothfs.lun` during startup for in-flight
+  LUN rows after moving state is reconciled, so resumed service enforces
+  pin-based safety on the final tier path used by recovery.
 - Worker pre-cutover failures for prepared LUN moves now roll back the quiesce
   window by re-installing `trusted.smoothfs.lun` on the source file and
   resuming the target before reporting the movement failure.
