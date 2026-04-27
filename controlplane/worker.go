@@ -130,17 +130,21 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return fmt.Errorf("%w: object %s rel_path=%q is not normalized relative path",
 				ErrLUNPlacementStale, oid, p.RelPath)
 		}
-		if p.SourceLowerDir == "" || p.DestLowerDir == "" {
-			return fmt.Errorf("%w: object %s requires explicit lower directories in movement plan",
-				ErrLUNPlacementStale, oid)
-		}
-		if !filepath.IsAbs(p.SourceLowerDir) || !filepath.IsAbs(p.DestLowerDir) {
-			return fmt.Errorf("%w: object %s requires absolute lower directories in movement plan",
-				ErrLUNPlacementStale, oid)
-		}
-		if p.SourceTierID == "" || p.DestTierID == "" {
-			return ErrDestinationTierBad
-		}
+			if p.SourceLowerDir == "" || p.DestLowerDir == "" {
+				return fmt.Errorf("%w: object %s requires explicit lower directories in movement plan",
+					ErrLUNPlacementStale, oid)
+			}
+			if !filepath.IsAbs(p.SourceLowerDir) || !filepath.IsAbs(p.DestLowerDir) {
+				return fmt.Errorf("%w: object %s requires absolute lower directories in movement plan",
+					ErrLUNPlacementStale, oid)
+			}
+			if filepath.Clean(p.SourceLowerDir) == filepath.Clean(p.DestLowerDir) {
+				return fmt.Errorf("%w: object %s requires distinct source and destination lower directories in movement plan",
+					ErrLUNPlacementStale, oid)
+			}
+			if p.SourceTierID == "" || p.DestTierID == "" {
+				return ErrDestinationTierBad
+			}
 		if p.DestTierID == p.SourceTierID || p.DestTierRank == p.SourceTierRank {
 			return ErrDestinationTierBad
 		}
