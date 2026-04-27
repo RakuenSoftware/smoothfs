@@ -60,6 +60,10 @@ active movement model is separate work gated on production soak.
   LUN moves with `ErrLUNResumeRequired` if a target ID is present but no
   resumer is installed, avoiding silent completion with the target still
   stopped.
+- Recovery now preserves failed `pin_lun` rows that already have an intended
+  destination: the object is left failed for operator attention, but
+  `current_tier_id` is advanced to the destination so the DB reflects the
+  already cut-over, re-pinned backing file.
 
 ## Gating
 
