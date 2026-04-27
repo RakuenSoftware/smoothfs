@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -113,6 +115,110 @@ func TestRecoverRollsForwardPostCutover(t *testing.T) {
 		if reason == "" {
 			t.Errorf("%s: failure_reason should be populated", st)
 		}
+	}
+}
+
+func TestRecoverRepinsPreCutoverLUNSource(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, tier1 := seedPool(t, sqlDB)
+	tier0Root := t.TempDir()
+	tier1Root := t.TempDir()
+	_, _ = sqlDB.Exec(`UPDATE tier_targets SET backing_ref = ? WHERE id = ?`, tier0Root, tier0)
+	_, _ = sqlDB.Exec(`UPDATE tier_targets SET backing_ref = ? WHERE id = ?`, tier1Root, tier1)
+
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, intended_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			('61000000000000000000000000000000', ?, ?, ?, 'plan_accepted', 'pin_lun', 'luns/db.img')`,
+		nsID, tier0, tier1)
+	if err != nil {
+		t.Fatalf("insert pre-cutover lun object: %v", err)
+	}
+
+	srcPath := filepath.Join(tier0Root, "luns")
+	if err := os.MkdirAll(srcPath, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcPath, "db.img"), []byte("lun"), 0o644); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+
+	var pinned string
+	origSetXattr := setXattr
+	t.Cleanup(func() { setXattr = origSetXattr })
+	setXattr = func(path, name string, value []byte, flags int) error {
+		pinned = path
+		return nil
+	}
+
+	if err := Recover(context.Background(), sqlDB); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	if pinned != filepath.Join(tier0Root, "luns/db.img") {
+		t.Fatalf("repinned path = %q, want %q", pinned, filepath.Join(tier0Root, "luns/db.img"))
+	}
+
+	var preCutoverOID [OIDLen]byte
+	preCutoverOID[0] = 0x61
+	_, _, gotState, _, _ := readObjectState(t, sqlDB, preCutoverOID)
+	if gotState != string(StatePlaced) {
+		t.Fatalf("movement_state = %q, want %q", gotState, StatePlaced)
+	}
+}
+
+func TestRecoverRepinsLUNPostCutoverForward(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0, tier1 := seedPool(t, sqlDB)
+	tier0Root := t.TempDir()
+	tier1Root := t.TempDir()
+	_, _ = sqlDB.Exec(`UPDATE tier_targets SET backing_ref = ? WHERE id = ?`, tier0Root, tier0)
+	_, _ = sqlDB.Exec(`UPDATE tier_targets SET backing_ref = ? WHERE id = ?`, tier1Root, tier1)
+
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, intended_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			('62000000000000000000000000000000', ?, ?, ?, 'cutover_in_progress', 'pin_lun', 'luns/db.img')`,
+		nsID, tier0, tier1)
+	if err != nil {
+		t.Fatalf("insert post-cutover lun object: %v", err)
+	}
+
+	destPath := filepath.Join(tier1Root, "luns")
+	if err := os.MkdirAll(destPath, 0o755); err != nil {
+		t.Fatalf("mkdir destination: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(destPath, "db.img"), []byte("lun"), 0o644); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+
+	var pinned string
+	origSetXattr := setXattr
+	t.Cleanup(func() { setXattr = origSetXattr })
+	setXattr = func(path, name string, value []byte, flags int) error {
+		pinned = path
+		return nil
+	}
+
+	if err := Recover(context.Background(), sqlDB); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	if pinned != filepath.Join(tier1Root, "luns/db.img") {
+		t.Fatalf("repinned path = %q, want %q", pinned, filepath.Join(tier1Root, "luns/db.img"))
+	}
+
+	var postCutoverOID [OIDLen]byte
+	postCutoverOID[0] = 0x62
+	var current sql.NullString
+	current, _, gotState, _, _ := readObjectState(t, sqlDB, postCutoverOID)
+	if gotState != string(StatePlaced) {
+		t.Fatalf("movement_state = %q, want %q", gotState, StatePlaced)
+	}
+	if current.String != tier1 {
+		t.Fatalf("current_tier_id = %q, want %q", current.String, tier1)
 	}
 }
 
