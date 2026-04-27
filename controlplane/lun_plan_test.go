@@ -3,10 +3,34 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+type fakeLUNTargetQuiescer struct {
+	events []string
+	sink   *[]string
+	stop   error
+	resume error
+}
+
+func (f *fakeLUNTargetQuiescer) StopAndDrain(ctx context.Context, targetID string) error {
+	f.events = append(f.events, "stop:"+targetID)
+	if f.sink != nil {
+		*f.sink = append(*f.sink, "stop:"+targetID)
+	}
+	return f.stop
+}
+
+func (f *fakeLUNTargetQuiescer) Resume(ctx context.Context, targetID string) error {
+	f.events = append(f.events, "resume:"+targetID)
+	if f.sink != nil {
+		*f.sink = append(*f.sink, "resume:"+targetID)
+	}
+	return f.resume
+}
 
 func TestBuildQuiescedLUNMovementPlanMarksRePin(t *testing.T) {
 	sqlDB := testDB(t)
@@ -263,5 +287,139 @@ func TestPrepareQuiescedLUNMovementPlanRePinsOnPlanFailure(t *testing.T) {
 	}
 	if repinPath != "/mnt/pool/luns/db.img" {
 		t.Fatalf("re-pin path = %q, want backing file path", repinPath)
+	}
+}
+
+func TestPrepareStoppedLUNMovementPlanStopsBeforeClear(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
+	pool := &Pool{
+		UUID:        uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		Name:        "pool-a",
+		NamespaceID: nsID,
+		Tiers: []TierInfo{
+			{Rank: 0, TargetID: tier0ID, LowerDir: t.TempDir()},
+			{Rank: 1, TargetID: tier1ID, LowerDir: t.TempDir()},
+		},
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x76
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			('76000000000000000000000000000000', ?, ?, 'placed', 'pin_lun', 'luns/db.img')`,
+		nsID, tier0ID)
+	if err != nil {
+		t.Fatalf("insert lun object: %v", err)
+	}
+
+	origRemoveXattr := removeXattr
+	origSetXattr := setXattr
+	t.Cleanup(func() {
+		removeXattr = origRemoveXattr
+		setXattr = origSetXattr
+	})
+
+	var events []string
+	quiescer := &fakeLUNTargetQuiescer{sink: &events}
+	removeXattr = func(path, name string) error {
+		events = append(events, "clear:"+path)
+		return nil
+	}
+	setXattr = func(string, string, []byte, int) error {
+		events = append(events, "repin")
+		return nil
+	}
+
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			PinState: PinNone,
+			RelPath:  "luns/db.img",
+		},
+	}
+	plan, err := PrepareStoppedLUNMovementPlan(
+		context.Background(), sqlDB, client, quiescer, pool, oid,
+		"iqn.2026-04.com.smoothnas:db", "/mnt/pool/luns/db.img", tier1ID)
+	if err != nil {
+		t.Fatalf("PrepareStoppedLUNMovementPlan: %v", err)
+	}
+	if !plan.RePinLUN {
+		t.Fatal("plan should request LUN re-pin")
+	}
+
+	want := []string{
+		"stop:iqn.2026-04.com.smoothnas:db",
+		"clear:/mnt/pool/luns/db.img",
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestPrepareStoppedLUNMovementPlanResumesOnPlanFailure(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
+	pool := &Pool{
+		UUID:        uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		Name:        "pool-a",
+		NamespaceID: nsID,
+		Tiers: []TierInfo{
+			{Rank: 0, TargetID: tier0ID, LowerDir: t.TempDir()},
+			{Rank: 1, TargetID: tier1ID, LowerDir: t.TempDir()},
+		},
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x77
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			('77000000000000000000000000000000', ?, ?, 'placed', 'pin_lun', 'luns/db.img')`,
+		nsID, tier0ID)
+	if err != nil {
+		t.Fatalf("insert lun object: %v", err)
+	}
+
+	origRemoveXattr := removeXattr
+	origSetXattr := setXattr
+	t.Cleanup(func() {
+		removeXattr = origRemoveXattr
+		setXattr = origSetXattr
+	})
+
+	var events []string
+	removeXattr = func(path, name string) error {
+		events = append(events, "clear:"+path)
+		return nil
+	}
+	setXattr = func(path, name string, value []byte, flags int) error {
+		events = append(events, "repin:"+path)
+		return nil
+	}
+
+	quiescer := &fakeLUNTargetQuiescer{sink: &events}
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			PinState: PinNone,
+			RelPath:  "luns/db.img",
+		},
+	}
+	_, err = PrepareStoppedLUNMovementPlan(
+		context.Background(), sqlDB, client, quiescer, pool, oid,
+		"iqn.2026-04.com.smoothnas:db", "/mnt/pool/luns/db.img", "missing-tier")
+	if !errors.Is(err, ErrDestinationTierBad) {
+		t.Fatalf("error = %v, want ErrDestinationTierBad", err)
+	}
+
+	if !reflect.DeepEqual(events, []string{
+		"stop:iqn.2026-04.com.smoothnas:db",
+		"clear:/mnt/pool/luns/db.img",
+		"repin:/mnt/pool/luns/db.img",
+		"resume:iqn.2026-04.com.smoothnas:db",
+	}) {
+		t.Fatalf("events = %#v", events)
 	}
 }

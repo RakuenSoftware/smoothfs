@@ -21,6 +21,13 @@ type ObjectInspector interface {
 	Inspect(poolUUID uuid.UUID, oid [OIDLen]byte) (*InspectResult, error)
 }
 
+// LUNTargetQuiescer is implemented by the caller that owns the storage target
+// lifecycle. StopAndDrain must return only after the LUN path is no longer live.
+type LUNTargetQuiescer interface {
+	StopAndDrain(ctx context.Context, targetID string) error
+	Resume(ctx context.Context, targetID string) error
+}
+
 // BuildQuiescedLUNMovementPlan creates an opt-in movement plan for the narrow
 // Phase 8 path: the kernel pin has already been cleared by administrative
 // quiesce, while the DB row still records the object as a LUN so the worker
@@ -134,6 +141,33 @@ func PrepareQuiescedLUNMovementPlan(
 	if err != nil {
 		if pinErr := setLUNPin(backingPath); pinErr != nil {
 			return MovementPlan{}, errors.Join(err, pinErr)
+		}
+		return MovementPlan{}, err
+	}
+	return plan, nil
+}
+
+// PrepareStoppedLUNMovementPlan stops or drains the target before clearing the
+// LUN pin and preparing the movement plan. If preparation fails, the target is
+// resumed after the fail-closed re-pin path has run.
+func PrepareStoppedLUNMovementPlan(
+	ctx context.Context,
+	db *sql.DB,
+	client ObjectInspector,
+	quiescer LUNTargetQuiescer,
+	pool *Pool,
+	oid [OIDLen]byte,
+	targetID string,
+	backingPath string,
+	destTierID string,
+) (MovementPlan, error) {
+	if err := quiescer.StopAndDrain(ctx, targetID); err != nil {
+		return MovementPlan{}, fmt.Errorf("stop and drain lun target %s: %w", targetID, err)
+	}
+	plan, err := PrepareQuiescedLUNMovementPlan(ctx, db, client, pool, oid, backingPath, destTierID)
+	if err != nil {
+		if resumeErr := quiescer.Resume(ctx, targetID); resumeErr != nil {
+			return MovementPlan{}, errors.Join(err, resumeErr)
 		}
 		return MovementPlan{}, err
 	}
