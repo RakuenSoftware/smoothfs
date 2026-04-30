@@ -13,6 +13,7 @@ Remediation pass 8: 2026-04-30
 Remediation pass 9: 2026-04-30
 Remediation pass 10: 2026-04-30
 Remediation pass 11: 2026-04-30
+Remediation pass 12: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -35,7 +36,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 11. CI now
+current test suite, and `make verify` is clean after remediation pass 12. CI now
 builds the kernel module against current Debian headers through
 `make kernel-build-debian`. Host-native kernel build verification still cannot
 be completed on this host because the running kernel is `6.17.2-1-pve`, the
@@ -464,8 +465,9 @@ The test schema reveals the expected SQLite surface:
 - `smoothfs_movement_log`: append-only movement transition log.
 - `control_plane_config`: policy and interval settings.
 
-The production migrations live outside this repository, so schema drift between
-tests and SmoothNAS/tierd should be explicitly checked in integration.
+The production migrations live outside this repository; `docs/control-plane-schema.md`
+now captures the required schema contract and the migration owner should check
+that contract in integration.
 
 ### Planner
 
@@ -962,11 +964,12 @@ Important operator controls:
 13. Improved in remediation pass 2 and consolidated in remediation pass 9: CI
     covers static checks and kernel-module compilation through shared Makefile
     targets.
+14. Documented in remediation pass 12: the control-plane SQLite schema contract
+    for downstream migrations.
 
 ## Suggested Future Documentation Additions
 
 - A formal UAPI compatibility policy for netlink commands/attributes.
-- A production migration/schema document for the SQLite tables used here.
 - A movement consistency proof explaining how live writes, mmap, O_DIRECT,
   staged ranges, and active LUNs interact.
 - A kernel build/test matrix that maps exact kernel versions to CI artifacts.
