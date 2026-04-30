@@ -31,18 +31,26 @@ on:
         required: true
         default: false
         type: boolean
+      arch:
+        description: CPU architecture of the self-hosted runner. Selects the runner label `smoothfs-runtime-<arch>`.
+        required: true
+        default: arm64
+        type: choice
+        options:
+          - amd64
+          - arm64
 
 permissions:
   contents: read
 
 concurrency:
-  group: smoothfs-runtime-${{ github.ref }}-${{ inputs.suite }}
+  group: smoothfs-runtime-${{ github.ref }}-${{ inputs.arch }}-${{ inputs.suite }}
   cancel-in-progress: false
 
 jobs:
   runtime-harnesses:
-    name: Runtime harnesses
-    runs-on: [self-hosted, linux, smoothfs-runtime]
+    name: Runtime harnesses (${{ inputs.arch }})
+    runs-on: [self-hosted, linux, "smoothfs-runtime-${{ inputs.arch }}"]
     timeout-minutes: 240
     steps:
       - name: Check out repository
@@ -118,6 +126,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoothfs-runtime-${{ inputs.suite }}-${{ github.run_attempt }}
+          name: smoothfs-runtime-${{ inputs.arch }}-${{ inputs.suite }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/smoothfs-runtime/*.log
           if-no-files-found: ignore
