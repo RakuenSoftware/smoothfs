@@ -1373,6 +1373,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	atomic_set(&si->open_count, 0);
 	atomic64_set(&si->read_bytes, 0);
 	atomic64_set(&si->write_bytes, 0);
+	atomic64_set(&si->write_seq, 0);
 	atomic_set(&si->write_reservation, 0);
 	si->last_access_ns = 0;
 	init_waitqueue_head(&si->cutover_wq);

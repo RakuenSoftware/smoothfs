@@ -69,6 +69,10 @@ type movementClient interface {
 	MoveCutover(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error
 }
 
+type writeSeqCutoverClient interface {
+	MoveCutoverVerifyWriteSeq(poolUUID uuid.UUID, oid [OIDLen]byte, seq, writeSeq uint64) error
+}
+
 type LUNTargetResumer interface {
 	Resume(ctx context.Context, targetID string) error
 }
@@ -116,6 +120,8 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	if ins == nil {
 		return fmt.Errorf("inspect before movement returned nil for object %s", oid)
 	}
+	sourceWriteSeq := ins.WriteSeq
+	checkWriteSeq := ins.HasWriteSeq
 	if ins.PinState == PinLUN {
 		return fmt.Errorf("%w: object %s", ErrLUNQuiesceRequired, oid)
 	}
@@ -241,10 +247,24 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		os.Remove(dstPath)
 		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errSourceRaced)
 	}
+	stableInspect, err := w.client.Inspect(p.PoolUUID, p.ObjectID)
+	if err != nil {
+		os.Remove(dstPath)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("inspect source stable: %w", err))
+	}
+	if stableInspect == nil {
+		os.Remove(dstPath)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid,
+			fmt.Errorf("inspect source stable returned nil for object %s", oid))
+	}
+	if checkWriteSeq && (!stableInspect.HasWriteSeq || stableInspect.WriteSeq != sourceWriteSeq) {
+		os.Remove(dstPath)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errSourceRaced)
+	}
 	w.logTransition(ctx, p, string(StateCopyInProgress), string(StateCopyVerified), "")
 	w.persistObject(ctx, oid, p, StateCopyVerified)
 
-	if err := w.client.MoveCutover(p.PoolUUID, p.ObjectID, p.TransactionSeq); err != nil {
+	if err := w.moveCutover(p, sourceWriteSeq, checkWriteSeq); err != nil {
 		os.Remove(dstPath)
 		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("move_cutover: %w", err))
 	}
@@ -277,6 +297,14 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	w.logTransition(ctx, p, string(StateSwitched), string(StateCleanupComplete), "")
 	w.finalize(ctx, oid, p)
 	return nil
+}
+
+func (w *Worker) moveCutover(p MovementPlan, sourceWriteSeq uint64, checkWriteSeq bool) error {
+	if client, ok := w.client.(writeSeqCutoverClient); ok && checkWriteSeq {
+		return client.MoveCutoverVerifyWriteSeq(p.PoolUUID, p.ObjectID,
+			p.TransactionSeq, sourceWriteSeq)
+	}
+	return w.client.MoveCutover(p.PoolUUID, p.ObjectID, p.TransactionSeq)
 }
 
 func (w *Worker) abort(ctx context.Context, p MovementPlan, cause error) error {

@@ -82,6 +82,7 @@ enum {
 	SMOOTHFS_ATTR_FORCE               = 20, /* u8; 1 = bypass pin_state on MOVE_PLAN — Phase 5.3 */
 	SMOOTHFS_ATTR_SIZE_BYTES          = 21, /* u64 */
 	SMOOTHFS_ATTR_ANY_SPILL_SINCE_MOUNT = 22, /* u8 boolean */
+	SMOOTHFS_ATTR_WRITE_SEQ           = 23, /* u64; data-change sequence for movement cutover */
 	__SMOOTHFS_ATTR_MAX,
 };
 #define SMOOTHFS_ATTR_MAX (__SMOOTHFS_ATTR_MAX - 1)

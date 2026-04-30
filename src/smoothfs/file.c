@@ -394,6 +394,7 @@ again:
 	if (ret > 0) {
 		struct inode *upper = file_inode(iocb->ki_filp);
 		atomic64_add(ret, &si->write_bytes);
+		smoothfs_note_data_change(upper);
 		if (!READ_ONCE(si->range_staged) &&
 		    READ_ONCE(si->write_staged) &&
 		    tier == sbi->fastest_tier)
@@ -482,11 +483,19 @@ static ssize_t smoothfs_splice_write(struct pipe_inode_info *pipe,
 				     size_t len, unsigned int flags)
 {
 	struct file *lower = smoothfs_lower_file(out);
+	struct inode *inode = file_inode(out);
 	ssize_t ret;
+	int srcu_idx;
 
 	if (!lower->f_op || !lower->f_op->splice_write)
 		return -EINVAL;
+	srcu_idx = smoothfs_begin_data_change(inode);
+	if (srcu_idx < 0)
+		return srcu_idx;
 	ret = lower->f_op->splice_write(pipe, lower, ppos, len, flags);
+	if (ret > 0)
+		smoothfs_note_data_change(inode);
+	smoothfs_end_data_change(inode, srcu_idx);
 	/* No smoothfs_copy_attrs: getattr reads through to the lower. */
 	return ret;
 }
@@ -495,10 +504,20 @@ static long smoothfs_fallocate(struct file *file, int mode, loff_t offset,
 			       loff_t len)
 {
 	struct file *lower = smoothfs_lower_file(file);
+	struct inode *inode = file_inode(file);
+	long ret;
+	int srcu_idx;
 
 	if (!lower->f_op || !lower->f_op->fallocate)
 		return -EOPNOTSUPP;
-	return vfs_fallocate(lower, mode, offset, len);
+	srcu_idx = smoothfs_begin_data_change(inode);
+	if (srcu_idx < 0)
+		return srcu_idx;
+	ret = vfs_fallocate(lower, mode, offset, len);
+	if (!ret)
+		smoothfs_note_data_change(inode);
+	smoothfs_end_data_change(inode, srcu_idx);
+	return ret;
 }
 
 static struct file *smoothfs_remap_source_file(struct file *src)
@@ -516,10 +535,15 @@ static loff_t smoothfs_remap_file_range(struct file *file_in, loff_t pos_in,
 {
 	struct file *lower_in = smoothfs_remap_source_file(file_in);
 	struct file *lower_out = smoothfs_remap_source_file(file_out);
+	struct inode *out_inode = file_inode(file_out);
 	loff_t ret;
+	int srcu_idx;
 
 	if (!lower_in || !lower_out)
 		return -EBADF;
+	srcu_idx = smoothfs_begin_data_change(out_inode);
+	if (srcu_idx < 0)
+		return srcu_idx;
 	if (lower_out->f_op && lower_out->f_op->remap_file_range)
 		ret = lower_out->f_op->remap_file_range(lower_in, pos_in,
 							lower_out, pos_out,
@@ -527,11 +551,17 @@ static loff_t smoothfs_remap_file_range(struct file *file_in, loff_t pos_in,
 	else if (remap_flags == 0)
 		ret = vfs_clone_file_range(lower_in, pos_in, lower_out, pos_out,
 					   len, 0);
-	else
+	else {
+		smoothfs_end_data_change(out_inode, srcu_idx);
 		return -EOPNOTSUPP;
-	if (ret < 0)
+	}
+	if (ret < 0) {
+		smoothfs_end_data_change(out_inode, srcu_idx);
 		return ret;
+	}
 	/* No smoothfs_copy_attrs: getattr reads through to the lower. */
+	smoothfs_note_data_change(out_inode);
+	smoothfs_end_data_change(out_inode, srcu_idx);
 	return ret;
 }
 
@@ -544,6 +574,7 @@ static long smoothfs_clone_ioctl(struct file *file, unsigned long arg,
 	struct file *src_file;
 	loff_t ret, pos_in, pos_out, len;
 	int lower_src_fd;
+	int srcu_idx;
 	int src_fd;
 
 	if (ranged) {
@@ -578,25 +609,44 @@ static long smoothfs_clone_ioctl(struct file *file, unsigned long arg,
 			fput(src_file);
 			return lower_src_fd;
 		}
+		srcu_idx = smoothfs_begin_data_change(file_inode(file));
+		if (srcu_idx < 0) {
+			put_unused_fd(lower_src_fd);
+			fput(src_file);
+			return srcu_idx;
+		}
 		get_file(lower_in);
 		fd_install(lower_src_fd, lower_in);
 		ret = lower_out->f_op->unlocked_ioctl(lower_out, FICLONE,
 						      lower_src_fd);
 		close_fd(lower_src_fd);
 		fput(src_file);
-		if (ret < 0)
+		if (ret < 0) {
+			smoothfs_end_data_change(file_inode(file), srcu_idx);
 			return ret;
+		}
 		/* No smoothfs_copy_attrs: getattr reads through to the lower. */
+		smoothfs_note_data_change(file_inode(file));
+		smoothfs_end_data_change(file_inode(file), srcu_idx);
 		return 0;
 	}
 
 	if (len == 0)
 		len = i_size_read(file_inode(lower_in)) - pos_in;
+	srcu_idx = smoothfs_begin_data_change(file_inode(file));
+	if (srcu_idx < 0) {
+		fput(src_file);
+		return srcu_idx;
+	}
 	ret = vfs_clone_file_range(lower_in, pos_in, lower_out, pos_out, len, 0);
 	fput(src_file);
-	if (ret < 0)
+	if (ret < 0) {
+		smoothfs_end_data_change(file_inode(file), srcu_idx);
 		return ret;
+	}
 	/* No smoothfs_copy_attrs: getattr reads through to the lower. */
+	smoothfs_note_data_change(file_inode(file));
+	smoothfs_end_data_change(file_inode(file), srcu_idx);
 	return 0;
 }
 

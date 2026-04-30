@@ -111,12 +111,25 @@ func (c *Client) MovePlanForce(poolUUID uuid.UUID, oid [OIDLen]byte, destTier ui
 }
 
 func (c *Client) MoveCutover(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error {
-	_, err := c.send(CmdMoveCutover, []netlink.Attribute{
+	_, err := c.send(CmdMoveCutover, cutoverAttrs(poolUUID, oid, seq, nil))
+	return err
+}
+
+func (c *Client) MoveCutoverVerifyWriteSeq(poolUUID uuid.UUID, oid [OIDLen]byte, seq, writeSeq uint64) error {
+	_, err := c.send(CmdMoveCutover, cutoverAttrs(poolUUID, oid, seq, &writeSeq))
+	return err
+}
+
+func cutoverAttrs(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64, writeSeq *uint64) []netlink.Attribute {
+	attrs := []netlink.Attribute{
 		{Type: AttrPoolUUID, Data: poolUUID[:]},
 		{Type: AttrObjectID, Data: oid[:]},
 		{Type: AttrTransactionSeq, Data: u64le(seq)},
-	})
-	return err
+	}
+	if writeSeq != nil {
+		attrs = append(attrs, netlink.Attribute{Type: AttrWriteSeq, Data: u64le(*writeSeq)})
+	}
+	return attrs
 }
 
 type InspectResult struct {
@@ -126,6 +139,8 @@ type InspectResult struct {
 	MovementState   MovementState
 	PinState        PinState
 	Generation      uint32
+	WriteSeq        uint64
+	HasWriteSeq     bool
 	TransactionSeq  uint64
 	RelPath         string
 	CurrentTierPath string
@@ -169,6 +184,11 @@ func (c *Client) Inspect(poolUUID uuid.UUID, oid [OIDLen]byte) (*InspectResult, 
 		case AttrGeneration:
 			if len(a.Data) >= 4 {
 				out.Generation = binary.LittleEndian.Uint32(a.Data)
+			}
+		case AttrWriteSeq:
+			if len(a.Data) >= 8 {
+				out.WriteSeq = binary.LittleEndian.Uint64(a.Data)
+				out.HasWriteSeq = true
 			}
 		case AttrTransactionSeq:
 			if len(a.Data) >= 8 {
