@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var errSourceRaced = errors.New("source mtime changed during copy; cutover aborted")
+var errSourceRaced = errors.New("source changed during copy; cutover aborted")
 
 // ErrLUNQuiesceRequired marks the Phase 8 safety gate: a LUN backing file
 // must be quiesced and unpinned before the generic movement worker may plan it.
@@ -56,10 +56,11 @@ type MovementPlan struct {
 }
 
 type Worker struct {
-	db              *sql.DB
-	client          movementClient
-	setLUNPin       func(string) error
-	resumeLUNTarget func(context.Context, string) error
+	db               *sql.DB
+	client           movementClient
+	setLUNPin        func(string) error
+	resumeLUNTarget  func(context.Context, string) error
+	afterCopyForTest func()
 }
 
 type movementClient interface {
@@ -130,21 +131,21 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 			return fmt.Errorf("%w: object %s rel_path=%q is not normalized relative path",
 				ErrLUNPlacementStale, oid, p.RelPath)
 		}
-			if p.SourceLowerDir == "" || p.DestLowerDir == "" {
-				return fmt.Errorf("%w: object %s requires explicit lower directories in movement plan",
-					ErrLUNPlacementStale, oid)
-			}
-			if !filepath.IsAbs(p.SourceLowerDir) || !filepath.IsAbs(p.DestLowerDir) {
-				return fmt.Errorf("%w: object %s requires absolute lower directories in movement plan",
-					ErrLUNPlacementStale, oid)
-			}
-			if filepath.Clean(p.SourceLowerDir) == filepath.Clean(p.DestLowerDir) {
-				return fmt.Errorf("%w: object %s requires distinct source and destination lower directories in movement plan",
-					ErrLUNPlacementStale, oid)
-			}
-			if p.SourceTierID == "" || p.DestTierID == "" {
-				return ErrDestinationTierBad
-			}
+		if p.SourceLowerDir == "" || p.DestLowerDir == "" {
+			return fmt.Errorf("%w: object %s requires explicit lower directories in movement plan",
+				ErrLUNPlacementStale, oid)
+		}
+		if !filepath.IsAbs(p.SourceLowerDir) || !filepath.IsAbs(p.DestLowerDir) {
+			return fmt.Errorf("%w: object %s requires absolute lower directories in movement plan",
+				ErrLUNPlacementStale, oid)
+		}
+		if filepath.Clean(p.SourceLowerDir) == filepath.Clean(p.DestLowerDir) {
+			return fmt.Errorf("%w: object %s requires distinct source and destination lower directories in movement plan",
+				ErrLUNPlacementStale, oid)
+		}
+		if p.SourceTierID == "" || p.DestTierID == "" {
+			return ErrDestinationTierBad
+		}
 		if p.DestTierID == p.SourceTierID || p.DestTierRank == p.SourceTierRank {
 			return ErrDestinationTierBad
 		}
@@ -217,6 +218,9 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		os.Remove(dstPath)
 		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errors.New("checksum mismatch"))
 	}
+	if w.afterCopyForTest != nil {
+		w.afterCopyForTest()
+	}
 
 	srcStatAfter, err := os.Stat(srcPath)
 	if err != nil {
@@ -225,6 +229,15 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	}
 	if !srcStatAfter.ModTime().Equal(srcStatBefore.ModTime()) ||
 		srcStatAfter.Size() != srcStatBefore.Size() {
+		os.Remove(dstPath)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errSourceRaced)
+	}
+	srcSumAfter, err := fileSHA256(srcPath)
+	if err != nil {
+		os.Remove(dstPath)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("verify source stable: %w", err))
+	}
+	if srcSumAfter != srcSum {
 		os.Remove(dstPath)
 		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errSourceRaced)
 	}

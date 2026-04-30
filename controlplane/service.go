@@ -74,10 +74,13 @@ func (s *Service) newWorker() *Worker {
 	if s == nil {
 		return nil
 	}
-	if s.lunResumer == nil {
+	s.mu.Lock()
+	resumer := s.lunResumer
+	s.mu.Unlock()
+	if resumer == nil {
 		return NewWorker(s.db, s.client)
 	}
-	return NewWorkerWithLUNResumer(s.db, s.client, s.lunResumer)
+	return NewWorkerWithLUNResumer(s.db, s.client, resumer)
 }
 
 func (s *Service) Close() error {
@@ -156,7 +159,6 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	<-ctx.Done()
-	close(s.planChan)
 	wg.Wait()
 	return nil
 }

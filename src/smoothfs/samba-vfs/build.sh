@@ -13,12 +13,21 @@
 #     apt-get source samba=<version> lays it down there.
 #
 # Output:
-#   /usr/lib/x86_64-linux-gnu/samba/vfs/smoothfs.so
+#   /usr/lib/<multiarch>/samba/vfs/smoothfs.so
 #
 # Run as root (install step writes under /usr/lib).
 
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
+MULTIARCH=${DEB_HOST_MULTIARCH:-}
+if [ -z "$MULTIARCH" ]; then
+    MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)
+fi
+if [ -z "$MULTIARCH" ]; then
+    echo "unable to determine Debian multiarch triplet" >&2
+    exit 1
+fi
+LIBDIR=/usr/lib/${MULTIARCH}
 
 INSTALLED_FULL=$(dpkg-query -W -f='${Version}\n' samba 2>/dev/null | sed 's/^2://')
 INSTALLED_VER=$(echo "$INSTALLED_FULL" | sed 's/-.*//')
@@ -89,8 +98,8 @@ rm -rf bin
 PYTHONHASHSEED=1 ./buildtools/bin/waf configure \
     --vendor-suffix="${VENDOR_SUFFIX}" \
     --enable-fhs --prefix=/usr \
-    --libdir=/usr/lib/x86_64-linux-gnu \
-    --with-modulesdir=/usr/lib/x86_64-linux-gnu/samba \
+    --libdir="${LIBDIR}" \
+    --with-modulesdir="${LIBDIR}/samba" \
     --without-ad-dc --without-ldap --without-ads --without-gpgme \
     --without-winbind --without-systemd --disable-cups \
     --without-pam --without-acl-support --without-quota \
@@ -117,7 +126,7 @@ if [ -n "${SMOOTHFS_VFS_OUTPUT:-}" ]; then
     exit 0
 fi
 
-DEST=/usr/lib/x86_64-linux-gnu/samba/vfs/smoothfs.so
+DEST=${LIBDIR}/samba/vfs/smoothfs.so
 install -D -m 0644 "$BUILT_SO" "$DEST"
 echo "=== installed $DEST ==="
 ls -la "$DEST"

@@ -27,7 +27,7 @@ func Open() (*Client, error) {
 	fam, err := cmd.GetFamily(GenlFamilyName)
 	if err != nil {
 		cmd.Close()
-		return nil, fmt.Errorf("get smoothfs family (is the kernel module loaded?): %w", err)
+		return nil, fmt.Errorf("%w: get smoothfs family: %v", ErrNotLoaded, err)
 	}
 
 	sub, err := genetlink.Dial(nil)
