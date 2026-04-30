@@ -8,6 +8,8 @@ import (
 	"log"
 	"sort"
 	"sync"
+
+	"github.com/mdlayher/genetlink"
 )
 
 // Service is the top-level wire-up that runs the netlink listener, the
@@ -15,15 +17,24 @@ import (
 // of tierd.
 type Service struct {
 	db          *sql.DB
-	client      *Client
+	client      serviceClient
+	clientConn  *Client
 	heat        *HeatAggregator
 	planner     *Planner
 	planChan    chan MovementPlan
 	workerCount int
 	lunResumer  LUNTargetResumer
 
-	mu    sync.Mutex
-	pools map[string]*Pool
+	closeOnce sync.Once
+	closeErr  error
+	mu        sync.Mutex
+	pools     map[string]*Pool
+}
+
+type serviceClient interface {
+	movementClient
+	Receive() ([]genetlink.Message, error)
+	Close() error
 }
 
 func NewService(ctx context.Context, db *sql.DB, workerCount int) (*Service, error) {
@@ -52,6 +63,7 @@ func NewServiceWithLUNResumer(ctx context.Context, db *sql.DB, workerCount int, 
 	return &Service{
 		db:          db,
 		client:      client,
+		clientConn:  client,
 		heat:        NewHeatAggregator(db, half),
 		planner:     NewPlanner(db, planChan, cfg),
 		planChan:    planChan,
@@ -87,7 +99,12 @@ func (s *Service) Close() error {
 	if s == nil {
 		return nil
 	}
-	return s.client.Close()
+	s.closeOnce.Do(func() {
+		if s.client != nil {
+			s.closeErr = s.client.Close()
+		}
+	})
+	return s.closeErr
 }
 
 func (s *Service) RegisterPool(p *Pool) {
@@ -102,7 +119,7 @@ func (s *Service) ClientConn() *Client {
 	if s == nil {
 		return nil
 	}
-	return s.client
+	return s.clientConn
 }
 
 // PoolByUUID returns a registered pool by UUID string.
@@ -159,6 +176,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	<-ctx.Done()
+	if err := s.Close(); err != nil {
+		log.Printf("smoothfs: close client during shutdown: %v", err)
+	}
 	wg.Wait()
 	return nil
 }

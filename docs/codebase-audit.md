@@ -7,6 +7,7 @@ Remediation pass 2: 2026-04-30
 Remediation pass 3: 2026-04-30
 Remediation pass 4: 2026-04-30
 Remediation pass 5: 2026-04-30
+Remediation pass 6: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -29,7 +30,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 5. CI now
+current test suite, and `make verify` is clean after remediation pass 6. CI now
 builds the kernel module against current Debian headers; local kernel build
 verification still cannot be completed on this host because the running kernel
 is `6.17.2-1-pve`, the module's declared floor is 6.18, and matching kernel
@@ -874,6 +875,7 @@ Go tests cover:
 - Planner promote/demote behavior and hysteresis gates.
 - Service discovery from mount events.
 - Service concurrent pool registration and lookup under the race detector.
+- Service `Run` cancellation while the event receive loop is blocked.
 - Worker movement and active-LUN edge cases.
 - Recovery of interrupted movement states.
 - LUN pin helpers and active-LUN planning.
@@ -898,8 +900,7 @@ Coverage gaps:
 
 - Local kernel builds still require installed 6.18+ headers.
 - CI does not run runtime harnesses.
-- Full `Service.Run` lifecycle cancellation with a live netlink receive loop is
-  not race-tested.
+- Real-kernel netlink receive cancellation is not runtime-tested in CI.
 - Kernel movement of nested files is not obviously covered.
 - Direct I/O refusal after range staging is covered for behavior, but not for
   SRCU leak/cutover aftermath.
