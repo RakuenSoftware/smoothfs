@@ -648,6 +648,7 @@ struct smoothfs_file_info {
 
 int  smoothfs_open_lower(struct file *file, struct inode *inode);
 int  smoothfs_release_lower(struct file *file);
+int  smoothfs_reissue_lower(struct file *file);
 struct file *smoothfs_lower_file(struct file *file);
 
 /* probe.c (capabilities) */

@@ -12,6 +12,7 @@
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/atomic.h>
+#include <linux/err.h>
 #include <linux/uaccess.h>
 #include <linux/timekeeping.h>
 #include <linux/falloc.h>
@@ -24,6 +25,15 @@
 #include "smoothfs.h"
 
 #define SMOOTHFS_DEFAULT_FULL_PCT 98
+static int smoothfs_lower_file_error(const struct file *lower)
+{
+	if (IS_ERR(lower))
+		return PTR_ERR(lower);
+	if (!lower)
+		return -EBADF;
+	return 0;
+}
+
 static bool smoothfs_tier_near_enospc(struct smoothfs_sb_info *sbi, u8 tier)
 {
 	struct kstatfs st;
@@ -244,6 +254,11 @@ static ssize_t smoothfs_range_stage_read_iter(struct kiocb *iocb,
 	struct file *lower = smoothfs_lower_file(iocb->ki_filp);
 	ssize_t done = 0;
 	loff_t size = i_size_read(inode);
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	while (iov_iter_count(to) > 0 && iocb->ki_pos < size) {
 		size_t want = min_t(size_t, iov_iter_count(to),
@@ -320,17 +335,23 @@ static int smoothfs_release(struct inode *inode, struct file *file)
 
 static ssize_t smoothfs_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
-	struct file *lower = smoothfs_lower_file(iocb->ki_filp);
 	struct smoothfs_inode_info *si =
 		SMOOTHFS_I(file_inode(iocb->ki_filp));
+	struct file *lower;
 	ssize_t ret;
+	int err;
 
 	if (READ_ONCE(si->range_staged) && (iocb->ki_flags & IOCB_DIRECT))
 		return -EBUSY;
-	if (READ_ONCE(si->range_staged))
+	if (READ_ONCE(si->range_staged)) {
 		ret = smoothfs_range_stage_read_iter(iocb, to);
-	else
+	} else {
+		lower = smoothfs_lower_file(iocb->ki_filp);
+		err = smoothfs_lower_file_error(lower);
+		if (err)
+			return err;
 		ret = smoothfs_compat_read_iter(lower, &iocb->ki_pos, to);
+	}
 	if (ret > 0) {
 		atomic64_add(ret, &si->read_bytes);
 		si->last_access_ns = ktime_get_real_ns();
@@ -347,6 +368,7 @@ static ssize_t smoothfs_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	ssize_t ret;
 	u8 tier;
 	int srcu_idx;
+	int err;
 
 	/*
 	 * SRCU-based cutover barrier. Writers enter a read-side critical
@@ -376,6 +398,11 @@ again:
 	}
 
 	lower = smoothfs_lower_file(iocb->ki_filp);
+	err = smoothfs_lower_file_error(lower);
+	if (err) {
+		srcu_read_unlock(&sbi->cutover_srcu, srcu_idx);
+		return err;
+	}
 	tier = smoothfs_tier_of(sbi, lower->f_path.mnt);
 	if (READ_ONCE(si->range_staged) && (iocb->ki_flags & IOCB_DIRECT)) {
 		srcu_read_unlock(&sbi->cutover_srcu, srcu_idx);
@@ -420,6 +447,11 @@ static int smoothfs_fsync(struct file *file, loff_t start, loff_t end,
 			  int datasync)
 {
 	struct file *lower = smoothfs_lower_file(file);
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	return vfs_fsync_range(lower, start, end, datasync);
 }
@@ -442,6 +474,11 @@ static int smoothfs_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct smoothfs_inode_info *si = SMOOTHFS_I(file_inode(file));
 	struct file *lower = smoothfs_lower_file(file);
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	if (!can_mmap_file(lower))
 		return -ENODEV;
@@ -458,6 +495,11 @@ static loff_t smoothfs_llseek(struct file *file, loff_t offset, int whence)
 {
 	struct file *lower = smoothfs_lower_file(file);
 	loff_t ret;
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	if (lower->f_op && lower->f_op->llseek)
 		ret = lower->f_op->llseek(lower, offset, whence);
@@ -473,6 +515,11 @@ static ssize_t smoothfs_splice_read(struct file *in, loff_t *ppos,
 				    size_t len, unsigned int flags)
 {
 	struct file *lower = smoothfs_lower_file(in);
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	if (!lower->f_op || !lower->f_op->splice_read)
 		return -EINVAL;
@@ -487,6 +534,11 @@ static ssize_t smoothfs_splice_write(struct pipe_inode_info *pipe,
 	struct inode *inode = file_inode(out);
 	ssize_t ret;
 	int srcu_idx;
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	if (!lower->f_op || !lower->f_op->splice_write)
 		return -EINVAL;
@@ -508,6 +560,11 @@ static long smoothfs_fallocate(struct file *file, int mode, loff_t offset,
 	struct inode *inode = file_inode(file);
 	long ret;
 	int srcu_idx;
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	if (!lower->f_op || !lower->f_op->fallocate)
 		return -EOPNOTSUPP;
@@ -524,7 +581,7 @@ static long smoothfs_fallocate(struct file *file, int mode, loff_t offset,
 static struct file *smoothfs_remap_source_file(struct file *src)
 {
 	if (!src)
-		return NULL;
+		return ERR_PTR(-EBADF);
 	if (file_inode(src)->i_sb->s_magic == SMOOTHFS_MAGIC)
 		return smoothfs_lower_file(src);
 	return src;
@@ -539,9 +596,14 @@ static loff_t smoothfs_remap_file_range(struct file *file_in, loff_t pos_in,
 	struct inode *out_inode = file_inode(file_out);
 	loff_t ret;
 	int srcu_idx;
+	int err;
 
-	if (!lower_in || !lower_out)
-		return -EBADF;
+	err = smoothfs_lower_file_error(lower_in);
+	if (err)
+		return err;
+	err = smoothfs_lower_file_error(lower_out);
+	if (err)
+		return err;
 	srcu_idx = smoothfs_begin_data_change(out_inode);
 	if (srcu_idx < 0)
 		return srcu_idx;
@@ -577,6 +639,11 @@ static long smoothfs_clone_ioctl(struct file *file, unsigned long arg,
 	int lower_src_fd;
 	int srcu_idx;
 	int src_fd;
+	int err;
+
+	err = smoothfs_lower_file_error(lower_out);
+	if (err)
+		return err;
 
 	if (ranged) {
 		if (copy_from_user(&range, (void __user *)arg, sizeof(range)))
@@ -596,9 +663,10 @@ static long smoothfs_clone_ioctl(struct file *file, unsigned long arg,
 	if (!src_file)
 		return -EBADF;
 	lower_in = smoothfs_remap_source_file(src_file);
-	if (!lower_in) {
+	err = smoothfs_lower_file_error(lower_in);
+	if (err) {
 		fput(src_file);
-		return -EBADF;
+		return err;
 	}
 	if (!ranged) {
 		if (!lower_out->f_op || !lower_out->f_op->unlocked_ioctl) {
@@ -654,7 +722,8 @@ static long smoothfs_clone_ioctl(struct file *file, unsigned long arg,
 static long smoothfs_unlocked_ioctl(struct file *file, unsigned int cmd,
 				    unsigned long arg)
 {
-	struct file *lower = smoothfs_lower_file(file);
+	struct file *lower;
+	int err;
 
 	switch (cmd) {
 	case FICLONE:
@@ -664,6 +733,10 @@ static long smoothfs_unlocked_ioctl(struct file *file, unsigned int cmd,
 	default:
 		break;
 	}
+	lower = smoothfs_lower_file(file);
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 	if (!lower->f_op || !lower->f_op->unlocked_ioctl)
 		return -ENOTTY;
 	return lower->f_op->unlocked_ioctl(lower, cmd, arg);
@@ -674,6 +747,11 @@ static long smoothfs_compat_ioctl(struct file *file, unsigned int cmd,
 				  unsigned long arg)
 {
 	struct file *lower = smoothfs_lower_file(file);
+	int err;
+
+	err = smoothfs_lower_file_error(lower);
+	if (err)
+		return err;
 
 	if (!lower->f_op || !lower->f_op->compat_ioctl)
 		return -ENOTTY;
