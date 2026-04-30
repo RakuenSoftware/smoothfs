@@ -88,7 +88,7 @@ enum {
 #define SMOOTHFS_ATTR_MAX (__SMOOTHFS_ATTR_MAX - 1)
 
 /* On-wire heat sample record, packed into SMOOTHFS_ATTR_HEAT_SAMPLE_BLOB.
- * 48 bytes per record per Phase 0 §0.5. Repeated up to 256 per message. */
+ * 56 bytes per record per Phase 0 §0.5. Repeated up to 256 per message. */
 struct smoothfs_heat_sample_record {
 	__u8  oid[16];
 	__u32 open_count_delta;

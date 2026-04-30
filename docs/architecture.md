@@ -103,4 +103,5 @@ Operational visibility includes:
 - Operator execution: [`smoothfs-operator-runbook.md`](smoothfs-operator-runbook.md)
 - Platform limits: [`smoothfs-support-matrix.md`](smoothfs-support-matrix.md)
 - Control-plane schema contract: [`control-plane-schema.md`](control-plane-schema.md)
+- UAPI compatibility policy: [`uapi-compatibility.md`](uapi-compatibility.md)
 - Runtime implementation detail: [`../src/README.md`](../src/README.md)
