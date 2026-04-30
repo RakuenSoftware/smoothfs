@@ -15,12 +15,14 @@ import (
 )
 
 type fakeMovementClient struct {
-	inspectResult  *InspectResult
-	inspectResults []*InspectResult
-	inspectCalls   int
-	movePlanErr    error
-	movePlanned    bool
-	cutoverCalled  bool
+	inspectResult   *InspectResult
+	inspectResults  []*InspectResult
+	inspectCalls    int
+	movePlanErr     error
+	movePlanned     bool
+	cutoverCalled   bool
+	cutoverWriteSeq uint64
+	verifiedCutover bool
 }
 
 func (f *fakeMovementClient) Inspect(uuid.UUID, [OIDLen]byte) (*InspectResult, error) {
@@ -43,6 +45,12 @@ func (f *fakeMovementClient) MovePlan(uuid.UUID, [OIDLen]byte, uint8, uint64) er
 func (f *fakeMovementClient) MoveCutover(uuid.UUID, [OIDLen]byte, uint64) error {
 	f.cutoverCalled = true
 	return nil
+}
+
+func (f *fakeMovementClient) MoveCutoverVerifyWriteSeq(poolUUID uuid.UUID, oid [OIDLen]byte, seq, writeSeq uint64) error {
+	f.cutoverWriteSeq = writeSeq
+	f.verifiedCutover = true
+	return f.MoveCutover(poolUUID, oid, seq)
 }
 
 func seedWorkerLUNObject(t *testing.T, sqlDB *sql.DB, nsID, tierID string, oid [OIDLen]byte, relPath string) {
@@ -176,6 +184,99 @@ func TestWorkerRejectsSourceContentChangeWithPreservedStat(t *testing.T) {
 	}
 	if client.cutoverCalled {
 		t.Fatal("worker cut over after source content changed")
+	}
+	if _, err := os.Stat(dstPath); !os.IsNotExist(err) {
+		t.Fatalf("destination cleanup error = %v, want not exist", err)
+	}
+}
+
+func TestWorkerRejectsSourceWriteSeqChangeWithRestoredContent(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	relPath := "nested/source.bin"
+	srcPath := filepath.Join(srcDir, relPath)
+	dstPath := filepath.Join(dstDir, relPath)
+	original := []byte("original-bytes")
+	mutated := []byte("mutated!-bytes")
+	fixedModTime := time.Unix(1_700_000_100, 0).UTC()
+
+	if len(original) != len(mutated) {
+		t.Fatal("test setup requires same-size payloads")
+	}
+	if err := os.MkdirAll(filepath.Dir(srcPath), 0o755); err != nil {
+		t.Fatalf("mkdir source parent: %v", err)
+	}
+	if err := os.WriteFile(srcPath, original, 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.Chtimes(srcPath, fixedModTime, fixedModTime); err != nil {
+		t.Fatalf("set source mtime: %v", err)
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x89
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			(?, ?, ?, 'placed', 'none', ?)`,
+		hex.EncodeToString(oid[:]), nsID, tier0ID, relPath)
+	if err != nil {
+		t.Fatalf("insert source object: %v", err)
+	}
+
+	client := &fakeMovementClient{
+		inspectResults: []*InspectResult{
+			{
+				CurrentTier: 0,
+				PinState:    PinNone,
+				RelPath:     relPath,
+				WriteSeq:    10,
+				HasWriteSeq: true,
+			},
+			{
+				CurrentTier: 0,
+				PinState:    PinNone,
+				RelPath:     relPath,
+				WriteSeq:    11,
+				HasWriteSeq: true,
+			},
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+	worker.afterCopyForTest = func() {
+		if err := os.WriteFile(srcPath, mutated, 0o644); err != nil {
+			t.Fatalf("mutate source: %v", err)
+		}
+		if err := os.WriteFile(srcPath, original, 0o644); err != nil {
+			t.Fatalf("restore source: %v", err)
+		}
+		if err := os.Chtimes(srcPath, fixedModTime, fixedModTime); err != nil {
+			t.Fatalf("restore source mtime: %v", err)
+		}
+	}
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0ID,
+		SourceTierRank: 0,
+		SourceLowerDir: srcDir,
+		DestTierID:     tier1ID,
+		DestTierRank:   1,
+		DestLowerDir:   dstDir,
+		RelPath:        relPath,
+		TransactionSeq: 43,
+	}
+	err = worker.Execute(context.Background(), plan)
+	if !errors.Is(err, errSourceRaced) {
+		t.Fatalf("Execute error = %v, want errSourceRaced", err)
+	}
+	if client.cutoverCalled {
+		t.Fatal("worker cut over after source write sequence changed")
 	}
 	if _, err := os.Stat(dstPath); !os.IsNotExist(err) {
 		t.Fatalf("destination cleanup error = %v, want not exist", err)
@@ -763,18 +864,24 @@ func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 	client := &fakeMovementClient{
 		inspectResults: []*InspectResult{
 			{
-				PinState: PinNone,
-				RelPath:  relPath,
+				PinState:    PinNone,
+				RelPath:     relPath,
+				WriteSeq:    22,
+				HasWriteSeq: true,
 			},
 			{
 				CurrentTier: 1,
 				PinState:    PinNone,
 				RelPath:     relPath,
+				WriteSeq:    22,
+				HasWriteSeq: true,
 			},
 			{
 				CurrentTier: 1,
 				PinState:    PinLUN,
 				RelPath:     relPath,
+				WriteSeq:    22,
+				HasWriteSeq: true,
 			},
 		},
 	}
@@ -813,6 +920,10 @@ func TestWorkerRePinsLUNDestinationAfterCutover(t *testing.T) {
 
 	if err := worker.Execute(context.Background(), plan); err != nil {
 		t.Fatalf("Execute: %v", err)
+	}
+	if !client.verifiedCutover || client.cutoverWriteSeq != 22 {
+		t.Fatalf("cutover write seq guard = (%v, %d), want (true, 22)",
+			client.verifiedCutover, client.cutoverWriteSeq)
 	}
 	if pinnedPath != dstPath {
 		t.Fatalf("pinned path = %q, want %q", pinnedPath, dstPath)

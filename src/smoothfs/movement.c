@@ -248,7 +248,9 @@ out:
  */
 int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 			      const u8 oid[SMOOTHFS_OID_LEN],
-			      u64 transaction_seq)
+			      u64 transaction_seq,
+			      u64 expected_write_seq,
+			      bool check_write_seq)
 {
 	struct smoothfs_inode_info *si;
 	struct inode *inode;
@@ -337,6 +339,11 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 					  /*sync=*/false);
 		err = -EBUSY;
 		goto out_unlock;
+	}
+	if (check_write_seq &&
+	    atomic64_read(&si->write_seq) != expected_write_seq) {
+		err = -ESTALE;
+		goto out_fail;
 	}
 
 	/* Look up the dest dentry on the destination lower. tierd copied

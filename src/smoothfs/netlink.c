@@ -100,6 +100,7 @@ static const struct nla_policy smoothfs_genl_policy[SMOOTHFS_ATTR_MAX + 1] = {
 	[SMOOTHFS_ATTR_FORCE]            = { .type = NLA_U8 },
 	[SMOOTHFS_ATTR_SIZE_BYTES]       = { .type = NLA_U64 },
 	[SMOOTHFS_ATTR_ANY_SPILL_SINCE_MOUNT] = { .type = NLA_U8 },
+	[SMOOTHFS_ATTR_WRITE_SEQ]        = { .type = NLA_U64 },
 };
 
 static char *smoothfs_path_string(const struct path *path)
@@ -217,7 +218,8 @@ static int doit_move_cutover(struct sk_buff *skb, struct genl_info *info)
 	struct smoothfs_sb_info *sbi;
 	const u8 *oid;
 	u64 seq;
-	int err;
+	u64 expected_write_seq = 0;
+	bool check_write_seq = false;
 
 	(void)skb;
 	sbi = resolve_pool(info);
@@ -229,8 +231,13 @@ static int doit_move_cutover(struct sk_buff *skb, struct genl_info *info)
 
 	oid = nla_data(info->attrs[SMOOTHFS_ATTR_OBJECT_ID]);
 	seq = nla_get_u64(info->attrs[SMOOTHFS_ATTR_TRANSACTION_SEQ]);
+	if (info->attrs[SMOOTHFS_ATTR_WRITE_SEQ]) {
+		expected_write_seq = nla_get_u64(info->attrs[SMOOTHFS_ATTR_WRITE_SEQ]);
+		check_write_seq = true;
+	}
 
-	return smoothfs_movement_cutover(sbi, oid, seq);
+	return smoothfs_movement_cutover(sbi, oid, seq,
+					 expected_write_seq, check_write_seq);
 }
 
 static int doit_inspect(struct sk_buff *skb, struct genl_info *info)
@@ -269,7 +276,9 @@ static int doit_inspect(struct sk_buff *skb, struct genl_info *info)
 	    nla_put_u8(rsp, SMOOTHFS_ATTR_PIN_STATE, si->pin_state) ||
 	    nla_put_u32(rsp, SMOOTHFS_ATTR_GENERATION, si->cutover_gen) ||
 	    nla_put_u64_64bit(rsp, SMOOTHFS_ATTR_TRANSACTION_SEQ,
-			      si->transaction_seq, 0)) {
+			      si->transaction_seq, 0) ||
+	    nla_put_u64_64bit(rsp, SMOOTHFS_ATTR_WRITE_SEQ,
+			      atomic64_read(&si->write_seq), 0)) {
 		genlmsg_cancel(rsp, hdr);
 		nlmsg_free(rsp);
 		return -EMSGSIZE;

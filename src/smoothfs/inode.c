@@ -212,6 +212,12 @@ static bool smoothfs_should_stage_truncate(struct smoothfs_sb_info *sbi,
 	return true;
 }
 
+static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
+					       struct super_block *sb,
+					       struct smoothfs_sb_info *sbi,
+					       u8 tier, const char *rel_path,
+					       struct path *out);
+
 static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 					   struct dentry *dentry,
 					   struct iattr *attr)
@@ -654,24 +660,40 @@ static int smoothfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 	struct dentry *lower = smoothfs_lower_dentry(dentry);
 	struct inode *inode = d_inode(dentry);
 	int err;
+	int srcu_idx;
 
 	err = setattr_prepare(idmap, dentry, attr);
 	if (err)
 		return err;
 
+	srcu_idx = smoothfs_begin_data_change(inode);
+	if (srcu_idx < 0)
+		return srcu_idx;
+
 	err = smoothfs_stage_truncate_to_fast(idmap, dentry, attr);
-	if (err == 0)
+	if (err == 0) {
+		if (attr->ia_valid & ATTR_SIZE)
+			smoothfs_note_data_change(inode);
+		smoothfs_end_data_change(inode, srcu_idx);
 		return 0;
-	if (err != -EOPNOTSUPP)
+	}
+	if (err != -EOPNOTSUPP) {
+		smoothfs_end_data_change(inode, srcu_idx);
 		return err;
+	}
 
 	inode_lock(d_inode(lower));
 	err = notify_change(idmap, lower, attr, NULL);
 	inode_unlock(d_inode(lower));
-	if (err)
+	if (err) {
+		smoothfs_end_data_change(inode, srcu_idx);
 		return err;
+	}
 
 	smoothfs_copy_attrs(inode, d_inode(lower));
+	if (attr->ia_valid & ATTR_SIZE)
+		smoothfs_note_data_change(inode);
+	smoothfs_end_data_change(inode, srcu_idx);
 	return 0;
 }
 

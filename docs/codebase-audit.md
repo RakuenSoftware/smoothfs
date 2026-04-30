@@ -4,6 +4,7 @@ Audit date: 2026-04-30
 
 Remediation pass 1: 2026-04-30
 Remediation pass 2: 2026-04-30
+Remediation pass 3: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -26,7 +27,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `gofmt -l .` is clean after remediation pass 1. Kernel
+current test suite, and `make verify` is clean after remediation pass 3. Kernel
 build verification still cannot be completed on this host because the running
 kernel is `6.17.2-1-pve`, the module's declared floor is 6.18, and matching
 kernel headers are absent.
@@ -212,8 +213,8 @@ Commands:
 - `RECONCILE`: clears pool quiesce, clears mapping-quiesce flags, kicks heat
   drain.
 - `QUIESCE`: sets the pool quiesce gate.
-- `INSPECT`: returns object state, pin state, sequence, rel path, and current
-  tier path.
+- `INSPECT`: returns object state, pin state, cutover generation, write
+  sequence, rel path, and current tier path.
 - `REPROBE`: reserved / `-ENOSYS`.
 - `MOVE_CUTOVER`: switches the object to the intended tier after copy/verify.
 - `REVOKE_MAPPINGS`: zaps writable shared mappings for an object.
@@ -251,12 +252,15 @@ Normal flow:
 1. Planner emits a `MovementPlan`.
 2. Worker calls kernel `MOVE_PLAN`.
 3. Worker creates destination parent directories.
-4. Worker copies source to destination and computes SHA-256 during copy.
+4. Worker records the source write sequence, copies source to destination, and
+   computes SHA-256 during copy.
 5. Worker hashes destination and compares it with source hash.
-6. Worker checks source mtime and size after copy.
-7. Worker calls kernel `MOVE_CUTOVER`.
+6. Worker checks source mtime, size, SHA-256, and write sequence after copy.
+7. Worker calls kernel `MOVE_CUTOVER` with the expected write sequence.
 8. Kernel switches `si->lower_path`, updates dentry lower data when possible,
-   increments `cutover_gen`, records placement, emits move-state.
+   increments `cutover_gen`, records placement, emits move-state. If the write
+   sequence changed after the worker's verification, cutover fails with
+   `-ESTALE`.
 9. Worker removes source and finalizes DB row as `placed` on destination.
 
 Kernel movement gates:
@@ -542,7 +546,7 @@ Results:
 - `go vet ./...`: pass.
 - `go test -race ./...`: pass for current tests.
 - `gofmt -l .`: clean after remediation pass 1.
-- `make verify`: pass after remediation pass 2.
+- `make verify`: pass after remediation pass 3.
 - Samba VFS build/test shell syntax checks: pass.
 - `dpkg-architecture -qDEB_HOST_MULTIARCH`: `x86_64-linux-gnu` on this host.
 - Go packages found: root and `controlplane`.
@@ -676,6 +680,14 @@ Status in remediation pass 1: strengthened by hashing the source again after
 destination verification and before cutover. This closes same-size/same-mtime
 mutations already present by verification time; a fully atomic live-write
 guarantee still needs a kernel-assisted source generation or freeze barrier.
+
+Status in remediation pass 3: fixed with a kernel-maintained per-inode
+`write_seq`. `INSPECT` now reports the current write sequence, the worker
+requires it to remain unchanged after copy/hash verification, and `MOVE_CUTOVER`
+can reject with `-ESTALE` after draining writers if the sequence changed in the
+final pre-cutover window. Data-changing paths now share the same cutover SRCU
+barrier/write-sequence accounting for writes, splice writes, fallocate,
+clone/remap, and truncate.
 
 Evidence:
 
@@ -909,7 +921,7 @@ Important operator controls:
 3. Fixed in remediation pass 1: nested-path destination resolution in kernel cutover.
 4. Fixed in remediation pass 1: `Service.Run` shutdown channel ownership.
 5. Fixed in remediation pass 1: locking for `Planner.pools`.
-6. Strengthened in remediation pass 1: source mutation detection during copy. Kernel-assisted atomicity remains future work.
+6. Fixed in remediation pass 3: source mutation detection now uses a kernel write-sequence cutover guard.
 7. Fixed in remediation pass 1: Samba VFS packaging multiarch paths.
 8. Fixed in remediation pass 1: range-staging recovery docs.
 9. Fixed in remediation pass 1 and CI-enforced in remediation pass 2: `gofmt`.

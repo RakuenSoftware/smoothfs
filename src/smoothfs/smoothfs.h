@@ -318,6 +318,7 @@ struct smoothfs_inode_info {
 	atomic_t        open_count;
 	atomic64_t      read_bytes;
 	atomic64_t      write_bytes;
+	atomic64_t      write_seq;
 	atomic_t        write_reservation;
 	u64             last_access_ns;
 
@@ -364,6 +365,39 @@ static __always_inline struct smoothfs_inode_info *SMOOTHFS_I(struct inode *inod
 static __always_inline struct smoothfs_sb_info *SMOOTHFS_SB(struct super_block *sb)
 {
 	return sb->s_fs_info;
+}
+
+static inline int smoothfs_begin_data_change(struct inode *inode)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
+	int srcu_idx;
+
+again:
+	srcu_idx = srcu_read_lock(&sbi->cutover_srcu);
+	if (unlikely(READ_ONCE(si->movement_state) ==
+		     SMOOTHFS_MS_CUTOVER_IN_PROGRESS)) {
+		int err;
+
+		srcu_read_unlock(&sbi->cutover_srcu, srcu_idx);
+		err = wait_event_interruptible(si->cutover_wq,
+			READ_ONCE(si->movement_state) !=
+			SMOOTHFS_MS_CUTOVER_IN_PROGRESS);
+		if (err)
+			return err;
+		goto again;
+	}
+	return srcu_idx;
+}
+
+static inline void smoothfs_end_data_change(struct inode *inode, int srcu_idx)
+{
+	srcu_read_unlock(&SMOOTHFS_SB(inode->i_sb)->cutover_srcu, srcu_idx);
+}
+
+static inline void smoothfs_note_data_change(struct inode *inode)
+{
+	atomic64_inc(&SMOOTHFS_I(inode)->write_seq);
 }
 
 static __always_inline struct path *smoothfs_lower_path(struct inode *inode)
@@ -592,7 +626,9 @@ int  smoothfs_movement_plan(struct smoothfs_sb_info *sbi,
 			    u8 dest_tier, u64 transaction_seq, bool force);
 int  smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 			       const u8 oid[SMOOTHFS_OID_LEN],
-			       u64 transaction_seq);
+			       u64 transaction_seq,
+			       u64 expected_write_seq,
+			       bool check_write_seq);
 int  smoothfs_movement_abort(struct smoothfs_sb_info *sbi,
 			     const u8 oid[SMOOTHFS_OID_LEN],
 			     u64 transaction_seq, const char *reason);
