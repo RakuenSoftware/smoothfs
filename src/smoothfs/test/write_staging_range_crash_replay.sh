@@ -39,6 +39,12 @@ remount_pool() {
 	mount -t smoothfs \
 		-o "pool=writestagerangereplay,uuid=$UUID,tiers=$SPILL_ROOT/fast:$SPILL_ROOT/slow" \
 		none "$SPILL_ROOT/server"
+	# write_staging_enabled is per-sb and does not survive remount —
+	# re-enable so the next stage write actually goes through the
+	# range-staging admission path instead of writing direct to the
+	# (slow) lower.
+	echo 1 > "/sys/fs/smoothfs/$UUID/write_staging_enabled"
+	echo 98 > "/sys/fs/smoothfs/$UUID/write_staging_full_pct"
 }
 
 echo "=== laying down 2-tier XFS smoothfs ==="
@@ -95,16 +101,21 @@ spill_assert test "$(cat "$SYSFS/last_drain_reason")" = "range-staged-drain"
 
 echo "=== crash during drain: re-stage + unmount mid-cycle ==="
 echo 0x1 > "$SYSFS/write_staging_drain_active_tier_mask"
-printf '123' | dd of="$SPILL_ROOT/server/range.txt" bs=1 seek=6 conv=notrunc status=none
+# Single 3-byte pwrite at offset 6 (bs=3 seek=2 count=1) overlays
+# positions 6,7,8 (g,h,i) with 1,2,3 -> "abcXYZ123j". Older revisions
+# of this harness used bs=1 (3 separate writes) and asserted on
+# "abcXYZ123ij", but that 11-char string is unreachable: 3 bytes
+# written at offset 6 of "abcXYZghij" cannot leave both 'i' and 'j'.
+printf '123' | dd of="$SPILL_ROOT/server/range.txt" bs=3 seek=2 count=1 conv=notrunc status=none
 spill_assert test "$(cat "$SYSFS/range_staged_bytes")" = "3"
 remount_pool
 
 SYSFS="/sys/fs/smoothfs/$UUID"
 spill_assert test "$(cat "$SYSFS/range_staging_recovered_bytes")" = "3"
-spill_assert grep -qx 'abcXYZ123ij' "$SPILL_ROOT/server/range.txt"
+spill_assert grep -qx 'abcXYZ123j' "$SPILL_ROOT/server/range.txt"
 
 echo 0x3 > "$SYSFS/write_staging_drain_active_tier_mask"
-spill_assert grep -qx 'abcXYZ123ij' "$SPILL_ROOT/slow/range.txt"
+spill_assert grep -qx 'abcXYZ123j' "$SPILL_ROOT/slow/range.txt"
 spill_assert test "$(cat "$SYSFS/range_staging_recovery_pending")" = "0"
 
 spill_finish "write_staging_range_crash_replay"
