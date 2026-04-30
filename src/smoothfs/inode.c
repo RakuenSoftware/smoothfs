@@ -212,6 +212,12 @@ static bool smoothfs_should_stage_truncate(struct smoothfs_sb_info *sbi,
 	return true;
 }
 
+static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
+					       struct super_block *sb,
+					       struct smoothfs_sb_info *sbi,
+					       u8 tier, const char *rel_path,
+					       struct path *out);
+
 static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 					   struct dentry *dentry,
 					   struct iattr *attr)
