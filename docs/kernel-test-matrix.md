@@ -53,7 +53,7 @@ By default it runs the core privileged suite. Optional suites are selected with
 
 | Suite | Command | Coverage | Required before release |
 | --- | --- | --- | --- |
-| `core` | `make runtime-harnesses` | smoothfs-only mount, movement, write-staging, range-staging, O_DIRECT, netlink receive-close | Yes |
+| `core` | `make runtime-harnesses` | smoothfs-only mount, movement, open-fd cutover reissue/fail-closed behavior, write-staging, range-staging, O_DIRECT, netlink receive-close | Yes |
 | `protocol` | `SMOOTHFS_RUNTIME_SUITE=protocol make runtime-harnesses` | NFS, SMB, Samba VFS, smbtorture, iSCSI | Yes for protocol release candidates |
 | `ops` | `SMOOTHFS_RUNTIME_SUITE=ops make runtime-harnesses` | DKMS kernel upgrade and module signing | Yes for package release candidates |
 | `all` | `SMOOTHFS_RUNTIME_SUITE=all make runtime-harnesses` | core + protocol + ops | Required for release signoff |
