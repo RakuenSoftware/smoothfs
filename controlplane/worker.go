@@ -17,6 +17,8 @@ import (
 
 var errSourceRaced = errors.New("source changed during copy; cutover aborted")
 
+var ErrRangeStagedMovement = errors.New("range-staged object requires drain or merged-view copy before movement")
+
 // ErrLUNQuiesceRequired marks the Phase 8 safety gate: a LUN backing file
 // must be quiesced and unpinned before the generic movement worker may plan it.
 var ErrLUNQuiesceRequired = errors.New("lun backing file requires target quiesce before movement")
@@ -124,6 +126,9 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	checkWriteSeq := ins.HasWriteSeq
 	if ins.PinState == PinLUN {
 		return fmt.Errorf("%w: object %s", ErrLUNQuiesceRequired, oid)
+	}
+	if ins.RangeStaged {
+		return fmt.Errorf("%w: object %s", ErrRangeStagedMovement, oid)
 	}
 	if p.RePinLUN {
 		if p.RelPath == "" || p.RelPath == oid {
@@ -260,6 +265,11 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	if checkWriteSeq && (!stableInspect.HasWriteSeq || stableInspect.WriteSeq != sourceWriteSeq) {
 		os.Remove(dstPath)
 		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, errSourceRaced)
+	}
+	if stableInspect.RangeStaged {
+		os.Remove(dstPath)
+		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid,
+			fmt.Errorf("%w: object %s", ErrRangeStagedMovement, oid))
 	}
 	w.logTransition(ctx, p, string(StateCopyInProgress), string(StateCopyVerified), "")
 	w.persistObject(ctx, oid, p, StateCopyVerified)

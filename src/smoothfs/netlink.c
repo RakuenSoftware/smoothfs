@@ -101,6 +101,7 @@ static const struct nla_policy smoothfs_genl_policy[SMOOTHFS_ATTR_MAX + 1] = {
 	[SMOOTHFS_ATTR_SIZE_BYTES]       = { .type = NLA_U64 },
 	[SMOOTHFS_ATTR_ANY_SPILL_SINCE_MOUNT] = { .type = NLA_U8 },
 	[SMOOTHFS_ATTR_WRITE_SEQ]        = { .type = NLA_U64 },
+	[SMOOTHFS_ATTR_RANGE_STAGED]     = { .type = NLA_U8 },
 };
 
 static char *smoothfs_path_string(const struct path *path)
@@ -278,7 +279,9 @@ static int doit_inspect(struct sk_buff *skb, struct genl_info *info)
 	    nla_put_u64_64bit(rsp, SMOOTHFS_ATTR_TRANSACTION_SEQ,
 			      si->transaction_seq, 0) ||
 	    nla_put_u64_64bit(rsp, SMOOTHFS_ATTR_WRITE_SEQ,
-			      atomic64_read(&si->write_seq), 0)) {
+			      atomic64_read(&si->write_seq), 0) ||
+	    nla_put_u8(rsp, SMOOTHFS_ATTR_RANGE_STAGED,
+		       READ_ONCE(si->range_staged) ? 1 : 0)) {
 		genlmsg_cancel(rsp, hdr);
 		nlmsg_free(rsp);
 		return -EMSGSIZE;

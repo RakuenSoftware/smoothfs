@@ -111,6 +111,43 @@ func TestWorkerRefusesPinnedLUNBeforeMovePlan(t *testing.T) {
 	}
 }
 
+func TestWorkerRefusesRangeStagedBeforeMovePlan(t *testing.T) {
+	sqlDB := testDB(t)
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			CurrentTier: 0,
+			PinState:    PinNone,
+			RangeStaged: true,
+			RelPath:     "cold/range-staged.bin",
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+
+	var oid [OIDLen]byte
+	oid[0] = 0x91
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    "ns",
+		SourceTierID:   "slow",
+		SourceTierRank: 1,
+		SourceLowerDir: t.TempDir(),
+		DestTierID:     "fast",
+		DestTierRank:   0,
+		DestLowerDir:   t.TempDir(),
+		RelPath:        "cold/range-staged.bin",
+		TransactionSeq: 9,
+	}
+
+	err := worker.Execute(context.Background(), plan)
+	if !errors.Is(err, ErrRangeStagedMovement) {
+		t.Fatalf("Execute error = %v, want ErrRangeStagedMovement", err)
+	}
+	if client.movePlanned {
+		t.Fatal("worker called MovePlan for a range-staged object")
+	}
+}
+
 func TestWorkerRejectsSourceContentChangeWithPreservedStat(t *testing.T) {
 	sqlDB := testDB(t)
 	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
@@ -277,6 +314,83 @@ func TestWorkerRejectsSourceWriteSeqChangeWithRestoredContent(t *testing.T) {
 	}
 	if client.cutoverCalled {
 		t.Fatal("worker cut over after source write sequence changed")
+	}
+	if _, err := os.Stat(dstPath); !os.IsNotExist(err) {
+		t.Fatalf("destination cleanup error = %v, want not exist", err)
+	}
+}
+
+func TestWorkerRejectsRangeStagingBeforeCutover(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	relPath := "nested/source.bin"
+	srcPath := filepath.Join(srcDir, relPath)
+	dstPath := filepath.Join(dstDir, relPath)
+
+	if err := os.MkdirAll(filepath.Dir(srcPath), 0o755); err != nil {
+		t.Fatalf("mkdir source parent: %v", err)
+	}
+	if err := os.WriteFile(srcPath, []byte("source-bytes"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x92
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			(?, ?, ?, 'placed', 'none', ?)`,
+		hex.EncodeToString(oid[:]), nsID, tier0ID, relPath)
+	if err != nil {
+		t.Fatalf("insert source object: %v", err)
+	}
+
+	client := &fakeMovementClient{
+		inspectResults: []*InspectResult{
+			{
+				CurrentTier: 0,
+				PinState:    PinNone,
+				RelPath:     relPath,
+				WriteSeq:    10,
+				HasWriteSeq: true,
+			},
+			{
+				CurrentTier: 0,
+				PinState:    PinNone,
+				RangeStaged: true,
+				RelPath:     relPath,
+				WriteSeq:    10,
+				HasWriteSeq: true,
+			},
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0ID,
+		SourceTierRank: 0,
+		SourceLowerDir: srcDir,
+		DestTierID:     tier1ID,
+		DestTierRank:   1,
+		DestLowerDir:   dstDir,
+		RelPath:        relPath,
+		TransactionSeq: 44,
+	}
+	err = worker.Execute(context.Background(), plan)
+	if !errors.Is(err, ErrRangeStagedMovement) {
+		t.Fatalf("Execute error = %v, want ErrRangeStagedMovement", err)
+	}
+	if !client.movePlanned {
+		t.Fatal("worker did not reach MovePlan before detecting late range staging")
+	}
+	if client.cutoverCalled {
+		t.Fatal("worker cut over after range staging appeared")
 	}
 	if _, err := os.Stat(dstPath); !os.IsNotExist(err) {
 		t.Fatalf("destination cleanup error = %v, want not exist", err)
