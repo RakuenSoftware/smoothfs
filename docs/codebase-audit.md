@@ -9,6 +9,7 @@ Remediation pass 4: 2026-04-30
 Remediation pass 5: 2026-04-30
 Remediation pass 6: 2026-04-30
 Remediation pass 7: 2026-04-30
+Remediation pass 8: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -31,7 +32,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 7. CI now
+current test suite, and `make verify` is clean after remediation pass 8. CI now
 builds the kernel module against current Debian headers; local kernel build
 verification still cannot be completed on this host because the running kernel
 is `6.17.2-1-pve`, the module's declared floor is 6.18, and matching kernel
@@ -891,6 +892,7 @@ Kernel/runtime harnesses cover:
 - Write staging truncate and range behavior.
 - Write-staging drain mask.
 - Range-staging crash/replay.
+- Range-staged direct-I/O refusal followed by movement cutover.
 - NFS cthon04 and connectable file handles.
 - SMB roundtrip, smbtorture subsets, XFS baseline comparison, Samba VFS module.
 - SMB identity pin and fanotify lease-break helper.
@@ -905,8 +907,8 @@ Coverage gaps:
 - Real-kernel netlink receive cancellation is not runtime-tested in CI.
 - Kernel movement of nested files is covered by a runtime harness but is not
   run in CI.
-- Direct I/O refusal after range staging is covered for behavior, but not for
-  SRCU leak/cutover aftermath.
+- Direct I/O refusal after range staging and subsequent cutover is covered by a
+  runtime harness but is not run in CI.
 - Samba VFS multiarch install paths are statically validated for arm64; a full
   native arm64 Samba VFS package build still requires an arm64/cross packaging
   runner.
