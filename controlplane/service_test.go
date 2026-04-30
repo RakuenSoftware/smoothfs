@@ -2,11 +2,14 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/mdlayher/genetlink"
 )
 
 func TestDiscoverPoolFromMountEvent(t *testing.T) {
@@ -187,4 +190,95 @@ func TestServiceRegisterPoolConcurrentAccess(t *testing.T) {
 	if got != writers*perWriter {
 		t.Fatalf("registered pools = %d, want %d", got, writers*perWriter)
 	}
+}
+
+func TestServiceRunCancelsBlockedReceive(t *testing.T) {
+	sqlDB := testDB(t)
+	client := newBlockingServiceClient()
+	plans := make(chan MovementPlan, 1)
+	svc := &Service{
+		db:          sqlDB,
+		client:      client,
+		heat:        NewHeatAggregator(sqlDB, 86400),
+		planner:     NewPlanner(sqlDB, plans, PlannerConfig{IntervalSec: 3600}),
+		planChan:    plans,
+		workerCount: 1,
+		pools:       make(map[string]*Pool),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	go func() {
+		done <- svc.Run(ctx)
+	}()
+	select {
+	case <-client.receiveStarted:
+	case err := <-done:
+		t.Fatalf("Service.Run returned before Receive blocked: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Receive to block")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Service.Run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Service.Run did not return after cancellation")
+	}
+	if !client.isClosed() {
+		t.Fatal("service client was not closed during cancellation")
+	}
+}
+
+type blockingServiceClient struct {
+	receiveStarted chan struct{}
+	closed         chan struct{}
+	startOnce      sync.Once
+	closeOnce      sync.Once
+	mu             sync.Mutex
+	closedFlag     bool
+}
+
+func newBlockingServiceClient() *blockingServiceClient {
+	return &blockingServiceClient{
+		receiveStarted: make(chan struct{}),
+		closed:         make(chan struct{}),
+	}
+}
+
+func (b *blockingServiceClient) Receive() ([]genetlink.Message, error) {
+	b.startOnce.Do(func() { close(b.receiveStarted) })
+	<-b.closed
+	return nil, context.Canceled
+}
+
+func (b *blockingServiceClient) Close() error {
+	b.closeOnce.Do(func() {
+		b.mu.Lock()
+		b.closedFlag = true
+		b.mu.Unlock()
+		close(b.closed)
+	})
+	return nil
+}
+
+func (b *blockingServiceClient) isClosed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closedFlag
+}
+
+func (b *blockingServiceClient) Inspect(uuid.UUID, [OIDLen]byte) (*InspectResult, error) {
+	return nil, errors.New("unexpected Inspect call")
+}
+
+func (b *blockingServiceClient) MovePlan(uuid.UUID, [OIDLen]byte, uint8, uint64) error {
+	return errors.New("unexpected MovePlan call")
+}
+
+func (b *blockingServiceClient) MoveCutover(uuid.UUID, [OIDLen]byte, uint64) error {
+	return errors.New("unexpected MoveCutover call")
 }
