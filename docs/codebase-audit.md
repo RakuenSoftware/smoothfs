@@ -10,6 +10,7 @@ Remediation pass 5: 2026-04-30
 Remediation pass 6: 2026-04-30
 Remediation pass 7: 2026-04-30
 Remediation pass 8: 2026-04-30
+Remediation pass 9: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -32,11 +33,11 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 8. CI now
-builds the kernel module against current Debian headers; local kernel build
-verification still cannot be completed on this host because the running kernel
-is `6.17.2-1-pve`, the module's declared floor is 6.18, and matching kernel
-headers are absent.
+current test suite, and `make verify` is clean after remediation pass 9. CI now
+builds the kernel module against current Debian headers through
+`make kernel-build-debian`. Host-native kernel build verification still cannot
+be completed on this host because the running kernel is `6.17.2-1-pve`, the
+module's declared floor is 6.18, and matching kernel headers are absent.
 
 The most important audit findings are:
 
@@ -902,7 +903,9 @@ Kernel/runtime harnesses cover:
 
 Coverage gaps:
 
-- Local kernel builds still require installed 6.18+ headers.
+- Host-native kernel builds still require installed 6.18+ headers; local
+  containerized Debian-header builds can use `make kernel-build-debian` when a
+  Docker-compatible runtime is available.
 - CI does not run runtime harnesses.
 - Real-kernel netlink receive cancellation is not runtime-tested in CI.
 - Kernel movement of nested files is covered by a runtime harness but is not
@@ -947,7 +950,9 @@ Important operator controls:
 10. Fixed in remediation pass 1: `ErrNotLoaded` is observable with `errors.Is`.
 11. Fixed in remediation pass 2: planner hysteresis is implemented.
 12. Fixed in remediation pass 2: managed-pool rollback removes newly-created empty mountpoints.
-13. Improved in remediation pass 2: CI covers static checks and kernel-module compilation.
+13. Improved in remediation pass 2 and consolidated in remediation pass 9: CI
+    covers static checks and kernel-module compilation through shared Makefile
+    targets.
 
 ## Suggested Future Documentation Additions
 

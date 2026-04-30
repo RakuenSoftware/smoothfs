@@ -3,10 +3,12 @@
 GO ?= go
 BASH ?= bash
 KDIR ?= /lib/modules/$(shell uname -r)/build
+CONTAINER ?= docker
+DEBIAN_KERNEL_IMAGE ?= debian:sid
 GOFILES := $(shell find . -path ./.git -prune -o -name '*.go' -type f -print)
 SHFILES := $(shell find . -path ./.git -prune -o -name '*.sh' -type f -print)
 
-.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check kernel-build
+.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check kernel-build kernel-build-debian
 
 test: go-test
 
@@ -47,3 +49,13 @@ samba-vfs-package-check:
 
 kernel-build:
 	$(MAKE) -C src/smoothfs KDIR=$(KDIR)
+
+kernel-build-debian:
+	$(CONTAINER) run --rm -v "$(CURDIR):/workspace" -w /workspace $(DEBIAN_KERNEL_IMAGE) \
+		bash -euxo pipefail -c '\
+			apt-get update; \
+			apt-get install -y make gcc bc bison flex libelf-dev libssl-dev linux-headers-amd64; \
+			KDIR="$$(find /lib/modules -maxdepth 2 -type l -name build -print | sort -V | tail -1)"; \
+			test -n "$$KDIR"; \
+			make kernel-build KDIR="$$KDIR"; \
+		'
