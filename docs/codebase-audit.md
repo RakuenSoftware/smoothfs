@@ -11,6 +11,7 @@ Remediation pass 6: 2026-04-30
 Remediation pass 7: 2026-04-30
 Remediation pass 8: 2026-04-30
 Remediation pass 9: 2026-04-30
+Remediation pass 10: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -33,7 +34,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 9. CI now
+current test suite, and `make verify` is clean after remediation pass 10. CI now
 builds the kernel module against current Debian headers through
 `make kernel-build-debian`. Host-native kernel build verification still cannot
 be completed on this host because the running kernel is `6.17.2-1-pve`, the
@@ -898,6 +899,7 @@ Kernel/runtime harnesses cover:
 - SMB roundtrip, smbtorture subsets, XFS baseline comparison, Samba VFS module.
 - SMB identity pin and fanotify lease-break helper.
 - O_DIRECT conformance.
+- Real-kernel netlink receive cancellation on client close.
 - iSCSI roundtrip, pin behavior, and target restart.
 - DKMS kernel upgrade and module signing checks.
 
@@ -907,7 +909,8 @@ Coverage gaps:
   containerized Debian-header builds can use `make kernel-build-debian` when a
   Docker-compatible runtime is available.
 - CI does not run runtime harnesses.
-- Real-kernel netlink receive cancellation is not runtime-tested in CI.
+- Real-kernel netlink receive cancellation is covered by a runtime harness but
+  is not run in CI.
 - Kernel movement of nested files is covered by a runtime harness but is not
   run in CI.
 - Direct I/O refusal after range staging and subsequent cutover is covered by a
