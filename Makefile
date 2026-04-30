@@ -60,7 +60,7 @@ kernel-build-debian:
 	$(CONTAINER) run --rm -v "$(CURDIR):/workspace" -w /workspace $(DEBIAN_KERNEL_IMAGE) \
 		bash -euxo pipefail -c '\
 			apt-get update; \
-			apt-get install -y make gcc bc bison flex libelf-dev libssl-dev linux-headers-amd64; \
+			apt-get install -y make gcc bc bison flex libelf-dev libssl-dev "linux-headers-$$(dpkg --print-architecture)"; \
 			KDIR="$$(find /lib/modules -maxdepth 2 -type l -name build -print | sort -V | tail -1)"; \
 			test -n "$$KDIR"; \
 			make kernel-build KDIR="$$KDIR"; \

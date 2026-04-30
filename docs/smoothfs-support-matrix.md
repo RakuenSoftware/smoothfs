@@ -18,15 +18,18 @@ Last reviewed against Phase 7.10 plus disk-spindown write-staging truncate rehom
 | Libc | glibc 2.41 |
 | Init | systemd ≥ 255 |
 | Package format | `.deb` via apt |
+| CPU architectures | **amd64**, **arm64** |
 
 Older Debian releases (12 / bookworm) are not supported because the kernel floor (§Kernel) excludes them.
+
+Both amd64 and arm64 are release-gated architectures. `smoothfs-dkms` is `Architecture: all` and pulls the matching `linux-headers-amd64` or `linux-headers-arm64` at install time; `smoothfs-samba-vfs` ships a native `_amd64.deb` and `_arm64.deb` and installs under the appropriate `/usr/lib/<DEB_HOST_MULTIARCH>/samba/vfs/` path.
 
 ## Kernel
 
 | Field | Value |
 |---|---|
 | Minimum | **6.18.0 LTS** |
-| Tested | 6.18.22-smoothnas-lts, 6.19.10+deb13-amd64 (Debian bpo) |
+| Tested | 6.18.22-smoothnas-lts, 6.19.10+deb13-amd64 (Debian bpo), 6.19.10+deb13-arm64 (Debian bpo) |
 | DKMS floor | enforced by `BUILD_EXCLUSIVE_KERNEL="^(6\.(1[8-9]|[2-9][0-9])|[7-9]\.).*"` in `dkms.conf` |
 | Why 6.18 | smoothfs uses `lookup_one`, `set_default_d_op`, the dentry-returning `vfs_mkdir`, the new `renamedata` shape, `vfs_mmap`, and the parent-inode + qstr `d_revalidate` signature — all of which landed by 6.18 |
 

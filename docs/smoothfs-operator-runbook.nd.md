@@ -14,9 +14,12 @@ Op een verse Debian 13 appliance:
 ```bash
 # 1. Installeer de drie debs. Volgorde is belangrijk — tierd Recommends (niet
 #    Depends) de andere twee, dus apt installeert ze niet automatisch.
+#    smoothfs-dkms is Architecture: all; de andere twee worden gepubliceerd
+#    voor amd64 en arm64 — kies de deb die bij de appliance-architectuur past.
+arch="$(dpkg --print-architecture)"
 apt install ./smoothfs-dkms_0.1.0-1_all.deb
-apt install ./smoothfs-samba-vfs_0.1.0-1_amd64.deb
-apt install ./tierd_0.1.0-1_amd64.deb
+apt install ./smoothfs-samba-vfs_0.1.0-1_${arch}.deb
+apt install ./tierd_0.1.0-1_${arch}.deb
 
 # 2. Controleer of de kernel module gebouwd en geladen is.
 bash /usr/share/smoothfs-dkms/kernel_upgrade.sh
@@ -280,8 +283,8 @@ apt-get source samba=<new-version>
 cd /path/to/smoothfs/samba-vfs
 dpkg-buildpackage -us -uc -b
 
-# Op de appliance:
-apt install ./smoothfs-samba-vfs_0.1.0-1_amd64.deb
+# Op de appliance (gebruik de deb die bij de appliance-architectuur past — amd64 of arm64):
+apt install ./smoothfs-samba-vfs_0.1.0-1_$(dpkg --print-architecture).deb
 systemctl reload smbd    # laadt de nieuwe .so bij nieuwe verbindingen
 ```
 

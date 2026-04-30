@@ -7,15 +7,19 @@ change is promoted into a SmoothNAS release.
 
 | Target | Purpose | Command or CI job | Required before merge |
 | --- | --- | --- | --- |
-| Debian current headers | Compile against the current Debian kernel header surface | CI `Kernel module compile`, local `make kernel-build-debian` | Yes |
+| Debian current headers (amd64) | Compile against the current Debian amd64 kernel header surface | CI `Kernel module compile (ubuntu-latest)`, local `make kernel-build-debian` on amd64 | Yes |
+| Debian current headers (arm64) | Compile against the current Debian arm64 kernel header surface | CI `Kernel module compile (ubuntu-24.04-arm)`, local `make kernel-build-debian` on arm64 | Yes |
 | Host native headers | Compile against the developer or appliance host kernel | `make kernel-build KDIR=/lib/modules/$(uname -r)/build` | Required only when headers are installed |
-| SmoothNAS LTS kernel | Compile against the appliance kernel line, currently 6.18 LTS | Appliance CI or release builder | Required before release |
+| SmoothNAS LTS kernel | Compile against the appliance kernel line, currently 6.18 LTS, on each shipped CPU architecture (amd64, arm64) | Appliance CI or release builder | Required before release |
 | Kernel upgrade path | DKMS skip/build behavior across unsupported and supported kernels | `SMOOTHFS_RUNTIME_SUITE=ops make runtime-harnesses` | Required before release |
 | Secure Boot signing | DKMS module signing and MOK enrollment helper behavior | `module_signing.sh` in the ops runtime suite | Required before release |
 
 The repository CI uses Debian headers because they are reproducible in GitHub
-Actions and catch kernel API drift before merge. Appliance release CI must still
-compile against the exact SmoothNAS kernel artifact shipped to users.
+Actions and catch kernel API drift before merge. The `kernel-build-debian` target
+selects `linux-headers-$(dpkg --print-architecture)` so the same recipe builds on
+amd64 and arm64 hosted runners. Appliance release CI must still compile against
+the exact SmoothNAS kernel artifact shipped to users, on each shipped CPU
+architecture.
 
 ## Static and Unit Gates
 
@@ -113,8 +117,8 @@ silently mounting.
 | GitHub check | What it proves | What it does not prove |
 | --- | --- | --- |
 | Static checks | Go formatting/vet, shell syntax, Samba VFS packaging paths, runtime harness manifest | Real mounts, external services, kernel API compile |
-| Go tests | Control-plane unit behavior and race checks | Real smoothfs kernel behavior |
-| Kernel module compile | The module builds against current Debian headers | Runtime correctness, host-native Proxmox headers, SmoothNAS LTS kernel |
+| Go tests (amd64, arm64) | Control-plane unit behavior and race checks on each shipped CPU architecture | Real smoothfs kernel behavior |
+| Kernel module compile (amd64, arm64) | The module builds against current Debian headers on each shipped CPU architecture | Runtime correctness, host-native Proxmox headers, SmoothNAS LTS kernel |
 | Privileged runtime harnesses | Real smoothfs mounts and selected core/protocol/ops behavior on a labeled self-hosted runner | GitHub-hosted PR safety, runners without root, or uninstalled protocol/DKMS dependencies |
 
 Any release candidate must attach or link the appliance CI artifacts that fill

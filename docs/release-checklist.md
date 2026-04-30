@@ -41,8 +41,11 @@ Required review checks:
 
 ## 3. Kernel and DKMS Package
 
-- Build `smoothfs-dkms` for the release architecture set.
-- Install on a clean appliance image.
+- Build `smoothfs-dkms` for the release architecture set: **amd64** and **arm64**.
+  (`smoothfs-dkms` is `Architecture: all` so the source package is shared, but
+  the on-appliance DKMS build must succeed on each architecture's
+  `linux-headers-<arch>`.)
+- Install on a clean appliance image of each shipped architecture.
 - Verify DKMS builds on the supported 6.18+ kernel.
 - Verify DKMS skips unsupported kernels according to `BUILD_EXCLUSIVE_KERNEL`.
 - Verify `modprobe smoothfs` succeeds.
@@ -57,9 +60,12 @@ Required review checks:
 ## 4. Samba VFS Package
 
 - Build `smoothfs-samba-vfs` against the exact Samba package version in the
-  appliance image.
+  appliance image, natively for each shipped architecture (**amd64** and
+  **arm64**) — there must be a matching `_amd64.deb` and `_arm64.deb`.
 - Confirm package dependencies pin the exact Samba version.
-- Confirm the module installs under the Debian multiarch VFS path.
+- Confirm the module installs under the Debian multiarch VFS path
+  (`/usr/lib/x86_64-linux-gnu/samba/vfs/` on amd64,
+  `/usr/lib/aarch64-linux-gnu/samba/vfs/` on arm64).
 - Start Samba and verify the VFS module loads without unresolved symbols.
 - Run SMB protocol harnesses before release signoff.
 - Rebuild this package for every Samba security update, even when smoothfs code
