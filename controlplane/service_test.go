@@ -2,6 +2,8 @@ package controlplane
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -123,5 +125,66 @@ func TestServiceCanSetLUNResumerAfterConstruction(t *testing.T) {
 	}
 	if w.resumeLUNTarget == nil {
 		t.Fatal("worker resumeLUNTarget is nil after SetLUNResumer")
+	}
+}
+
+func TestServiceRegisterPoolConcurrentAccess(t *testing.T) {
+	svc := &Service{
+		planner: NewPlanner(nil, make(chan MovementPlan, 1), PlannerConfig{}),
+		pools:   make(map[string]*Pool),
+	}
+
+	const (
+		writers   = 8
+		readers   = 4
+		perWriter = 128
+	)
+	errCh := make(chan string, writers*perWriter)
+	var wg sync.WaitGroup
+
+	for i := 0; i < writers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perWriter; j++ {
+				id := uuid.New()
+				pool := &Pool{
+					UUID:        id,
+					Name:        fmt.Sprintf("pool-%d-%d", i, j),
+					NamespaceID: "ns-smoothfs-test",
+					Tiers: []TierInfo{
+						{Rank: 0, TargetID: "tier-fast", LowerDir: "/mnt/fast"},
+						{Rank: 1, TargetID: "tier-slow", LowerDir: "/mnt/slow"},
+					},
+				}
+				svc.RegisterPool(pool)
+				if got := svc.PoolByUUID(id.String()); got != pool {
+					errCh <- fmt.Sprintf("PoolByUUID(%s) = %p, want %p", id, got, pool)
+				}
+			}
+		}()
+	}
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < writers*perWriter; j++ {
+				_ = svc.PoolByUUID(uuid.NewString())
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+	for msg := range errCh {
+		t.Error(msg)
+	}
+
+	svc.mu.Lock()
+	got := len(svc.pools)
+	svc.mu.Unlock()
+	if got != writers*perWriter {
+		t.Fatalf("registered pools = %d, want %d", got, writers*perWriter)
 	}
 }
