@@ -1,6 +1,7 @@
 package smoothfs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,5 +163,89 @@ func TestMountpointForPool(t *testing.T) {
 	}
 	if got := MountpointForPool("/srv/smoothfs", "tank"); got != "/srv/smoothfs/tank" {
 		t.Errorf("custom base: got %q", got)
+	}
+}
+
+func TestCreateManagedPoolRollsBackCreatedMountpoint(t *testing.T) {
+	dir := t.TempDir()
+	tier := filepath.Join(dir, "tier")
+	mountBase := filepath.Join(dir, "mounts")
+	unitDir := filepath.Join(dir, "systemd")
+	if err := os.Mkdir(tier, 0o755); err != nil {
+		t.Fatalf("mkdir tier: %v", err)
+	}
+	if err := os.Mkdir(unitDir, 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
+	}
+
+	origRunSystemctl := runSystemctl
+	origSystemdUnitDir := systemdUnitDir
+	t.Cleanup(func() {
+		runSystemctl = origRunSystemctl
+		systemdUnitDir = origSystemdUnitDir
+	})
+	systemdUnitDir = unitDir
+	runSystemctl = func(args ...string) error {
+		return errors.New("systemctl unavailable")
+	}
+
+	_, err := CreateManagedPool(CreateManagedPoolRequest{
+		Name:      "tank",
+		Tiers:     []string{tier},
+		MountBase: mountBase,
+	})
+	if err == nil {
+		t.Fatal("expected systemctl error")
+	}
+	if _, err := os.Stat(filepath.Join(mountBase, "tank")); !os.IsNotExist(err) {
+		t.Fatalf("mountpoint stat error = %v, want not exist", err)
+	}
+	if entries, err := os.ReadDir(unitDir); err != nil {
+		t.Fatalf("read unit dir: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("unit dir entries after rollback = %d, want 0", len(entries))
+	}
+}
+
+func TestCreateManagedPoolPreservesExistingMountpointOnRollback(t *testing.T) {
+	dir := t.TempDir()
+	tier := filepath.Join(dir, "tier")
+	mountBase := filepath.Join(dir, "mounts")
+	mountpoint := filepath.Join(mountBase, "tank")
+	unitDir := filepath.Join(dir, "systemd")
+	for _, path := range []string{tier, mountpoint, unitDir} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+
+	origRunSystemctl := runSystemctl
+	origSystemdUnitDir := systemdUnitDir
+	t.Cleanup(func() {
+		runSystemctl = origRunSystemctl
+		systemdUnitDir = origSystemdUnitDir
+	})
+	systemdUnitDir = unitDir
+	runSystemctl = func(args ...string) error {
+		return errors.New("systemctl unavailable")
+	}
+
+	_, err := CreateManagedPool(CreateManagedPoolRequest{
+		Name:      "tank",
+		Tiers:     []string{tier},
+		MountBase: mountBase,
+	})
+	if err == nil {
+		t.Fatal("expected systemctl error")
+	}
+	if st, err := os.Stat(mountpoint); err != nil {
+		t.Fatalf("existing mountpoint missing after rollback: %v", err)
+	} else if !st.IsDir() {
+		t.Fatal("existing mountpoint is no longer a directory")
+	}
+	if entries, err := os.ReadDir(unitDir); err != nil {
+		t.Fatalf("read unit dir: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("unit dir entries after rollback = %d, want 0", len(entries))
 	}
 }

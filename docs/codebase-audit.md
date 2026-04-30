@@ -3,6 +3,7 @@
 Audit date: 2026-04-30
 
 Remediation pass 1: 2026-04-30
+Remediation pass 2: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -466,9 +467,8 @@ The planner:
 - Forces demotion from an overfull source tier.
 - Skips pinned objects.
 - Skips movement during min residency / cooldown unless source is overfull.
+- Applies configured hysteresis around promote/demote EWMA cutoffs.
 - Skips destinations at or above full threshold.
-
-`HysteresisPct` is configured and loaded but not used by planning logic.
 
 ### Heat Aggregation
 
@@ -506,7 +506,9 @@ on `last_heat_sample_at`.
 - Writes a systemd `.mount` unit under `/etc/systemd/system`.
 - Runs `systemctl daemon-reload`.
 - Runs `systemctl enable --now`.
-- Rolls back the unit file on failure, but not the mountpoint directory.
+- Rolls back the unit file on failure.
+- Removes a newly-created empty mountpoint on failure while preserving
+  mountpoints that existed before the call.
 
 `DestroyManagedPool` disables/stops the unit, removes it if present, and reloads
 systemd.
@@ -526,6 +528,8 @@ gofmt -l .
 go list ./...
 bash -n src/smoothfs/samba-vfs/build.sh
 bash -n src/smoothfs/test/smb_vfs_module.sh
+make verify
+make kernel-build
 dpkg-architecture -qDEB_HOST_MULTIARCH
 uname -r
 test -d /lib/modules/$(uname -r)/build
@@ -538,12 +542,14 @@ Results:
 - `go vet ./...`: pass.
 - `go test -race ./...`: pass for current tests.
 - `gofmt -l .`: clean after remediation pass 1.
+- `make verify`: pass after remediation pass 2.
 - Samba VFS build/test shell syntax checks: pass.
 - `dpkg-architecture -qDEB_HOST_MULTIARCH`: `x86_64-linux-gnu` on this host.
 - Go packages found: root and `controlplane`.
-- Kernel build attempted with `make -C src/smoothfs` but blocked before compile:
+- Kernel build attempted with `make kernel-build` but blocked before compile:
   `/lib/modules/6.17.2-1-pve/build` is missing.
-- CI currently runs only Go tests.
+- CI now includes Go formatting, vet, tests, race tests, shell syntax checks,
+  and a kernel-module compile job against current Debian headers.
 
 ## Audit Findings
 
@@ -774,6 +780,10 @@ netlink error for diagnostics.
 
 ### Medium: Planner Loads Hysteresis But Does Not Use It
 
+Status in remediation pass 2: fixed by applying the configured hysteresis
+percentage to the promote/demote EWMA cutoffs and adding planner regression
+tests for marginal promotion and demotion.
+
 Evidence:
 
 `PlannerConfig.HysteresisPct` is loaded from `smoothfs_hysteresis_pct`, but the
@@ -792,6 +802,10 @@ configuration until it is implemented.
 
 ### Low: Managed Pool Rollback Leaves Mountpoint Directory
 
+Status in remediation pass 2: fixed by tracking whether `CreateManagedPool`
+created the mountpoint and removing it during rollback only when it was newly
+created and still empty.
+
 Evidence:
 
 `CreateManagedPool` creates the mountpoint before writing/enabling the systemd
@@ -808,6 +822,10 @@ Track whether the mountpoint was created by this call and remove it on failure
 if it is still empty.
 
 ### Low: Kernel CI Coverage Is Missing
+
+Status in remediation pass 2: improved by adding Makefile verification targets,
+CI formatting/vet/race/script checks, and a kernel-module compile job against
+current Debian headers.
 
 Evidence:
 
@@ -830,9 +848,10 @@ can remain separate because they require privileged hosts.
 Go tests cover:
 
 - Managed pool name/tier/unit rendering behavior.
+- Managed pool rollback cleanup for newly-created mountpoints.
 - Event decoding.
 - Heat EWMA behavior.
-- Planner promote/demote behavior.
+- Planner promote/demote behavior and hysteresis gates.
 - Service discovery from mount events.
 - Worker movement and active-LUN edge cases.
 - Recovery of interrupted movement states.
@@ -856,9 +875,9 @@ Kernel/runtime harnesses cover:
 
 Coverage gaps:
 
-- CI does not run kernel builds.
+- Local kernel builds still require installed 6.18+ headers.
 - CI does not run runtime harnesses.
-- Planner/service concurrency is not race-tested.
+- Service concurrency is not race-tested.
 - Kernel movement of nested files is not obviously covered.
 - Direct I/O refusal after range staging is covered for behavior, but not for
   SRCU leak/cutover aftermath.
@@ -893,9 +912,11 @@ Important operator controls:
 6. Strengthened in remediation pass 1: source mutation detection during copy. Kernel-assisted atomicity remains future work.
 7. Fixed in remediation pass 1: Samba VFS packaging multiarch paths.
 8. Fixed in remediation pass 1: range-staging recovery docs.
-9. Fixed in remediation pass 1: `gofmt`; CI enforcement remains open.
+9. Fixed in remediation pass 1 and CI-enforced in remediation pass 2: `gofmt`.
 10. Fixed in remediation pass 1: `ErrNotLoaded` is observable with `errors.Is`.
-11. Open: either implement planner hysteresis or remove/de-document the setting.
+11. Fixed in remediation pass 2: planner hysteresis is implemented.
+12. Fixed in remediation pass 2: managed-pool rollback removes newly-created empty mountpoints.
+13. Improved in remediation pass 2: CI covers static checks and kernel-module compilation.
 
 ## Suggested Future Documentation Additions
 

@@ -18,6 +18,7 @@ const DefaultMountBase = "/mnt/smoothfs"
 const SystemdUnitDir = "/etc/systemd/system"
 
 var poolNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+var systemdUnitDir = SystemdUnitDir
 
 type CreateManagedPoolRequest struct {
 	Name      string
@@ -185,20 +186,34 @@ func CreateManagedPool(req CreateManagedPoolRequest) (*ManagedPool, error) {
 		UUID:       poolUUID,
 		Tiers:      req.Tiers,
 		Mountpoint: mp,
-		UnitPath:   filepath.Join(SystemdUnitDir, UnitFilenameFor(mp)),
+		UnitPath:   filepath.Join(systemdUnitDir, UnitFilenameFor(mp)),
 	}
 
+	mountpointCreated := false
+	if _, err := os.Stat(mp); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat mountpoint %s: %w", mp, err)
+		}
+		mountpointCreated = true
+	}
 	if err := os.MkdirAll(mp, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir mountpoint %s: %w", mp, err)
 	}
+	rollback := func() {
+		_ = os.Remove(pool.UnitPath)
+		if mountpointCreated {
+			_ = os.Remove(mp)
+		}
+	}
 	body, err := RenderMountUnit(pool)
 	if err != nil {
+		rollback()
 		return nil, err
 	}
 	if err := os.WriteFile(pool.UnitPath, []byte(body), 0o644); err != nil {
+		rollback()
 		return nil, fmt.Errorf("write unit %s: %w", pool.UnitPath, err)
 	}
-	rollback := func() { _ = os.Remove(pool.UnitPath) }
 
 	if err := runSystemctl("daemon-reload"); err != nil {
 		rollback()
