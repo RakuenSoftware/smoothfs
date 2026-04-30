@@ -8,6 +8,7 @@ Remediation pass 3: 2026-04-30
 Remediation pass 4: 2026-04-30
 Remediation pass 5: 2026-04-30
 Remediation pass 6: 2026-04-30
+Remediation pass 7: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -30,7 +31,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 6. CI now
+current test suite, and `make verify` is clean after remediation pass 7. CI now
 builds the kernel module against current Debian headers; local kernel build
 verification still cannot be completed on this host because the running kernel
 is `6.17.2-1-pve`, the module's declared floor is 6.18, and matching kernel
@@ -885,6 +886,7 @@ Kernel/runtime harnesses cover:
 
 - Tier-spill create, nested parent materialization, union readdir, unlink, XDEV
   rename, and replay after reload.
+- Kernel movement cutover of nested file paths.
 - Metadata active-tier gate.
 - Write staging truncate and range behavior.
 - Write-staging drain mask.
@@ -901,7 +903,8 @@ Coverage gaps:
 - Local kernel builds still require installed 6.18+ headers.
 - CI does not run runtime harnesses.
 - Real-kernel netlink receive cancellation is not runtime-tested in CI.
-- Kernel movement of nested files is not obviously covered.
+- Kernel movement of nested files is covered by a runtime harness but is not
+  run in CI.
 - Direct I/O refusal after range staging is covered for behavior, but not for
   SRCU leak/cutover aftermath.
 - Samba VFS multiarch install paths are statically validated for arm64; a full
