@@ -939,7 +939,6 @@ static int smoothfs_link(struct dentry *old_dentry, struct inode *dir,
 
 static int smoothfs_unlink(struct inode *dir, struct dentry *dentry)
 {
-	struct dentry *lower_parent = smoothfs_lower_dentry(dentry->d_parent);
 	struct dentry *lower = smoothfs_lower_dentry(dentry);
 	struct dentry *removing;
 	struct inode *lower_dir = NULL;
@@ -947,7 +946,16 @@ static int smoothfs_unlink(struct inode *dir, struct dentry *dentry)
 	struct inode *lower_inode;
 	int err;
 
-	removing = smoothfs_compat_start_removing(lower_parent, lower, &lower_dir);
+	/* When a file is spilled onto a non-canonical tier, lower lives on
+	 * that tier's lower fs while smoothfs_lower_dentry(dentry->d_parent)
+	 * still points at the canonical-tier parent. They are dentries from
+	 * different lower filesystems, so the dentry-parent identity check
+	 * inside smoothfs_compat_start_removing would reject the pair with
+	 * EINVAL. lower->d_parent is the file's actual parent on its own
+	 * lower fs; that is what vfs_unlink needs, and that is also the
+	 * parent whose mtime/ctime the unlink updates — so the post-unlink
+	 * smoothfs_copy_attrs reads from the same dentry. */
+	removing = smoothfs_compat_start_removing(lower->d_parent, lower, &lower_dir);
 	if (IS_ERR(removing))
 		return PTR_ERR(removing);
 	lower_inode = d_inode(removing);
@@ -986,7 +994,9 @@ static int smoothfs_unlink(struct inode *dir, struct dentry *dentry)
 		drop_nlink(d_inode(dentry));
 		smoothfs_set_lower_dentry(dentry, NULL);
 		d_drop(dentry);
-		smoothfs_copy_attrs(dir, d_inode(lower_parent));
+		/* Copy from the parent we actually modified (lower->d_parent),
+		 * not the canonical lower_parent which never saw the unlink. */
+		smoothfs_copy_attrs(dir, d_inode(lower->d_parent));
 	}
 	return err;
 }
@@ -1106,13 +1116,17 @@ out_err:
 
 static int smoothfs_rmdir(struct inode *dir, struct dentry *dentry)
 {
-	struct dentry *lower_parent = smoothfs_lower_dentry(dentry->d_parent);
 	struct dentry *lower = smoothfs_lower_dentry(dentry);
 	struct dentry *removing;
 	struct inode *lower_dir = NULL;
 	int err;
 
-	removing = smoothfs_compat_start_removing(lower_parent, lower, &lower_dir);
+	/* See smoothfs_unlink for the reason we use lower->d_parent rather
+	 * than smoothfs_lower_dentry(dentry->d_parent): the latter is the
+	 * canonical-tier parent and may live on a different lower fs from
+	 * the directory we are removing, which trips the dentry-parent
+	 * identity check inside smoothfs_compat_start_removing. */
+	removing = smoothfs_compat_start_removing(lower->d_parent, lower, &lower_dir);
 	if (IS_ERR(removing))
 		return PTR_ERR(removing);
 	err = smoothfs_compat_rmdir(&nop_mnt_idmap, lower_dir, removing);
@@ -1125,7 +1139,9 @@ static int smoothfs_rmdir(struct inode *dir, struct dentry *dentry)
 		clear_nlink(d_inode(dentry));
 		smoothfs_set_lower_dentry(dentry, NULL);
 		d_drop(dentry);
-		smoothfs_copy_attrs(dir, d_inode(lower_parent));
+		/* Copy from the parent we actually modified (lower->d_parent);
+		 * see smoothfs_unlink for the canonical-vs-actual rationale. */
+		smoothfs_copy_attrs(dir, d_inode(lower->d_parent));
 	}
 	return err;
 }
