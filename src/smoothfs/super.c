@@ -1982,6 +1982,23 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 	si->lower_path = *lower;
 	path_get(&si->lower_path);
 
+	/* lower_path tells us which tier this file actually lives on;
+	 * leaving si->current_tier at the alloc_inode default (0) makes
+	 * smoothfs report fastest_tier for every freshly-iget'd inode that
+	 * happens to live on a non-canonical tier — confusing inspect,
+	 * movement_plan ("current tier before move = 0, want N"), and
+	 * write-staging admission decisions. tier_idx was already computed
+	 * for non-root callers via the lower_ino_map fast path; recompute
+	 * for root and for the cache-miss path. */
+	if (root) {
+		si->current_tier = 0;
+	} else if (tier_idx < SMOOTHFS_MAX_TIERS) {
+		si->current_tier = tier_idx;
+	} else {
+		si->current_tier = smoothfs_tier_of(sbi, lower->mnt);
+	}
+	si->intended_tier = si->current_tier;
+
 	smoothfs_copy_attrs(inode, lower_inode);
 	inode->i_mapping->a_ops = &smoothfs_aops;
 
