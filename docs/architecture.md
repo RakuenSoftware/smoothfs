@@ -105,4 +105,6 @@ Operational visibility includes:
 - Control-plane schema contract: [`control-plane-schema.md`](control-plane-schema.md)
 - UAPI compatibility policy: [`uapi-compatibility.md`](uapi-compatibility.md)
 - Movement consistency: [`movement-consistency.md`](movement-consistency.md)
+- Kernel/test matrix: [`kernel-test-matrix.md`](kernel-test-matrix.md)
+- Release checklist: [`release-checklist.md`](release-checklist.md)
 - Runtime implementation detail: [`../src/README.md`](../src/README.md)
