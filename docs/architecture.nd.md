@@ -1,5 +1,8 @@
 # smoothfs architectuur
 
+Dit is een korte Nederlandstalige samenvatting. De uitgebreide en canonieke
+architectuurreferentie staat in [`architecture.md`](architecture.md).
+
 Dit document beschrijft hoe de onderdelen in een SmoothNAS-implementatie samen
 spelen.
 
@@ -103,4 +106,3 @@ Operationele zichtbaarheid omvat:
 - Operator uitvoering: [`smoothfs-operator-runbook.nd.md`](smoothfs-operator-runbook.nd.md)
 - Platform grenzen: [`smoothfs-support-matrix.nd.md`](smoothfs-support-matrix.nd.md)
 - Runtime technische details: [`../src/README.nd.md`](../src/README.nd.md)
-
