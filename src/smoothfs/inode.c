@@ -297,7 +297,17 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 	if (err)
 		goto out_new_path;
 
-	inode_lock(inode);
+	/* The smoothfs inode's i_rwsem is already write-held by VFS:
+	 * do_truncate -> inode_lock(d_inode(dentry)) -> notify_change ->
+	 * smoothfs_setattr -> here. Re-taking inode_lock(inode) on the
+	 * same task would be a writer-on-writer recursive acquire on
+	 * the same rwsem and self-deadlock the truncate (kernel hung-task
+	 * watchdog reports "<writer> blocked on rw-semaphore likely owned
+	 * by task <writer>"). The smoothfs_inode_info field updates below
+	 * are already serialized: VFS i_rwsem mutually excludes other
+	 * setattr/movement paths that take inode_lock(inode), and the
+	 * cutover_srcu read-side lock taken by smoothfs_begin_data_change
+	 * keeps the placement-cutover writer drained. */
 	old_path = si->lower_path;
 	old_tier = smoothfs_tier_of(sbi, old_path.mnt);
 	si->lower_path = new_path;
@@ -311,7 +321,6 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 	si->write_staged = true;
 	si->write_staged_drain_tier = old_tier;
 	si->cutover_gen++;
-	inode_unlock(inode);
 
 	if (old_tier < SMOOTHFS_MAX_TIERS && old_path.dentry)
 		smoothfs_lower_ino_map_remove(sbi, old_tier,
