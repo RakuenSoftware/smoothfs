@@ -19,6 +19,7 @@
 #include <linux/file.h>
 #include <linux/fdtable.h>
 #include <linux/slab.h>
+#include <linux/statfs.h>
 
 #include "smoothfs.h"
 
