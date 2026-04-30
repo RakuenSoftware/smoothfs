@@ -66,7 +66,22 @@ SMOOTHFS_RUNTIME_SUITE=all SMOOTHFS_RUNTIME_DRY_RUN=1 \
   bash src/smoothfs/test/run_runtime_harnesses.sh
 ```
 
-CI runs manifest validation but does not run privileged harnesses.
+Default hosted CI runs manifest validation but does not run privileged
+harnesses. The manual GitHub Actions workflow `Privileged runtime harnesses`
+runs the same suites on a self-hosted runner labeled `self-hosted`, `linux`,
+and `smoothfs-runtime`. That runner must provide passwordless `sudo`, loop
+devices, XFS tooling, matching kernel headers when `module_mode =
+build-and-load`, and the protocol or DKMS packages required by the selected
+suite.
+
+Use the workflow inputs as follows:
+
+| Input | Values | Purpose |
+| --- | --- | --- |
+| `suite` | `core`, `protocol`, `ops`, `all` | Selects the runtime suite when `tests` is empty. |
+| `tests` | space-separated script names | Runs a targeted subset and overrides `suite`. |
+| `module_mode` | `build-and-load`, `preinstalled` | Either builds `src/smoothfs/smoothfs.ko` against the runner kernel and loads it, or verifies a preinstalled module. |
+| `fail_fast` | boolean | Stops after the first failing harness when enabled. |
 
 ## Lower Filesystem Matrix
 
@@ -100,6 +115,7 @@ silently mounting.
 | Static checks | Go formatting/vet, shell syntax, Samba VFS packaging paths, runtime harness manifest | Real mounts, external services, kernel API compile |
 | Go tests | Control-plane unit behavior and race checks | Real smoothfs kernel behavior |
 | Kernel module compile | The module builds against current Debian headers | Runtime correctness, host-native Proxmox headers, SmoothNAS LTS kernel |
+| Privileged runtime harnesses | Real smoothfs mounts and selected core/protocol/ops behavior on a labeled self-hosted runner | GitHub-hosted PR safety, runners without root, or uninstalled protocol/DKMS dependencies |
 
 Any release candidate must attach or link the appliance CI artifacts that fill
 the gaps above.
