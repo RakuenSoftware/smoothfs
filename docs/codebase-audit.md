@@ -5,6 +5,7 @@ Audit date: 2026-04-30
 Remediation pass 1: 2026-04-30
 Remediation pass 2: 2026-04-30
 Remediation pass 3: 2026-04-30
+Remediation pass 4: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -27,10 +28,11 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 3. Kernel
-build verification still cannot be completed on this host because the running
-kernel is `6.17.2-1-pve`, the module's declared floor is 6.18, and matching
-kernel headers are absent.
+current test suite, and `make verify` is clean after remediation pass 4. CI now
+builds the kernel module against current Debian headers; local kernel build
+verification still cannot be completed on this host because the running kernel
+is `6.17.2-1-pve`, the module's declared floor is 6.18, and matching kernel
+headers are absent.
 
 The most important audit findings are:
 
@@ -712,6 +714,11 @@ on expected movement cost and live-write semantics.
 Status in remediation pass 1: fixed in the build script, Debian install rule,
 and SMB VFS test harness by using Debian multiarch paths.
 
+Status in remediation pass 4: guarded in CI with `make
+samba-vfs-package-check`, which rejects fixed library-path triplets in the
+Samba VFS packaging files and dry-runs the Debian install rule for both
+`x86_64-linux-gnu` and `aarch64-linux-gnu`.
+
 Evidence:
 
 At audit time, `src/smoothfs/samba-vfs/debian/control` declared
@@ -893,7 +900,9 @@ Coverage gaps:
 - Kernel movement of nested files is not obviously covered.
 - Direct I/O refusal after range staging is covered for behavior, but not for
   SRCU leak/cutover aftermath.
-- Samba VFS package build is not validated for arm64.
+- Samba VFS multiarch install paths are statically validated for arm64; a full
+  native arm64 Samba VFS package build still requires an arm64/cross packaging
+  runner.
 
 ## Operational Notes
 
@@ -922,7 +931,8 @@ Important operator controls:
 4. Fixed in remediation pass 1: `Service.Run` shutdown channel ownership.
 5. Fixed in remediation pass 1: locking for `Planner.pools`.
 6. Fixed in remediation pass 3: source mutation detection now uses a kernel write-sequence cutover guard.
-7. Fixed in remediation pass 1: Samba VFS packaging multiarch paths.
+7. Fixed in remediation pass 1 and CI-guarded in remediation pass 4: Samba VFS
+   packaging multiarch paths.
 8. Fixed in remediation pass 1: range-staging recovery docs.
 9. Fixed in remediation pass 1 and CI-enforced in remediation pass 2: `gofmt`.
 10. Fixed in remediation pass 1: `ErrNotLoaded` is observable with `errors.Is`.
