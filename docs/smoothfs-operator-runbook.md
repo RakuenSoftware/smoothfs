@@ -169,6 +169,14 @@ cat /sys/fs/smoothfs/<uuid>/write_staging_drainable_tier_mask
 cat /sys/fs/smoothfs/<uuid>/metadata_active_tier_mask
 cat /sys/fs/smoothfs/<uuid>/write_staging_drain_active_tier_mask
 cat /sys/fs/smoothfs/<uuid>/metadata_tier_skips
+cat /sys/fs/smoothfs/<uuid>/range_staging_recovery_supported
+cat /sys/fs/smoothfs/<uuid>/range_staging_recovered_bytes
+cat /sys/fs/smoothfs/<uuid>/range_staging_recovered_writes
+cat /sys/fs/smoothfs/<uuid>/range_staging_recovery_pending
+cat /sys/fs/smoothfs/<uuid>/recovered_range_tier_mask
+cat /sys/fs/smoothfs/<uuid>/oldest_recovered_write_at
+cat /sys/fs/smoothfs/<uuid>/last_recovery_at
+cat /sys/fs/smoothfs/<uuid>/last_recovery_reason
 ```
 
 The first data-plane path handles replace-style writes: when staging is enabled,
@@ -185,8 +193,10 @@ path. For unpinned cold-tier regular files, buffered non-truncating writes can
 stage changed ranges into the fastest tier and read them back through the
 range-merge path; `range_staged_bytes` and `range_staged_writes` report that
 activity. Once a file has staged ranges, direct I/O and mmap are refused so
-callers cannot bypass the merge layer and observe stale lower bytes. Replay
-after remount remains pending for range-staged data.
+callers cannot bypass the merge layer and observe stale lower bytes.
+Range-staged metadata is persisted under the fastest tier's `.smoothfs`
+sidecar area and replayed on remount; recovered ranges remain pending until
+SmoothNAS marks the source tier drain-active.
 `staged_rehomes_pending` counts truncate-write rehomes that still have staged
 cleanup work outstanding.
 `write_staging_drainable_rehomes` counts staged truncate rehomes whose original

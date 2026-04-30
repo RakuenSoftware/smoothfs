@@ -178,14 +178,11 @@ static int smoothfs_range_rename_meta(struct smoothfs_sb_info *sbi,
 	}
 
 	{
-		struct renamedata rd = {
-			.old_mnt_idmap = &nop_mnt_idmap,
-			.old_dir       = d_inode(parent),
-			.old_dentry    = old_dentry,
-			.new_mnt_idmap = &nop_mnt_idmap,
-			.new_dir       = d_inode(parent),
-			.new_dentry    = new_dentry,
-		};
+		struct renamedata rd;
+
+		smoothfs_compat_init_renamedata(&rd, &nop_mnt_idmap,
+						parent, old_dentry,
+						parent, new_dentry, 0);
 		err = vfs_rename(&rd);
 	}
 

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,4 +119,42 @@ func TestPlannerDefersPromotionIntoFullDestination(t *testing.T) {
 		t.Fatalf("unexpected plan into full destination tier: %+v", plan)
 	default:
 	}
+}
+
+func TestPlannerRegisterPoolConcurrentWithTick(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
+	tiers := []TierInfo{
+		{Rank: 0, TargetID: tier0ID, LowerDir: t.TempDir(), TargetPct: 50, FullPct: 95},
+		{Rank: 1, TargetID: tier1ID, LowerDir: t.TempDir(), TargetPct: 80, FullPct: 98},
+	}
+	plans := make(chan MovementPlan, 16)
+	planner := NewPlanner(sqlDB, plans, PlannerConfig{
+		PromotePercentile: 80,
+		DemotePercentile:  20,
+		IntervalSec:       900,
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				planner.RegisterPool(&Pool{
+					UUID:        uuid.New(),
+					Name:        "pool-race",
+					NamespaceID: nsID,
+					Tiers:       tiers,
+				})
+			}
+		}()
+	}
+
+	for i := 0; i < 100; i++ {
+		if err := planner.tick(context.Background()); err != nil {
+			t.Fatalf("tick: %v", err)
+		}
+	}
+	wg.Wait()
 }

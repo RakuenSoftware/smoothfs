@@ -23,7 +23,7 @@
 # trusted.smoothfs.lease back to 0 without waiting for fd close.
 #
 # Prereq: bash src/smoothfs/samba-vfs/build.sh has produced
-#   /usr/lib/x86_64-linux-gnu/samba/vfs/smoothfs.so
+#   /usr/lib/<multiarch>/samba/vfs/smoothfs.so
 
 set -u
 
@@ -34,6 +34,11 @@ SHARE=smoothfs
 USER=smbvfstest
 PASS=smbvfstest-phase58
 CIFS_MNT=$ROOT/cifs
+MULTIARCH=${DEB_HOST_MULTIARCH:-}
+if [ -z "$MULTIARCH" ]; then
+    MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)
+fi
+VFS_MODULE=${MULTIARCH:+/usr/lib/$MULTIARCH/samba/vfs/smoothfs.so}
 
 SMBD_PID=""
 
@@ -47,8 +52,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ ! -f /usr/lib/x86_64-linux-gnu/samba/vfs/smoothfs.so ]; then
-    echo "FAIL: /usr/lib/x86_64-linux-gnu/samba/vfs/smoothfs.so missing"
+if [ -z "$VFS_MODULE" ]; then
+    echo "FAIL: unable to determine Debian multiarch library path"
+    exit 1
+fi
+
+if [ ! -f "$VFS_MODULE" ]; then
+    echo "FAIL: $VFS_MODULE missing"
     echo "  build it first: bash src/smoothfs/samba-vfs/build.sh"
     exit 1
 fi

@@ -17,6 +17,9 @@
 #include <linux/cred.h>
 #include <linux/path.h>
 #include <linux/fsnotify.h>
+#include <linux/limits.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 
 #include "smoothfs.h"
 
@@ -68,6 +71,118 @@ static bool smoothfs_can_move(struct smoothfs_inode_info *si, bool force)
 	if (!S_ISREG(inode->i_mode))
 		return false;
 	return true;
+}
+
+static char *smoothfs_current_rel_path(struct inode *inode)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct dentry *dentry;
+	char *buf;
+	char *path;
+	char *rel = NULL;
+
+	dentry = d_find_alias(inode);
+	if (!dentry)
+		return si->rel_path ? kstrdup(si->rel_path, GFP_KERNEL) : NULL;
+
+	buf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (!buf)
+		goto out;
+
+	path = dentry_path_raw(dentry, buf, PATH_MAX);
+	if (!IS_ERR(path)) {
+		if (*path == '/')
+			path++;
+		rel = kstrdup(path, GFP_KERNEL);
+	}
+	kfree(buf);
+
+out:
+	dput(dentry);
+	if (!rel && si->rel_path)
+		rel = kstrdup(si->rel_path, GFP_KERNEL);
+	return rel;
+}
+
+static int smoothfs_resolve_cutover_dest(struct smoothfs_sb_info *sbi,
+					 u8 dest_tier,
+					 struct dentry *src_dentry,
+					 const char *rel_path,
+					 struct path *dest_path)
+{
+	struct path parent_path;
+	struct dentry *dest_dentry;
+	struct qstr qname;
+	char *work = NULL;
+	char *name;
+	char *slash;
+	int err;
+
+	if (dest_tier >= sbi->ntiers)
+		return -EINVAL;
+
+	if (rel_path && *rel_path) {
+		work = kstrdup(rel_path, GFP_KERNEL);
+		if (!work)
+			return -ENOMEM;
+		slash = strrchr(work, '/');
+		if (slash) {
+			*slash = '\0';
+			name = slash + 1;
+			if (!*work) {
+				parent_path = sbi->tiers[dest_tier].lower_path;
+				path_get(&parent_path);
+			} else {
+				err = vfs_path_lookup(
+					sbi->tiers[dest_tier].lower_path.dentry,
+					sbi->tiers[dest_tier].lower_path.mnt,
+					work,
+					LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
+					&parent_path);
+				if (err)
+					goto out_free;
+			}
+		} else {
+			name = work;
+			parent_path = sbi->tiers[dest_tier].lower_path;
+			path_get(&parent_path);
+		}
+	} else {
+		name = (char *)src_dentry->d_name.name;
+		parent_path = sbi->tiers[dest_tier].lower_path;
+		path_get(&parent_path);
+	}
+
+	if (!name || !*name) {
+		err = -EINVAL;
+		goto out_parent;
+	}
+
+	qname = (struct qstr)QSTR_INIT(name, strlen(name));
+	inode_lock(d_inode(parent_path.dentry));
+	dest_dentry = smoothfs_compat_lookup(&nop_mnt_idmap, &qname,
+					     parent_path.dentry);
+	inode_unlock(d_inode(parent_path.dentry));
+	if (IS_ERR(dest_dentry)) {
+		err = PTR_ERR(dest_dentry);
+		goto out_parent;
+	}
+	if (d_really_is_negative(dest_dentry)) {
+		dput(dest_dentry);
+		err = -ENOENT;
+		goto out_parent;
+	}
+
+	dest_path->dentry = dest_dentry;
+	dest_path->mnt = parent_path.mnt;
+	mntget(dest_path->mnt);
+	err = 0;
+
+out_parent:
+	path_put(&parent_path);
+out_free:
+	kfree(work);
+	return err;
 }
 
 int smoothfs_movement_plan(struct smoothfs_sb_info *sbi,
@@ -137,9 +252,10 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 {
 	struct smoothfs_inode_info *si;
 	struct inode *inode;
-	struct dentry *src_dentry, *dest_dentry, *old_lower_dentry;
+	struct dentry *src_dentry, *old_lower_dentry;
 	struct vfsmount *old_lower_mnt;
-	struct path dest_path;
+	struct path dest_path = {};
+	char *rel_path = NULL;
 	int err = 0;
 
 	if (sbi->quiesced)
@@ -223,27 +339,17 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 		goto out_unlock;
 	}
 
-	/* Look up the dest dentry on the destination lower. tierd is
-	 * responsible for having pre-copied the file there. We use the
-	 * source dentry's name as the dest name (rename on cutover not
-	 * supported in Phase 2). */
+	/* Look up the dest dentry on the destination lower. tierd copied
+	 * to the namespace-relative path returned by INSPECT, so resolve the
+	 * same relative path here. Falling back to the basename at the tier
+	 * root is only for old in-memory objects that do not yet carry
+	 * rel_path. */
 	src_dentry = si->lower_path.dentry;
-	dest_path = sbi->tiers[si->intended_tier].lower_path;
-
-	inode_lock(d_inode(dest_path.dentry));
-	dest_dentry = smoothfs_compat_lookup(&nop_mnt_idmap,
-					     &src_dentry->d_name,
-					     dest_path.dentry);
-	inode_unlock(d_inode(dest_path.dentry));
-	if (IS_ERR(dest_dentry)) {
-		err = PTR_ERR(dest_dentry);
+	rel_path = smoothfs_current_rel_path(inode);
+	err = smoothfs_resolve_cutover_dest(sbi, si->intended_tier,
+					    src_dentry, rel_path, &dest_path);
+	if (err)
 		goto out_fail;
-	}
-	if (d_really_is_negative(dest_dentry)) {
-		dput(dest_dentry);
-		err = -ENOENT;
-		goto out_fail;
-	}
 
 	/* Swap lower_path: keep refs balanced. The smoothfs dentry's
 	 * d_fsdata also points at the OLD lower dentry — update it too,
@@ -251,15 +357,19 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	old_lower_dentry = si->lower_path.dentry;
 	old_lower_mnt    = si->lower_path.mnt;
 
-	si->lower_path.dentry = dest_dentry;     /* lookup_one returned a ref */
-	si->lower_path.mnt    = dest_path.mnt;
-	mntget(si->lower_path.mnt);
+	si->lower_path = dest_path;     /* owns lookup/mnt refs from resolver */
+	if (rel_path) {
+		kfree(si->rel_path);
+		si->rel_path = rel_path;
+		rel_path = NULL;
+	}
 
 	{
 		struct dentry *smoothfs_dentry = d_find_alias(inode);
 
 		if (smoothfs_dentry) {
-			smoothfs_set_lower_dentry(smoothfs_dentry, dest_dentry);
+			smoothfs_set_lower_dentry(smoothfs_dentry,
+						  si->lower_path.dentry);
 			dput(smoothfs_dentry);
 		}
 	}
@@ -284,7 +394,7 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	}
 
 	/* Refresh attrs from the new lower. */
-	smoothfs_copy_attrs(inode, d_inode(dest_dentry));
+	smoothfs_copy_attrs(inode, d_inode(si->lower_path.dentry));
 
 	/* Kick writeback for observability. Replay normalizes from lower
 	 * tier contents if this record is lost before the next drain. */
@@ -303,6 +413,7 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	return 0;
 
 out_fail:
+	kfree(rel_path);
 	si->movement_state = SMOOTHFS_MS_FAILED;
 	wake_up_all(&si->cutover_wq);
 	/* Informational: diagnostic record of the failure; tierd retries

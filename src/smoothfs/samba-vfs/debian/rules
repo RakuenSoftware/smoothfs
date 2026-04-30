@@ -10,6 +10,7 @@
 # substitution.  apt will refuse to install a mismatched pair.
 
 SAMBA_VERSION := $(shell dpkg-query -W -f='$${Version}' samba 2>/dev/null)
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 BUILT_SO := $(CURDIR)/debian/vfs_smoothfs.so
 
@@ -27,7 +28,7 @@ override_dh_auto_test:
 
 override_dh_auto_install:
 	install -D -m 0644 $(BUILT_SO) \
-	    debian/smoothfs-samba-vfs/usr/lib/x86_64-linux-gnu/samba/vfs/smoothfs.so
+	    debian/smoothfs-samba-vfs/usr/lib/$(DEB_HOST_MULTIARCH)/samba/vfs/smoothfs.so
 
 override_dh_auto_clean:
 	rm -f $(BUILT_SO)

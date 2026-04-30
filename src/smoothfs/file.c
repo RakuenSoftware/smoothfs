@@ -376,8 +376,10 @@ again:
 
 	lower = smoothfs_lower_file(iocb->ki_filp);
 	tier = smoothfs_tier_of(sbi, lower->f_path.mnt);
-	if (READ_ONCE(si->range_staged) && (iocb->ki_flags & IOCB_DIRECT))
+	if (READ_ONCE(si->range_staged) && (iocb->ki_flags & IOCB_DIRECT)) {
+		srcu_read_unlock(&sbi->cutover_srcu, srcu_idx);
 		return -EBUSY;
+	}
 	if (tier < sbi->ntiers)
 		atomic_inc(&sbi->tiers[tier].active_writes);
 	smoothfs_clear_write_reservation(sbi, si);

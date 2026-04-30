@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -99,6 +100,85 @@ func TestWorkerRefusesPinnedLUNBeforeMovePlan(t *testing.T) {
 	}
 	if client.movePlanned {
 		t.Fatal("worker called MovePlan for a PIN_LUN object")
+	}
+}
+
+func TestWorkerRejectsSourceContentChangeWithPreservedStat(t *testing.T) {
+	sqlDB := testDB(t)
+	nsID, tier0ID, tier1ID := seedPool(t, sqlDB)
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	relPath := "nested/source.bin"
+	srcPath := filepath.Join(srcDir, relPath)
+	dstPath := filepath.Join(dstDir, relPath)
+	original := []byte("original-bytes")
+	mutated := []byte("mutated!-bytes")
+	fixedModTime := time.Unix(1_700_000_000, 0).UTC()
+
+	if len(original) != len(mutated) {
+		t.Fatal("test setup requires same-size payloads")
+	}
+	if err := os.MkdirAll(filepath.Dir(srcPath), 0o755); err != nil {
+		t.Fatalf("mkdir source parent: %v", err)
+	}
+	if err := os.WriteFile(srcPath, original, 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.Chtimes(srcPath, fixedModTime, fixedModTime); err != nil {
+		t.Fatalf("set source mtime: %v", err)
+	}
+
+	var oid [OIDLen]byte
+	oid[0] = 0x88
+	_, err := sqlDB.Exec(`
+		INSERT INTO smoothfs_objects
+			(object_id, namespace_id, current_tier_id, movement_state, pin_state, rel_path)
+		VALUES
+			(?, ?, ?, 'placed', 'none', ?)`,
+		hex.EncodeToString(oid[:]), nsID, tier0ID, relPath)
+	if err != nil {
+		t.Fatalf("insert source object: %v", err)
+	}
+
+	client := &fakeMovementClient{
+		inspectResult: &InspectResult{
+			CurrentTier: 0,
+			PinState:    PinNone,
+			RelPath:     relPath,
+		},
+	}
+	worker := NewWorker(sqlDB, client)
+	worker.afterCopyForTest = func() {
+		if err := os.WriteFile(srcPath, mutated, 0o644); err != nil {
+			t.Fatalf("mutate source: %v", err)
+		}
+		if err := os.Chtimes(srcPath, fixedModTime, fixedModTime); err != nil {
+			t.Fatalf("restore source mtime: %v", err)
+		}
+	}
+
+	plan := MovementPlan{
+		PoolUUID:       uuid.MustParse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+		ObjectID:       oid,
+		NamespaceID:    nsID,
+		SourceTierID:   tier0ID,
+		SourceTierRank: 0,
+		SourceLowerDir: srcDir,
+		DestTierID:     tier1ID,
+		DestTierRank:   1,
+		DestLowerDir:   dstDir,
+		RelPath:        relPath,
+		TransactionSeq: 42,
+	}
+	err = worker.Execute(context.Background(), plan)
+	if !errors.Is(err, errSourceRaced) {
+		t.Fatalf("Execute error = %v, want errSourceRaced", err)
+	}
+	if client.cutoverCalled {
+		t.Fatal("worker cut over after source content changed")
+	}
+	if _, err := os.Stat(dstPath); !os.IsNotExist(err) {
+		t.Fatalf("destination cleanup error = %v, want not exist", err)
 	}
 }
 

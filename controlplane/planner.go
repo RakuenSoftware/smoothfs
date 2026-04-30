@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -42,6 +43,7 @@ func (p *Pool) NextSeq() uint64 {
 type Planner struct {
 	db    *sql.DB
 	plans chan<- MovementPlan
+	mu    sync.RWMutex
 	pools map[uuid.UUID]*Pool
 	cfg   PlannerConfig
 }
@@ -121,6 +123,8 @@ func NewPlanner(db *sql.DB, plans chan<- MovementPlan, cfg PlannerConfig) *Plann
 }
 
 func (p *Planner) RegisterPool(pool *Pool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.pools[pool.UUID] = pool
 }
 
@@ -145,7 +149,14 @@ func (p *Planner) Run(ctx context.Context) {
 }
 
 func (p *Planner) tick(ctx context.Context) error {
+	p.mu.RLock()
+	pools := make([]*Pool, 0, len(p.pools))
 	for _, pool := range p.pools {
+		pools = append(pools, pool)
+	}
+	p.mu.RUnlock()
+
+	for _, pool := range pools {
 		if err := p.planPool(ctx, pool); err != nil {
 			return err
 		}
