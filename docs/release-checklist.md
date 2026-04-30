@@ -95,9 +95,11 @@ Use `SMOOTHFS_RUNTIME_SUITE=all make runtime-harnesses` on a host where all
 protocol services and package dependencies are available.
 
 For CI-backed signoff, run the manual GitHub Actions workflow `Privileged
-runtime harnesses` on a self-hosted runner labeled `smoothfs-runtime`. Use
-`module_mode=build-and-load` for source-tree validation against the runner
-kernel, or `module_mode=preinstalled` when validating packaged DKMS artifacts.
+runtime harnesses` on each shipped CPU architecture by selecting `arch=amd64`
+and `arch=arm64` (each maps to a self-hosted runner labeled
+`smoothfs-runtime-<arch>`). Use `module_mode=build-and-load` for source-tree
+validation against the runner kernel, or `module_mode=preinstalled` when
+validating packaged DKMS artifacts.
 
 Attach logs for:
 

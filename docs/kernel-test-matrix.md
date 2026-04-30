@@ -73,19 +73,26 @@ SMOOTHFS_RUNTIME_SUITE=all SMOOTHFS_RUNTIME_DRY_RUN=1 \
 Default hosted CI runs manifest validation but does not run privileged
 harnesses. The manual GitHub Actions workflow `Privileged runtime harnesses`
 runs the same suites on a self-hosted runner labeled `self-hosted`, `linux`,
-and `smoothfs-runtime`. That runner must provide passwordless `sudo`, loop
-devices, XFS tooling, matching kernel headers when `module_mode =
-build-and-load`, and the protocol or DKMS packages required by the selected
-suite.
+and `smoothfs-runtime-<arch>` (one of `smoothfs-runtime-amd64` or
+`smoothfs-runtime-arm64`, matching the workflow's `arch` input). That runner
+must provide passwordless `sudo`, loop devices, XFS tooling, matching kernel
+headers when `module_mode = build-and-load`, and the protocol or DKMS packages
+required by the selected suite.
 
 Use the workflow inputs as follows:
 
 | Input | Values | Purpose |
 | --- | --- | --- |
+| `arch` | `amd64`, `arm64` | Selects the self-hosted runner label `smoothfs-runtime-<arch>`. Must match a registered runner. |
 | `suite` | `core`, `protocol`, `ops`, `all` | Selects the runtime suite when `tests` is empty. |
 | `tests` | space-separated script names | Runs a targeted subset and overrides `suite`. |
 | `module_mode` | `build-and-load`, `preinstalled` | Either builds `src/smoothfs/smoothfs.ko` against the runner kernel and loads it, or verifies a preinstalled module. |
 | `fail_fast` | boolean | Stops after the first failing harness when enabled. |
+
+Release signoff requires running each suite on **every shipped CPU
+architecture** (currently `amd64` and `arm64`). Each architecture needs a
+self-hosted runner registered with the matching `smoothfs-runtime-<arch>`
+label.
 
 ## Lower Filesystem Matrix
 
