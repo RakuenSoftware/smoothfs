@@ -188,6 +188,14 @@ If destination reopen fails, `smoothfs_lower_file` returns an error pointer and
 file operations propagate the error. This fails the existing fd closed instead
 of serving or writing through the stale source lower after cutover.
 
+The core runtime harness `movement_open_fd_cutover.sh` covers both cases:
+
+- an existing writable fd opened before cutover reads the destination after
+  cutover and writes back to the destination lower path
+- an existing fd opened under unprivileged credentials returns an error when
+  destination reopen is intentionally denied, instead of falling back to the
+  stale source lower
+
 ## Failure and Recovery
 
 Pre-cutover failures leave the current tier authoritative. Recovery rolls
@@ -201,8 +209,3 @@ forwards `cutover_in_progress`, `switched`, and `cleanup_in_progress` rows to
 Kernel placement records are useful for observability and replay, but the proof
 does not depend on every asynchronous placement write reaching disk before the
 worker commits the database row.
-
-## Remaining Review Items
-
-- Add runtime coverage for existing writable fd behavior across cutover,
-  including destination reopen failure if it can be induced safely.

@@ -90,7 +90,7 @@ protocol services and package dependencies are available.
 
 Attach logs for:
 
-- core smoothfs movement and write-staging harnesses
+- core smoothfs movement, open-fd cutover, and write-staging harnesses
 - NFS cthon04
 - SMB roundtrip and smbtorture subset
 - Samba VFS module load/roundtrip

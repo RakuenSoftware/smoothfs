@@ -19,6 +19,7 @@ Remediation pass 14: 2026-04-30
 Remediation pass 15: 2026-04-30
 Remediation pass 16: 2026-04-30
 Remediation pass 17: 2026-04-30
+Remediation pass 18: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -41,7 +42,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 17. CI now
+current test suite, and `make verify` is clean after remediation pass 18. CI now
 builds the kernel module against current Debian headers through
 `make kernel-build-debian`. Host-native kernel build verification still cannot
 be completed on this host because the running kernel is `6.17.2-1-pve`, the
@@ -72,6 +73,9 @@ The most important audit findings are:
 - Fixed in remediation pass 17: direct-lower worker movement is suppressed when
   kernel inspect reports active range-staged bytes, with a second pre-cutover
   recheck to catch staging that appears during copy.
+- Covered in remediation pass 18: the core runtime harness suite now exercises
+  existing file descriptors across cutover, including writable-fd reissue to the
+  destination and fail-closed behavior when destination reopen is denied.
 
 ## Repository Map
 
@@ -904,6 +908,8 @@ Kernel/runtime harnesses cover:
 - Tier-spill create, nested parent materialization, union readdir, unlink, XDEV
   rename, and replay after reload.
 - Kernel movement cutover of nested file paths.
+- Existing file descriptor reissue across movement cutover, including
+  destination-reopen failure.
 - Metadata active-tier gate.
 - Write staging truncate and range behavior.
 - Write-staging drain mask.
@@ -929,6 +935,8 @@ Coverage gaps:
   is not run in CI.
 - Kernel movement of nested files is covered by a runtime harness but is not
   run in CI.
+- Existing file descriptor behavior across cutover is covered by a runtime
+  harness but is not run in CI.
 - Direct I/O refusal after range staging and subsequent cutover is covered by a
   runtime harness but is not run in CI.
 - Samba VFS multiarch install paths are statically validated for arm64; a full
@@ -990,6 +998,9 @@ Important operator controls:
 19. Fixed in remediation pass 17: kernel `INSPECT` now exposes active
     range-staged state, and the direct-lower worker refuses those moves before
     `MOVE_PLAN` and before `MOVE_CUTOVER`.
+20. Covered in remediation pass 18: existing writable file descriptors across
+    cutover and destination-reopen failure are now part of the core runtime
+    harness suite.
 
 ## Suggested Future Documentation Additions
 
