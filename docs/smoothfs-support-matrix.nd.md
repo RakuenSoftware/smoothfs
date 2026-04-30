@@ -17,16 +17,23 @@ rollout-gated buiten gecontroleerde productie-soak).
 | Libc | glibc 2.41 |
 | Init | systemd ≥ 255 |
 | Pakketformaat | `.deb` via apt |
+| CPU-architecturen | **amd64**, **arm64** |
 
 Oudere Debian releases (12 / bookworm) zijn niet supported omdat de kernel floor
 (§Kernel) dat uitsluit.
+
+Zowel amd64 als arm64 zijn release-gated architecturen. `smoothfs-dkms` is
+`Architecture: all` en haalt bij installatie de bijpassende `linux-headers-amd64`
+of `linux-headers-arm64` binnen; `smoothfs-samba-vfs` levert een native
+`_amd64.deb` en `_arm64.deb` en installeert onder het juiste
+`/usr/lib/<DEB_HOST_MULTIARCH>/samba/vfs/` pad.
 
 ## Kernel
 
 | Veld | Waarde |
 |---|---|
 | Minimum | **6.18.0 LTS** |
-| Getest | 6.18.22-smoothnas-lts, 6.19.10+deb13-amd64 (Debian bpo) |
+| Getest | 6.18.22-smoothnas-lts, 6.19.10+deb13-amd64 (Debian bpo), 6.19.10+deb13-arm64 (Debian bpo) |
 | DKMS floor | enforced by `BUILD_EXCLUSIVE_KERNEL="^(6\.(1[8-9]|[2-9][0-9])|[7-9]\.).*"` in `dkms.conf` |
 | Waarom 6.18 | smoothfs gebruikt `lookup_one`, `set_default_d_op`, `vfs_mkdir` (met dentry return), de nieuwe `renamedata`, `vfs_mmap`, en `parent-inode + qstr d_revalidate` met nieuwe signatures — allemaal stabiel vanaf 6.18 |
 

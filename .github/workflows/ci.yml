@@ -33,8 +33,12 @@ jobs:
           make runtime-harnesses-list
 
   go-test:
-    name: Go tests
-    runs-on: ubuntu-latest
+    name: Go tests (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -52,8 +56,12 @@ jobs:
         run: make go-race
 
   kernel-build:
-    name: Kernel module compile
-    runs-on: ubuntu-latest
+    name: Kernel module compile (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
