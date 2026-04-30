@@ -143,9 +143,12 @@ true:
 The runtime harness `write_staging_direct_cutover.sh` exercises the merged-copy
 case by copying through the smoothfs mount path before `MOVE_CUTOVER`.
 
-The in-repository `controlplane.Worker` currently copies from lower paths
-directly. Integrations using that worker must avoid planning objects with active
-range-staged bytes until drain has completed.
+The kernel `INSPECT` response reports whether an object currently has active
+range-staged bytes. The in-repository `controlplane.Worker` copies from lower
+paths directly, so it refuses movement when `INSPECT` reports `range_staged`
+before `MOVE_PLAN` and rechecks the flag after copy before `MOVE_CUTOVER`.
+Custom integrations that copy from the smoothfs namespace/merged view may still
+exercise the merged-copy path directly.
 
 ## Active-LUN Interaction
 
@@ -201,8 +204,5 @@ worker commits the database row.
 
 ## Remaining Review Items
 
-- Add a planner-visible way to suppress direct-lower worker movement while an
-  object has active range-staged bytes, or change the worker to copy the merged
-  smoothfs view.
 - Add runtime coverage for existing writable fd behavior across cutover,
   including destination reopen failure if it can be induced safely.

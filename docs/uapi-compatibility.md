@@ -57,7 +57,7 @@ register a new family name instead of overloading `smoothfs`.
 
 - `UNSPEC` entries stay at `0`.
 - New command ids are appended after `SMOOTHFS_EVENT_SPILL`.
-- New attribute ids are appended after `SMOOTHFS_ATTR_WRITE_SEQ`.
+- New attribute ids are appended after the current final published attribute.
 - Numeric gaps are reserved forever once published.
 - Deleted features leave their ids reserved; ids are never recycled.
 - Kernel `SMOOTHFS_CMD_MAX` and `SMOOTHFS_ATTR_MAX` must continue to derive from
@@ -115,6 +115,7 @@ requires an explicit compatibility review of every integer decoder.
 | `SIZE_BYTES` | 21 | `u64` | Spill event object size. |
 | `ANY_SPILL_SINCE_MOUNT` | 22 | `u8` boolean | Mount or spill state flag. |
 | `WRITE_SEQ` | 23 | `u64` | Data-change sequence for verified cutover. |
+| `RANGE_STAGED` | 24 | `u8` boolean | Inspect response flag for active range-staged bytes. |
 
 Do not narrow the kernel `nla_policy` for an existing string or binary
 attribute unless all supported userspace versions are known to fit.

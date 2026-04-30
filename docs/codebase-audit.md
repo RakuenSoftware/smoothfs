@@ -18,6 +18,7 @@ Remediation pass 13: 2026-04-30
 Remediation pass 14: 2026-04-30
 Remediation pass 15: 2026-04-30
 Remediation pass 16: 2026-04-30
+Remediation pass 17: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -40,7 +41,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 16. CI now
+current test suite, and `make verify` is clean after remediation pass 17. CI now
 builds the kernel module against current Debian headers through
 `make kernel-build-debian`. Host-native kernel build verification still cannot
 be completed on this host because the running kernel is `6.17.2-1-pve`, the
@@ -68,6 +69,9 @@ The most important audit findings are:
   both the build script and Debian install rule.
 - Fixed in remediation pass 1: the documentation said range-staging remount replay is pending, but the code
   and test harness now implement and exercise Phase 6O replay.
+- Fixed in remediation pass 17: direct-lower worker movement is suppressed when
+  kernel inspect reports active range-staged bytes, with a second pre-cutover
+  recheck to catch staging that appears during copy.
 
 ## Repository Map
 
@@ -946,6 +950,9 @@ Important operator controls:
 - Quiesce before manual intervention; it blocks movement but not normal I/O.
 - Reconcile clears quiesce, clears mapping-quiesce flags, and kicks heat drain.
 - LUN movement must be target-quiesced and explicitly prepared.
+- Direct-lower movement must not be used for objects with active range-staged
+  bytes. Kernel `INSPECT` reports that state and the in-repository worker
+  refuses those movements before planning and before cutover.
 - Write-staging drain masks must only include non-fast tiers after SmoothNAS has
   externally observed those backing devices active.
 - Secure Boot relies on per-appliance DKMS MOK generation/enrollment.
@@ -980,6 +987,9 @@ Important operator controls:
 18. Documented in remediation pass 16: the kernel build/test matrix and release
     checklist for DKMS, Samba VFS, Go/control-plane, docs, and SmoothNAS/tierd
     integration.
+19. Fixed in remediation pass 17: kernel `INSPECT` now exposes active
+    range-staged state, and the direct-lower worker refuses those moves before
+    `MOVE_PLAN` and before `MOVE_CUTOVER`.
 
 ## Suggested Future Documentation Additions
 

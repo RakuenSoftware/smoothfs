@@ -141,6 +141,7 @@ type InspectResult struct {
 	Generation      uint32
 	WriteSeq        uint64
 	HasWriteSeq     bool
+	RangeStaged     bool
 	TransactionSeq  uint64
 	RelPath         string
 	CurrentTierPath string
@@ -190,6 +191,8 @@ func (c *Client) Inspect(poolUUID uuid.UUID, oid [OIDLen]byte) (*InspectResult, 
 				out.WriteSeq = binary.LittleEndian.Uint64(a.Data)
 				out.HasWriteSeq = true
 			}
+		case AttrRangeStaged:
+			out.RangeStaged = len(a.Data) >= 1 && a.Data[0] != 0
 		case AttrTransactionSeq:
 			if len(a.Data) >= 8 {
 				out.TransactionSeq = binary.LittleEndian.Uint64(a.Data)

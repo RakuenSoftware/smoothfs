@@ -59,6 +59,7 @@ const (
 	AttrSizeBytes          uint16 = 21
 	AttrAnySpillSinceMount uint16 = 22
 	AttrWriteSeq           uint16 = 23
+	AttrRangeStaged        uint16 = 24
 )
 
 // MovementState mirrors the on-disk movement_state CHECK column +
