@@ -501,12 +501,28 @@ static loff_t smoothfs_llseek(struct file *file, loff_t offset, int whence)
 	if (err)
 		return err;
 
+	/* The lower file's f_pos is not updated by vfs_iter_write /
+	 * vfs_iter_read — those advance only the upper iocb->ki_pos, which
+	 * VFS then writes back to file->f_pos on the upper smoothfs file.
+	 * The lower's f_pos therefore lags any read/write done through the
+	 * upper. Without syncing, an lseek(SEEK_CUR, 0) (Python's tell())
+	 * delegates to the lower and returns the stale lower pos, which we
+	 * would then write back to file->f_pos — clobbering the correct
+	 * upper position. The visible symptom: a write+tell+ftruncate
+	 * sequence (Python's `h.write(...); h.truncate()` pattern) ends up
+	 * truncating the lower to 0 because tell() sees stale 0, even
+	 * though the write's iocb->ki_pos correctly advanced upper f_pos.
+	 *
+	 * Sync upper -> lower before delegating so SEEK_CUR / SEEK_END /
+	 * SEEK_DATA-family operations see the same anchor as the upper. */
+	lower->f_pos = file->f_pos;
+
 	if (lower->f_op && lower->f_op->llseek)
 		ret = lower->f_op->llseek(lower, offset, whence);
 	else
 		ret = generic_file_llseek(lower, offset, whence);
 	if (ret >= 0)
-		file->f_pos = lower->f_pos;
+		file->f_pos = ret;
 	return ret;
 }
 
