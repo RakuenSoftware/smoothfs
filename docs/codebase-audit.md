@@ -15,6 +15,7 @@ Remediation pass 10: 2026-04-30
 Remediation pass 11: 2026-04-30
 Remediation pass 12: 2026-04-30
 Remediation pass 13: 2026-04-30
+Remediation pass 14: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -37,7 +38,7 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 13. CI now
+current test suite, and `make verify` is clean after remediation pass 14. CI now
 builds the kernel module against current Debian headers through
 `make kernel-build-debian`. Host-native kernel build verification still cannot
 be completed on this host because the running kernel is `6.17.2-1-pve`, the
@@ -969,11 +970,11 @@ Important operator controls:
     for downstream migrations.
 15. Documented in remediation pass 13: the generic-netlink and fixed-record
     UAPI compatibility policy.
+16. Documented in remediation pass 14: the movement consistency argument,
+    including staged-range and existing-file-descriptor proof conditions.
 
 ## Suggested Future Documentation Additions
 
-- A movement consistency proof explaining how live writes, mmap, O_DIRECT,
-  staged ranges, and active LUNs interact.
 - A kernel build/test matrix that maps exact kernel versions to CI artifacts.
 - A release checklist tying DKMS, Samba VFS, Go module, docs, and SmoothNAS/tierd
   integration versions together.
