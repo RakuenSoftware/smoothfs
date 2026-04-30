@@ -16,6 +16,7 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/cred.h>
+#include <linux/err.h>
 #include <linux/namei.h>
 #include <linux/slab.h>
 #include <linux/path.h>
@@ -84,6 +85,42 @@ int smoothfs_release_lower(struct file *file)
 	return 0;
 }
 
+int smoothfs_reissue_lower(struct file *file)
+{
+	struct smoothfs_file_info *fi = file->private_data;
+	struct smoothfs_inode_info *si = SMOOTHFS_I(file_inode(file));
+	u32 cur_gen;
+	struct file *new_lower;
+
+	if (!fi)
+		return -EBADF;
+
+	cur_gen = READ_ONCE(si->cutover_gen);
+	if (likely(fi->lower_gen == cur_gen))
+		return 0;
+
+	mutex_lock(&fi->reissue_lock);
+	cur_gen = READ_ONCE(si->cutover_gen);
+	if (fi->lower_gen == cur_gen) {
+		mutex_unlock(&fi->reissue_lock);
+		return 0;
+	}
+
+	new_lower = open_lower_now(&si->vfs_inode, fi->open_flags, fi->open_cred);
+	if (IS_ERR(new_lower)) {
+		int err = PTR_ERR(new_lower);
+
+		mutex_unlock(&fi->reissue_lock);
+		return err;
+	}
+
+	fput(fi->lower_file);
+	fi->lower_file = new_lower;
+	fi->lower_gen  = cur_gen;
+	mutex_unlock(&fi->reissue_lock);
+	return 0;
+}
+
 /*
  * Return the current lower file for `file`, lazily reopening against
  * the inode's new lower_path if a cutover has happened since this fd
@@ -93,37 +130,12 @@ int smoothfs_release_lower(struct file *file)
 struct file *smoothfs_lower_file(struct file *file)
 {
 	struct smoothfs_file_info *fi = file->private_data;
-	struct smoothfs_inode_info *si = SMOOTHFS_I(file_inode(file));
-	u32 cur_gen;
-	struct file *new_lower;
+	int err;
 
 	if (!fi)
-		return NULL;
-
-	cur_gen = READ_ONCE(si->cutover_gen);
-	if (likely(fi->lower_gen == cur_gen))
-		return fi->lower_file;
-
-	mutex_lock(&fi->reissue_lock);
-	cur_gen = READ_ONCE(si->cutover_gen);
-	if (fi->lower_gen == cur_gen) {
-		mutex_unlock(&fi->reissue_lock);
-		return fi->lower_file;
-	}
-
-	new_lower = open_lower_now(&si->vfs_inode, fi->open_flags, fi->open_cred);
-	if (IS_ERR(new_lower)) {
-		/* Fall back to the stale lower — better than ESTALE. The
-		 * old file is still on the source tier until tierd's cleanup
-		 * runs, so reads will succeed; the inconsistency is bounded
-		 * to "this fd may serve old bytes briefly after a cutover". */
-		mutex_unlock(&fi->reissue_lock);
-		return fi->lower_file;
-	}
-
-	fput(fi->lower_file);
-	fi->lower_file = new_lower;
-	fi->lower_gen  = cur_gen;
-	mutex_unlock(&fi->reissue_lock);
-	return new_lower;
+		return ERR_PTR(-EBADF);
+	err = smoothfs_reissue_lower(file);
+	if (err)
+		return ERR_PTR(err);
+	return fi->lower_file;
 }

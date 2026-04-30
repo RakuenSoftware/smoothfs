@@ -15,6 +15,7 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/filelock.h>
+#include <linux/err.h>
 
 #include "smoothfs.h"
 
@@ -26,6 +27,8 @@ int smoothfs_flock(struct file *file, int cmd, struct file_lock *fl)
 {
 	struct file *lower = smoothfs_lower_file(file);
 
+	if (IS_ERR(lower))
+		return PTR_ERR(lower);
 	if (lower->f_op && lower->f_op->flock)
 		return lower->f_op->flock(lower, cmd, fl);
 	return locks_lock_file_wait(file, fl);

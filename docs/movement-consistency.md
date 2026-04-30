@@ -181,11 +181,9 @@ Each open smoothfs file stores:
 After cutover increments `cutover_gen`, the next `smoothfs_lower_file` lookup
 lazily reopens the lower file against the new `lower_path`.
 
-Residual risk: if destination reopen fails, the current implementation falls
-back to the stale lower file. The code comment describes this as a bounded stale
-read behavior, but the helper is shared by read and write paths. A future
-hardening pass should fail write-capable descriptors closed on reissue failure
-instead of allowing stale-source writes after cutover.
+If destination reopen fails, `smoothfs_lower_file` returns an error pointer and
+file operations propagate the error. This fails the existing fd closed instead
+of serving or writing through the stale source lower after cutover.
 
 ## Failure and Recovery
 
@@ -203,8 +201,6 @@ worker commits the database row.
 
 ## Remaining Review Items
 
-- Harden lower-file reissue so write-capable existing fds fail closed if the
-  destination lower cannot be reopened after cutover.
 - Add a planner-visible way to suppress direct-lower worker movement while an
   object has active range-staged bytes, or change the worker to copy the merged
   smoothfs view.
