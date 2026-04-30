@@ -1,0 +1,123 @@
+name: Privileged runtime harnesses
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Runtime harness suite to run.
+        required: true
+        default: core
+        type: choice
+        options:
+          - core
+          - protocol
+          - ops
+          - all
+      tests:
+        description: Optional space-separated harness script names. Overrides suite when set.
+        required: false
+        default: ""
+        type: string
+      module_mode:
+        description: How the runner should provide smoothfs.ko.
+        required: true
+        default: build-and-load
+        type: choice
+        options:
+          - build-and-load
+          - preinstalled
+      fail_fast:
+        description: Stop after the first failing harness.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoothfs-runtime-${{ github.ref }}-${{ inputs.suite }}
+  cancel-in-progress: false
+
+jobs:
+  runtime-harnesses:
+    name: Runtime harnesses
+    runs-on: [self-hosted, linux, smoothfs-runtime]
+    timeout-minutes: 240
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check privileged runner prerequisites
+        run: |
+          set -euo pipefail
+          command -v sudo >/dev/null
+          sudo -n true
+          command -v bash >/dev/null
+          command -v go >/dev/null
+          command -v make >/dev/null
+          command -v mount >/dev/null
+          command -v mkfs.xfs >/dev/null
+          command -v insmod >/dev/null
+          command -v lsmod >/dev/null
+          command -v modinfo >/dev/null
+          command -v modprobe >/dev/null
+          test -e /dev/loop-control
+
+      - name: Build and load smoothfs module
+        if: ${{ inputs.module_mode == 'build-and-load' }}
+        run: |
+          set -euo pipefail
+          test -d "/lib/modules/$(uname -r)/build"
+          make kernel-build
+          if lsmod | awk '{print $1}' | grep -qx smoothfs; then
+            echo "smoothfs module is already loaded"
+          else
+            sudo -n insmod src/smoothfs/smoothfs.ko
+          fi
+
+      - name: Verify preinstalled smoothfs module
+        if: ${{ inputs.module_mode == 'preinstalled' }}
+        run: |
+          set -euo pipefail
+          modinfo smoothfs >/dev/null
+          sudo -n modprobe smoothfs
+
+      - name: Run runtime harnesses
+        env:
+          SUITE: ${{ inputs.suite }}
+          TESTS: ${{ inputs.tests }}
+          FAIL_FAST: ${{ inputs.fail_fast }}
+        run: |
+          set -euo pipefail
+          log_dir="$RUNNER_TEMP/smoothfs-runtime"
+          mkdir -p "$log_dir" "$RUNNER_TEMP/go-cache" "$RUNNER_TEMP/go-mod"
+
+          fail_fast=0
+          if [ "$FAIL_FAST" = "true" ]; then
+            fail_fast=1
+          fi
+
+          sudo -n env \
+            "PATH=$PATH" \
+            "HOME=$RUNNER_TEMP" \
+            "GOCACHE=$RUNNER_TEMP/go-cache" \
+            "GOMODCACHE=$RUNNER_TEMP/go-mod" \
+            "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
+            "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
+            "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
+            bash src/smoothfs/test/run_runtime_harnesses.sh 2>&1 | tee "$log_dir/runtime-harnesses.log"
+
+      - name: Upload runtime harness log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoothfs-runtime-${{ inputs.suite }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/smoothfs-runtime/*.log
+          if-no-files-found: ignore

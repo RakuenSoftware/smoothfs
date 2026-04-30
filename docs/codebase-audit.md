@@ -20,6 +20,7 @@ Remediation pass 15: 2026-04-30
 Remediation pass 16: 2026-04-30
 Remediation pass 17: 2026-04-30
 Remediation pass 18: 2026-04-30
+Remediation pass 19: 2026-04-30
 
 Repository: `github.com/RakuenSoftware/smoothfs`
 
@@ -42,11 +43,13 @@ engine behind SmoothNAS file-tiering. It consists of:
 - Operator and support docs under `docs`.
 
 The Go tests pass, `go vet ./...` passes, `go test -race ./...` passes for the
-current test suite, and `make verify` is clean after remediation pass 18. CI now
+current test suite, and `make verify` is clean after remediation pass 19. CI now
 builds the kernel module against current Debian headers through
-`make kernel-build-debian`. Host-native kernel build verification still cannot
-be completed on this host because the running kernel is `6.17.2-1-pve`, the
-module's declared floor is 6.18, and matching kernel headers are absent.
+`make kernel-build-debian`, and the manual `Privileged runtime harnesses`
+workflow can run real runtime suites on a labeled self-hosted runner.
+Host-native kernel build verification still cannot be completed on this host
+because the running kernel is `6.17.2-1-pve`, the module's declared floor is
+6.18, and matching kernel headers are absent.
 
 The most important audit findings are:
 
@@ -76,6 +79,9 @@ The most important audit findings are:
 - Covered in remediation pass 18: the core runtime harness suite now exercises
   existing file descriptors across cutover, including writable-fd reissue to the
   destination and fail-closed behavior when destination reopen is denied.
+- Improved in remediation pass 19: privileged runtime harnesses now have a
+  manual GitHub Actions workflow for labeled self-hosted runners, with logs
+  uploaded as CI artifacts.
 
 ## Repository Map
 
@@ -905,6 +911,9 @@ Kernel/runtime harnesses cover:
 - A unified privileged runner for runtime harness execution:
   `make runtime-harnesses`, with `make runtime-harnesses-list` for manifest
   validation.
+- A manual `Privileged runtime harnesses` GitHub Actions workflow for running
+  core, protocol, ops, or targeted harnesses on a self-hosted
+  `smoothfs-runtime` runner.
 - Tier-spill create, nested parent materialization, union readdir, unlink, XDEV
   rename, and replay after reload.
 - Kernel movement cutover of nested file paths.
@@ -928,17 +937,17 @@ Coverage gaps:
 - Host-native kernel builds still require installed 6.18+ headers; local
   containerized Debian-header builds can use `make kernel-build-debian` when a
   Docker-compatible runtime is available.
-- CI validates the runtime harness manifest with `make runtime-harnesses-list`
-  but does not run privileged harnesses; capable hosts can run the core suite
-  with `make runtime-harnesses`.
+- Default hosted CI validates the runtime harness manifest with
+  `make runtime-harnesses-list`. Privileged runtime suites run through the
+  manual self-hosted workflow or directly on capable release hosts.
 - Real-kernel netlink receive cancellation is covered by a runtime harness but
-  is not run in CI.
+  is not run in default hosted CI.
 - Kernel movement of nested files is covered by a runtime harness but is not
-  run in CI.
+  run in default hosted CI.
 - Existing file descriptor behavior across cutover is covered by a runtime
-  harness but is not run in CI.
+  harness but is not run in default hosted CI.
 - Direct I/O refusal after range staging and subsequent cutover is covered by a
-  runtime harness but is not run in CI.
+  runtime harness but is not run in default hosted CI.
 - Samba VFS multiarch install paths are statically validated for arm64; a full
   native arm64 Samba VFS package build still requires an arm64/cross packaging
   runner.
@@ -1001,6 +1010,9 @@ Important operator controls:
 20. Covered in remediation pass 18: existing writable file descriptors across
     cutover and destination-reopen failure are now part of the core runtime
     harness suite.
+21. Improved in remediation pass 19: privileged runtime harness execution is
+    available as a manual GitHub Actions workflow for labeled self-hosted
+    runners.
 
 ## Suggested Future Documentation Additions
 
