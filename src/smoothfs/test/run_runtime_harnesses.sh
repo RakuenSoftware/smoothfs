@@ -197,9 +197,34 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+# Tests like tier_spill_crash_replay deliberately rmmod smoothfs as part of
+# their replay flow. Without this helper the next test sees an unloaded module
+# and every subsequent test in the suite cascade-fails with "smoothfs kernel
+# module not loaded". Re-insmod from the build tree before each test, unless
+# the operator opts out by setting SMOOTHFS_RUNTIME_MODULE_PATH= (empty).
+MODULE_PATH=${SMOOTHFS_RUNTIME_MODULE_PATH-$SCRIPT_DIR/../smoothfs.ko}
+
+ensure_smoothfs_loaded() {
+	if [ -z "$MODULE_PATH" ]; then
+		return 0
+	fi
+	if lsmod | awk '{print $1}' | grep -qx smoothfs; then
+		return 0
+	fi
+	if [ ! -f "$MODULE_PATH" ]; then
+		echo "  WARN  smoothfs not loaded and module file $MODULE_PATH not found; skipping reload" >&2
+		return 0
+	fi
+	if ! insmod "$MODULE_PATH"; then
+		echo "  WARN  insmod $MODULE_PATH failed; harness will see unloaded module" >&2
+		return 1
+	fi
+}
+
 rc=0
 for test_name in "${tests[@]}"; do
 	test_path=$(resolve_test "$test_name")
+	ensure_smoothfs_loaded
 	echo
 	echo "=== RUN $(basename "$test_path") ==="
 	if bash "$test_path"; then
