@@ -309,14 +309,18 @@ with open(path, "rb", buffering=0) as handle:
             fail("timed out waiting for cutover")
         time.sleep(0.1)
 
-    handle.seek(0)
+    # The reissue perm-check can surface EACCES on either the lseek or
+    # the read of the new lower (smoothfs_llseek goes through
+    # smoothfs_lower_file -> reissue too). Either is a valid signal that
+    # the lazy reopen against the destination tier was denied.
     try:
+        handle.seek(0)
         after = handle.read()
     except OSError as err:
         if err.errno in (errno.EACCES, errno.EPERM):
             pathlib.Path(result).write_text("ok\n")
             sys.exit(0)
-        fail(f"post-cutover read failed with unexpected errno {err.errno}: {err}")
+        fail(f"post-cutover access failed with unexpected errno {err.errno}: {err}")
 
 fail(f"post-cutover read unexpectedly returned {after!r}")
 PY

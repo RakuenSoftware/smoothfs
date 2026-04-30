@@ -20,20 +20,61 @@
 #include <linux/namei.h>
 #include <linux/slab.h>
 #include <linux/path.h>
+#include <linux/fcntl.h>
 
 #include "smoothfs.h"
+
+static int reissue_perm_mask(fmode_t flags)
+{
+	int mask = 0;
+
+	switch (flags & O_ACCMODE) {
+	case O_RDONLY:
+		mask = MAY_READ;
+		break;
+	case O_WRONLY:
+		mask = MAY_WRITE;
+		break;
+	case O_RDWR:
+		mask = MAY_READ | MAY_WRITE;
+		break;
+	}
+	if (flags & O_APPEND)
+		mask |= MAY_APPEND;
+	return mask;
+}
 
 static struct file *open_lower_now(struct inode *inode, fmode_t flags,
 				   const struct cred *cred)
 {
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
 	struct path lower_path;
+	const struct cred *old_cred;
 	struct file *f;
+	int err;
 
 	inode_lock_shared(inode);
 	lower_path = si->lower_path;
 	path_get(&lower_path);
 	inode_unlock_shared(inode);
+
+	/* dentry_open is a low-level helper that does NOT re-check
+	 * permissions on the path it's handed; the open-syscall fastpath
+	 * relies on path-walk having already done that. After a cutover to
+	 * a destination tier whose lower file has more restrictive perms
+	 * than the source, an existing fd must NOT be silently re-attached
+	 * to the destination if the saved creds couldn't open it from
+	 * scratch. inode_permission against the saved cred is the smallest
+	 * change that re-applies the access check that VFS would otherwise
+	 * have performed at open(2) time. */
+	old_cred = override_creds(cred);
+	err = inode_permission(&nop_mnt_idmap, d_inode(lower_path.dentry),
+			       reissue_perm_mask(flags));
+	revert_creds(old_cred);
+	if (err) {
+		path_put(&lower_path);
+		return ERR_PTR(err);
+	}
 
 	f = dentry_open(&lower_path,
 			flags & ~(O_CREAT | O_EXCL | O_NOCTTY), cred);
