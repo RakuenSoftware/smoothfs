@@ -64,6 +64,23 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) send(cmd uint8, attrs []netlink.Attribute) (genetlink.Message, error) {
+	return c.sendFlags(cmd, attrs, netlink.Request|netlink.Acknowledge)
+}
+
+// sendReply is for commands whose kernel handler emits a genlmsg_reply.
+// We deliberately omit netlink.Acknowledge: doit handlers that call
+// genlmsg_reply already deliver the reply, but the kernel ALSO emits an
+// NLMSG_OK ack when NLM_F_ACK is set. mdlayher/genetlink.Execute consumes
+// the reply and returns, leaving the trailing ack queued on the cmd
+// socket; the next request's Receive then validates that leftover ack
+// against the new sequence number and fails with "netlink validate:
+// mismatched sequence in netlink reply". Sending without NLM_F_ACK on
+// reply-bearing commands keeps the cmd socket drained.
+func (c *Client) sendReply(cmd uint8, attrs []netlink.Attribute) (genetlink.Message, error) {
+	return c.sendFlags(cmd, attrs, netlink.Request)
+}
+
+func (c *Client) sendFlags(cmd uint8, attrs []netlink.Attribute, flags netlink.HeaderFlags) (genetlink.Message, error) {
 	msg := genetlink.Message{
 		Header: genetlink.Header{Command: cmd, Version: GenlFamilyVersion},
 	}
@@ -74,7 +91,6 @@ func (c *Client) send(cmd uint8, attrs []netlink.Attribute) (genetlink.Message, 
 		}
 		msg.Data = data
 	}
-	flags := netlink.Request | netlink.Acknowledge
 	c.cmdMu.Lock()
 	rsp, err := c.cmd.Execute(msg, c.family.ID, flags)
 	c.cmdMu.Unlock()
@@ -148,7 +164,7 @@ type InspectResult struct {
 }
 
 func (c *Client) Inspect(poolUUID uuid.UUID, oid [OIDLen]byte) (*InspectResult, error) {
-	rsp, err := c.send(CmdInspect, []netlink.Attribute{
+	rsp, err := c.sendReply(CmdInspect, []netlink.Attribute{
 		{Type: AttrPoolUUID, Data: poolUUID[:]},
 		{Type: AttrObjectID, Data: oid[:]},
 	})
