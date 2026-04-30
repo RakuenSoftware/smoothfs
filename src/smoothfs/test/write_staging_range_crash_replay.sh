@@ -57,7 +57,11 @@ printf 'abcdefghij\n' > "$SPILL_ROOT/slow/range.txt"
 spill_assert test ! -e "$SPILL_ROOT/fast/range.txt"
 
 echo "=== buffered range-stage write through smoothfs ==="
-printf 'XYZ' | dd of="$SPILL_ROOT/server/range.txt" bs=1 seek=3 conv=notrunc status=none
+# bs=3 seek=1 count=1 issues a single 3-byte pwrite at offset 3.
+# Using bs=1 here would split the overlay into three 1-byte writes
+# which the kernel correctly counts as recovered_writes=3 rather
+# than the 1 the post-replay assertion below asserts.
+printf 'XYZ' | dd of="$SPILL_ROOT/server/range.txt" bs=3 seek=1 count=1 conv=notrunc status=none
 spill_assert grep -qx 'abcdefghij' "$SPILL_ROOT/slow/range.txt"
 spill_assert grep -qx 'abcXYZghij' "$SPILL_ROOT/server/range.txt"
 spill_assert test "$(cat "$SYSFS/range_staged_bytes")" = "3"
