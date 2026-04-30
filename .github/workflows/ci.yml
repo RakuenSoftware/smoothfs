@@ -30,6 +30,7 @@ jobs:
           make go-vet
           make script-check
           make samba-vfs-package-check
+          make runtime-harnesses-list
 
   go-test:
     name: Go tests

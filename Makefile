@@ -8,11 +8,11 @@ DEBIAN_KERNEL_IMAGE ?= debian:sid
 GOFILES := $(shell find . -path ./.git -prune -o -name '*.go' -type f -print)
 SHFILES := $(shell find . -path ./.git -prune -o -name '*.sh' -type f -print)
 
-.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check kernel-build kernel-build-debian
+.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check runtime-harnesses runtime-harnesses-list kernel-build kernel-build-debian
 
 test: go-test
 
-verify: fmt-check go-vet go-test go-race script-check samba-vfs-package-check
+verify: fmt-check go-vet go-test go-race script-check samba-vfs-package-check runtime-harnesses-list
 
 go-test:
 	$(GO) test ./...
@@ -46,6 +46,12 @@ samba-vfs-package-check:
 			   exit 1 ;; \
 		esac; \
 	done
+
+runtime-harnesses:
+	$(BASH) src/smoothfs/test/run_runtime_harnesses.sh
+
+runtime-harnesses-list:
+	SMOOTHFS_RUNTIME_DRY_RUN=1 $(BASH) src/smoothfs/test/run_runtime_harnesses.sh
 
 kernel-build:
 	$(MAKE) -C src/smoothfs KDIR=$(KDIR)
