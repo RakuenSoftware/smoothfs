@@ -104,4 +104,5 @@ Operational visibility includes:
 - Platform limits: [`smoothfs-support-matrix.md`](smoothfs-support-matrix.md)
 - Control-plane schema contract: [`control-plane-schema.md`](control-plane-schema.md)
 - UAPI compatibility policy: [`uapi-compatibility.md`](uapi-compatibility.md)
+- Movement consistency: [`movement-consistency.md`](movement-consistency.md)
 - Runtime implementation detail: [`../src/README.md`](../src/README.md)
