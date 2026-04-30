@@ -11,6 +11,25 @@ permissions:
   contents: read
 
 jobs:
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run static checks
+        run: |
+          make fmt-check
+          make go-vet
+          make script-check
+
   go-test:
     name: Go tests
     runs-on: ubuntu-latest
@@ -26,3 +45,23 @@ jobs:
 
       - name: Run tests
         run: make test
+
+      - name: Run race tests
+        run: make go-race
+
+  kernel-build:
+    name: Kernel module compile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build smoothfs module against current Debian headers
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace debian:sid bash -euxo pipefail -c '
+            apt-get update
+            apt-get install -y make gcc bc bison flex libelf-dev libssl-dev linux-headers-amd64
+            KDIR="$(find /lib/modules -maxdepth 2 -type l -name build -print | sort -V | tail -1)"
+            test -n "$KDIR"
+            make kernel-build KDIR="$KDIR"
+          '

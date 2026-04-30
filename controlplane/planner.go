@@ -208,8 +208,7 @@ func (p *Planner) planPool(ctx context.Context, pool *Pool) error {
 	sort.Slice(objs, func(i, j int) bool { return objs[i].ewma < objs[j].ewma })
 	promoteIdx := percentileIndex(len(objs), p.cfg.PromotePercentile)
 	demoteIdx := percentileIndex(len(objs), p.cfg.DemotePercentile)
-	promoteCut := objs[promoteIdx].ewma
-	demoteCut := objs[demoteIdx].ewma
+	promoteGate, demoteGate := movementGates(objs, promoteIdx, demoteIdx, p.cfg.HysteresisPct)
 
 	tiersByID := make(map[string]TierInfo, len(pool.Tiers))
 	for _, t := range poolTiers {
@@ -229,13 +228,13 @@ func (p *Planner) planPool(ctx context.Context, pool *Pool) error {
 		var dest *TierInfo
 		sourceOverfull := cur.FullPct > 0 && cur.FillPct >= cur.FullPct
 		switch {
-		case c.ewma >= promoteCut && int(cur.Rank) > 0:
+		case c.ewma >= promoteGate && int(cur.Rank) > 0:
 			if movedRecently(now, c.lastMove, p.cfg.MinResidencySec, p.cfg.CooldownSec) {
 				continue
 			}
 			t := poolTiers[int(cur.Rank)-1]
 			dest = &t
-		case (c.ewma <= demoteCut || sourceOverfull) && int(cur.Rank) < len(poolTiers)-1:
+		case (c.ewma <= demoteGate || sourceOverfull) && int(cur.Rank) < len(poolTiers)-1:
 			if !sourceOverfull &&
 				movedRecently(now, c.lastMove, p.cfg.MinResidencySec, p.cfg.CooldownSec) {
 				continue
@@ -261,6 +260,27 @@ func (p *Planner) planPool(ctx context.Context, pool *Pool) error {
 		}
 	}
 	return nil
+}
+
+func movementGates(objs []candidate, promoteIdx, demoteIdx, hysteresisPct int) (float64, float64) {
+	promoteCut := objs[promoteIdx].ewma
+	demoteCut := objs[demoteIdx].ewma
+	if hysteresisPct <= 0 {
+		return promoteCut, demoteCut
+	}
+	if promoteIdx == len(objs)-1 && promoteIdx > 0 {
+		promoteCut = objs[promoteIdx-1].ewma
+	}
+	if demoteIdx == 0 && len(objs) > 1 {
+		demoteCut = objs[1].ewma
+	}
+	hysteresis := float64(hysteresisPct) / 100
+	promoteGate := promoteCut * (1 + hysteresis)
+	demoteGate := demoteCut * (1 - hysteresis)
+	if demoteGate < 0 {
+		demoteGate = 0
+	}
+	return promoteGate, demoteGate
 }
 
 func buildMovementPlan(pool *Pool, cur, dest TierInfo, c candidate) (MovementPlan, error) {
