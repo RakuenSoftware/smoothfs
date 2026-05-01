@@ -71,13 +71,24 @@ SMOOTHFS_RUNTIME_SUITE=all SMOOTHFS_RUNTIME_DRY_RUN=1 \
 ```
 
 Default hosted CI runs manifest validation but does not run privileged
-harnesses. The manual GitHub Actions workflow `Privileged runtime harnesses`
-runs the same suites on a self-hosted runner labeled `self-hosted`, `linux`,
-and `smoothfs-runtime-<arch>` (one of `smoothfs-runtime-amd64` or
+harnesses. The GitHub Actions workflow `Privileged runtime harnesses` runs
+the same suites on a self-hosted runner labeled `self-hosted`, `linux`, and
+`smoothfs-runtime-<arch>` (one of `smoothfs-runtime-amd64` or
 `smoothfs-runtime-arm64`, matching the workflow's `arch` input). That runner
 must provide passwordless `sudo`, loop devices, XFS tooling, matching kernel
 headers when `module_mode = build-and-load`, and the protocol or DKMS packages
 required by the selected suite.
+
+The workflow has two trigger paths:
+
+- **Auto-run on push to `main`** for pushes that touch `src/smoothfs/**`,
+  `controlplane/**`, top-level `*.go`, `Makefile`, or the workflow itself.
+  The push path uses fixed defaults (`arch=arm64`, `suite=core`,
+  `module_mode=build-and-load`, `fail_fast=false`) so the only currently-
+  registered self-hosted runner can pick the job up automatically. This is
+  the regression gate.
+- **`workflow_dispatch`** for operators who want a different `suite`,
+  `arch`, `module_mode`, `tests` subset, or `fail_fast`.
 
 Use the workflow inputs as follows:
 

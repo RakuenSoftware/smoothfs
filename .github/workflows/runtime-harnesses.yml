@@ -39,18 +39,36 @@ on:
         options:
           - amd64
           - arm64
+  # Auto-trigger the core suite on every push to main that touches
+  # kernel sources, the runtime harnesses, the build path, or the
+  # control-plane Go code. workflow_dispatch above stays available
+  # for operators who want a different suite / arch / module_mode.
+  # Defaults for the push path: arch=arm64 (the only registered
+  # self-hosted runner today), suite=core, module_mode=build-and-load,
+  # fail_fast=false. They are inlined where used as `inputs.X || '...'`.
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/smoothfs/**'
+      - 'controlplane/**'
+      - '*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/runtime-harnesses.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: smoothfs-runtime-${{ github.ref }}-${{ inputs.arch }}-${{ inputs.suite }}
+  group: smoothfs-runtime-${{ github.ref }}-${{ inputs.arch || 'arm64' }}-${{ inputs.suite || 'core' }}
   cancel-in-progress: false
 
 jobs:
   runtime-harnesses:
-    name: Runtime harnesses (${{ inputs.arch }})
-    runs-on: [self-hosted, linux, "smoothfs-runtime-${{ inputs.arch }}"]
+    name: Runtime harnesses (${{ inputs.arch || 'arm64' }})
+    runs-on: [self-hosted, linux, "smoothfs-runtime-${{ inputs.arch || 'arm64' }}"]
     timeout-minutes: 240
     steps:
       - name: Check out repository
@@ -79,7 +97,7 @@ jobs:
           test -e /dev/loop-control
 
       - name: Build and load smoothfs module
-        if: ${{ inputs.module_mode == 'build-and-load' }}
+        if: ${{ (inputs.module_mode || 'build-and-load') == 'build-and-load' }}
         run: |
           set -euo pipefail
           test -d "/lib/modules/$(uname -r)/build"
@@ -91,7 +109,7 @@ jobs:
           fi
 
       - name: Verify preinstalled smoothfs module
-        if: ${{ inputs.module_mode == 'preinstalled' }}
+        if: ${{ (inputs.module_mode || 'build-and-load') == 'preinstalled' }}
         run: |
           set -euo pipefail
           modinfo smoothfs >/dev/null
@@ -99,9 +117,9 @@ jobs:
 
       - name: Run runtime harnesses
         env:
-          SUITE: ${{ inputs.suite }}
-          TESTS: ${{ inputs.tests }}
-          FAIL_FAST: ${{ inputs.fail_fast }}
+          SUITE: ${{ inputs.suite || 'core' }}
+          TESTS: ${{ inputs.tests || '' }}
+          FAIL_FAST: ${{ inputs.fail_fast || 'false' }}
         run: |
           set -euo pipefail
           log_dir="$RUNNER_TEMP/smoothfs-runtime"
@@ -126,6 +144,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoothfs-runtime-${{ inputs.arch }}-${{ inputs.suite }}-${{ github.run_attempt }}
+          name: smoothfs-runtime-${{ inputs.arch || 'arm64' }}-${{ inputs.suite || 'core' }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/smoothfs-runtime/*.log
           if-no-files-found: ignore
