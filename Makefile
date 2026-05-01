@@ -8,7 +8,9 @@ DEBIAN_KERNEL_IMAGE ?= debian:sid
 GOFILES := $(shell find . -path ./.git -prune -o -name '*.go' -type f -print)
 SHFILES := $(shell find . -path ./.git -prune -o -name '*.sh' -type f -print)
 
-.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check runtime-harnesses runtime-harnesses-list kernel-build kernel-build-debian
+DEBIAN_DKMS_IMAGE ?= debian:trixie
+
+.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check runtime-harnesses runtime-harnesses-list kernel-build kernel-build-debian dkms-package-debian
 
 test: go-test
 
@@ -64,4 +66,31 @@ kernel-build-debian:
 			KDIR="$$(find /lib/modules -maxdepth 2 -type l -name build -print | sort -V | tail -1)"; \
 			test -n "$$KDIR"; \
 			make kernel-build KDIR="$$KDIR"; \
+		'
+
+# Build smoothfs-dkms.deb in a clean debian:trixie container so packaging
+# regressions surface in CI rather than only on a fresh appliance install.
+# The deb is Architecture: all (DKMS source-only); the host arch only
+# determines which lib paths the trixie image uses, so the same target
+# runs on amd64 and arm64 hosted runners.
+#
+# What this proves:
+#   - debian/control + debian/rules + debian/smoothfs-dkms.install are
+#     consistent with the kernel module's Kbuild source list (#94 caught
+#     a missing range_staging.c here).
+#   - dpkg-buildpackage runs clean against the trixie samba/dkms toolchain.
+#
+# What this does NOT prove (yet):
+#   - DKMS module compile against the appliance kernel — that needs
+#     `apt install ./smoothfs-dkms_*.deb` on a host with linux-headers
+#     installed; smoothfs-runtime CI exercises that side via the ops suite.
+dkms-package-debian:
+	$(CONTAINER) run --rm -v "$(CURDIR):/workspace" -w /workspace $(DEBIAN_DKMS_IMAGE) \
+		bash -euxo pipefail -c '\
+			apt-get update; \
+			apt-get install -y devscripts equivs debhelper dh-dkms; \
+			cd src/smoothfs; \
+			dpkg-buildpackage -us -uc -b -d; \
+			ls -la ../smoothfs-dkms_*_all.deb; \
+			dpkg-deb -c ../smoothfs-dkms_*_all.deb | grep -E "range_staging|smoothfs.h|Kbuild|module_signing|kernel_upgrade"; \
 		'
