@@ -83,12 +83,13 @@ The workflow has two trigger paths:
 
 - **Auto-run on push to `main`** for pushes that touch `src/smoothfs/**`,
   `controlplane/**`, top-level `*.go`, `Makefile`, or the workflow itself.
-  The push path uses fixed defaults (`arch=arm64`, `suite=core`,
-  `module_mode=build-and-load`, `fail_fast=false`) so the only currently-
-  registered self-hosted runner can pick the job up automatically. This is
-  the regression gate.
+  The push path runs the matrix `arch=[arm64, amd64]` with fixed
+  `suite=core`, `module_mode=build-and-load`, `fail_fast=false`, so
+  every change is gated on both shipped CPU architectures. This is the
+  regression gate.
 - **`workflow_dispatch`** for operators who want a different `suite`,
-  `arch`, `module_mode`, `tests` subset, or `fail_fast`.
+  `arch`, `module_mode`, `tests` subset, or `fail_fast`. Dispatch runs
+  one arch at a time (the `arch` input).
 
 To bring up a fresh self-hosted runner host, run
 `src/smoothfs/test/runner-setup.sh` as root on the runner VM. The
