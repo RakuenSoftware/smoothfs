@@ -135,11 +135,20 @@ echo "=== logout + relogin (session-bounce durability) ==="
 iscsiadm -m node -T $TARGET_IQN -p $PORTAL:$PORT --logout >/dev/null 2>&1
 sleep 0.3
 iscsiadm -m node -T $TARGET_IQN -p $PORTAL:$PORT --login >/dev/null 2>&1
+# Poll until the LUN is BOTH listed in sysfs AND openable. The sysfs name
+# can appear before the kernel block layer has fully attached the new
+# device — on slow hosts (notably TCG-emulated arm64 under qemu-user),
+# `ls .../block/` returns a device name while open() still fails with
+# ENXIO. Wait for an actual O_DIRECT read of one block to succeed before
+# treating the device as ready.
 SDEV=""
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     SDEV=$(ls /sys/class/iscsi_session/*/device/target*/*/block/ 2>/dev/null \
            | head -1)
-    [ -n "$SDEV" ] && break
+    if [ -n "$SDEV" ] && [ -b "/dev/$SDEV" ] && \
+       dd if="/dev/$SDEV" of=/dev/null bs=4K count=1 iflag=direct status=none 2>/dev/null; then
+        break
+    fi
     sleep 0.2
 done
 assert test -n "$SDEV"

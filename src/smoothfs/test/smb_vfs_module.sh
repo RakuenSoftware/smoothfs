@@ -227,13 +227,27 @@ printf "lease-me\n" > "$LEASE_FILE_CIFS"
 exec 8< "$LEASE_FILE_CIFS"
 
 # Let smbd's tevent loop finish granting the oplock and calling
-# linux_setlease. Poll rather than sleep-and-hope.
-for i in $(seq 1 25); do
+# linux_setlease. Poll rather than sleep-and-hope. The budget needs to
+# cover slow hosts (e.g., TCG-emulated arm64 under qemu-user where
+# smbd's tevent loop runs ~20× slower than KVM-native): 30s instead
+# of 5s. On fast hosts this still breaks out as soon as the xattr
+# settles, so the upper bound costs nothing on amd64.
+for i in $(seq 1 150); do
     v=$(getfattr -n trusted.smoothfs.lease --only-values -h \
         "$LEASE_FILE_LOWER" 2>/dev/null | od -An -tx1 | tr -d ' \n')
     [ "$v" = "01" ] && break
     sleep 0.2
 done
+# If we timed out, prove via the log whether linux_setlease ran at
+# all. The hook logs "smoothfs: lease pin set" on every successful
+# setxattr; a missing log line means the hook never fired (real
+# regression), while a present log line + xattr=00 means the lease
+# was already broken before we polled (race that closes too fast on
+# slow hosts — bump the budget further if it shows up).
+if [ "$v" != "01" ]; then
+    echo "  (lease xattr=$v after 30s; smbd log tail for diagnosis:)"
+    grep -E "smoothfs: (lease|setxattr|linux_setlease)" "$SMBD_LOG" | tail -10
+fi
 assert test "$v" = "01"
 
 echo "=== Phase 5.8.3: foreign modify triggers fanotify lease break ==="
