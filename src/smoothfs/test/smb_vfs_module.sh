@@ -222,9 +222,17 @@ LEASE_FILE_CIFS=$CIFS_MNT/leasetest.txt
 LEASE_FILE_LOWER=$ROOT/server/leasetest.txt
 printf "lease-me\n" > "$LEASE_FILE_CIFS"
 
-# Hold the file open through a subshell fd so smbd grants and
-# installs a kernel oplock for the duration.
-exec 8< "$LEASE_FILE_CIFS"
+# Hold the file open read-write so smbd grants an RWH (level-1) oplock
+# and installs a kernel lease (linux_setlease(F_WRLCK)) for the
+# duration. A read-only `exec 8<` would only get a level-2 oplock,
+# which Samba does NOT mirror to a kernel lease — so our VFS hook
+# would never fire and trusted.smoothfs.lease would stay 00. On fast
+# hosts a previous write-lease (from `printf > FILE` above) is still
+# being torn down when the poll starts, so a read-only fd happens to
+# observe lease=01 by accident; on slow hosts (TCG-emulated arm64
+# under qemu-user) that close has long since landed, the test reads
+# 00, and times out.
+exec 8<> "$LEASE_FILE_CIFS"
 
 # Let smbd's tevent loop finish granting the oplock and calling
 # linux_setlease. Poll rather than sleep-and-hope. The budget needs to
