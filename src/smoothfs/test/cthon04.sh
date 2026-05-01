@@ -66,9 +66,15 @@ for vers in 3 4.2; do
         echo "--- cthon04/$suite (NFSv$vers) ---"
         workdir=$ROOT/client/${suite}-v${vers}
         rm -rf $workdir
-        if ! (cd /opt/cthon04/$suite && NFSTESTDIR=$workdir ./runtests 2>&1 | tail -30); then
+        # Capture-then-tail rather than pipe directly: a `runtests | tail -30`
+        # pipeline always exits 0 because tail -30 succeeds, so any segfault
+        # / non-zero exit from runtests was silently masked and the harness
+        # reported PASS even when individual cthon04 tests crashed.
+        log=$ROOT/${suite}-v${vers}.log
+        if ! (cd /opt/cthon04/$suite && NFSTESTDIR=$workdir ./runtests > "$log" 2>&1); then
             rc=1
         fi
+        tail -30 "$log"
     done
 
     umount -l $ROOT/client
