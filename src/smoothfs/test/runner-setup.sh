@@ -76,6 +76,19 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -t trixie-backports \
     libngtcp2-dev libngtcp2-crypto-gnutls-dev
 DEBIAN_FRONTEND=noninteractive apt-get build-dep -y samba
 
+# ---------- 5b. samba source tree for smoothfs-samba-vfs build ----------
+# build.sh expects the source tree at /tmp/samba-<installed-version>.
+# Lay it down here so the protocol-suite VFS build step in
+# runtime-harnesses.yml has its prerequisite ready. Idempotent: skip
+# the download if the matching version is already present.
+echo "=== fetching samba source for VFS build ==="
+INSTALLED_FULL=$(dpkg-query -W -f='${Version}\n' samba 2>/dev/null | sed 's/^2://')
+INSTALLED_VER=$(echo "$INSTALLED_FULL" | sed 's/-.*//')
+SAMBA_SRC=/tmp/samba-${INSTALLED_VER}
+if [ -n "$INSTALLED_VER" ] && [ ! -d "$SAMBA_SRC" ]; then
+    (cd /tmp && apt-get source -y "samba=2:$INSTALLED_FULL")
+fi
+
 # ---------- 6. iSCSI services ----------
 echo "=== enabling iSCSI services ==="
 systemctl enable --now iscsid 2>/dev/null || true
