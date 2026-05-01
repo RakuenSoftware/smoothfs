@@ -96,7 +96,7 @@ cat > $ROOT/samba/smb.conf <<EOF
     workgroup = WORKGROUP
     server string = smoothfs phase 5.8.1
     server role = standalone server
-    log level = 3 vfs:5
+    log level = 3 vfs:10
     log file = $ROOT/samba/log.%m
     pid directory = $ROOT/samba
     lock directory = $ROOT/samba
@@ -229,24 +229,40 @@ exec 8< "$LEASE_FILE_CIFS"
 # Let smbd's tevent loop finish granting the oplock and calling
 # linux_setlease. Poll rather than sleep-and-hope. The budget needs to
 # cover slow hosts (e.g., TCG-emulated arm64 under qemu-user where
-# smbd's tevent loop runs ~20× slower than KVM-native): 30s instead
-# of 5s. On fast hosts this still breaks out as soon as the xattr
-# settles, so the upper bound costs nothing on amd64.
-for i in $(seq 1 150); do
+# smbd's tevent loop runs ~20× slower than KVM-native): 60s. On fast
+# hosts this still breaks out as soon as the xattr settles, so the
+# upper bound costs nothing on amd64.
+for i in $(seq 1 300); do
     v=$(getfattr -n trusted.smoothfs.lease --only-values -h \
         "$LEASE_FILE_LOWER" 2>/dev/null | od -An -tx1 | tr -d ' \n')
     [ "$v" = "01" ] && break
     sleep 0.2
 done
-# If we timed out, prove via the log whether linux_setlease ran at
-# all. The hook logs "smoothfs: lease pin set" on every successful
-# setxattr; a missing log line means the hook never fired (real
-# regression), while a present log line + xattr=00 means the lease
-# was already broken before we polled (race that closes too fast on
-# slow hosts — bump the budget further if it shows up).
+# If we timed out, dump the relevant smbd log lines into the harness
+# log so the workflow artifact captures them. smbd.stdout itself is in
+# /tmp/<root>/samba/ which the trap cleans up before the artifact step
+# runs, so we have to surface the diagnostic state inline. Set
+# `log level = 3 vfs:10` in smb.conf above to catch the lease-pin
+# DBG_DEBUG line ("smoothfs: set lease pin on ..."). Three diagnostic
+# windows:
+#   1. Did SMBD even open the file? (open_file_ntcreate / smbd_smb2_create_send)
+#   2. Did SMBD grant a kernel oplock? (linux_set_kernel_oplock /
+#      "got kernel oplock")
+#   3. Did the VFS hook fire? ("smoothfs:" lease/setxattr/cleared)
+# Empty (1) → CIFS client open never reached smbd. Empty (2) but (1)
+# present → smbd refused the oplock (kernel_oplocks support, share
+# config). Empty (3) but (2) present → real VFS regression.
 if [ "$v" != "01" ]; then
-    echo "  (lease xattr=$v after 30s; smbd log tail for diagnosis:)"
-    grep -E "smoothfs: (lease|setxattr|linux_setlease)" "$SMBD_LOG" | tail -10
+    echo "  (lease xattr=$v after 60s; smbd log diagnosis follows:)"
+    echo "  --- (1) opens of leasetest.txt ---"
+    grep -E "leasetest\.txt|smbd_smb2_create_send|open_file_ntcreate" "$SMBD_LOG" \
+        2>/dev/null | sed 's/^/    /' | tail -15
+    echo "  --- (2) kernel-oplock grants ---"
+    grep -E "linux_set_kernel_oplock|kernel oplock|set_file_oplock" "$SMBD_LOG" \
+        2>/dev/null | sed 's/^/    /' | tail -10
+    echo "  --- (3) smoothfs hook activity ---"
+    grep -E "smoothfs:" "$SMBD_LOG" \
+        2>/dev/null | sed 's/^/    /' | tail -15
 fi
 assert test "$v" = "01"
 
