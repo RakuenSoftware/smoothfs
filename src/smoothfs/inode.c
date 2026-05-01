@@ -1170,6 +1170,17 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 
 	if (lower_old_parent->d_sb != lower_new_parent->d_sb)
 		return -EXDEV;
+	/* Cross-tier rename: source and destination resolve to lower
+	 * dentries on different lower filesystems (e.g. source on fast,
+	 * destination is a tier-fallthrough hit on slow). vfs_rename
+	 * across superblocks is invalid; return -EXDEV so the caller
+	 * (typically coreutils mv / Python shutil.move) falls back to
+	 * copy+delete instead of crashing into the d_parent identity
+	 * check below with EINVAL — which userspace then mis-interprets
+	 * as "cannot move to a subdirectory of itself" and bails out. */
+	if (lower_old && lower_new &&
+	    lower_old->d_sb != lower_new->d_sb)
+		return -EXDEV;
 	if (lower_new)
 		dget(lower_new);
 
