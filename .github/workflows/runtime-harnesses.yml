@@ -42,10 +42,11 @@ on:
   # Auto-trigger the core suite on every push to main that touches
   # kernel sources, the runtime harnesses, the build path, or the
   # control-plane Go code. workflow_dispatch above stays available
-  # for operators who want a different suite / arch / module_mode.
-  # Defaults for the push path: arch=arm64 (the only registered
-  # self-hosted runner today), suite=core, module_mode=build-and-load,
-  # fail_fast=false. They are inlined where used as `inputs.X || '...'`.
+  # for operators who want a different suite / module_mode.
+  # Defaults for the push path: suite=core, module_mode=build-and-load,
+  # fail_fast=false (inlined where used as `inputs.X || '...'`). The
+  # arch dimension is a matrix: push runs both arm64 and amd64,
+  # workflow_dispatch runs only the operator-selected arch.
   push:
     branches:
       - main
@@ -61,14 +62,36 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: smoothfs-runtime-${{ github.ref }}-${{ inputs.arch || 'arm64' }}-${{ inputs.suite || 'core' }}
-  cancel-in-progress: false
-
 jobs:
+  setup:
+    name: Pick arch matrix
+    runs-on: ubuntu-latest
+    outputs:
+      arches: ${{ steps.pick.outputs.arches }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            printf 'arches=["%s"]\n' "$DISPATCH_ARCH" >> "$GITHUB_OUTPUT"
+          else
+            printf 'arches=["arm64","amd64"]\n' >> "$GITHUB_OUTPUT"
+          fi
+
   runtime-harnesses:
-    name: Runtime harnesses (${{ inputs.arch || 'arm64' }})
-    runs-on: [self-hosted, linux, "smoothfs-runtime-${{ inputs.arch || 'arm64' }}"]
+    name: Runtime harnesses (${{ matrix.arch }})
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.setup.outputs.arches) }}
+    runs-on: [self-hosted, linux, "smoothfs-runtime-${{ matrix.arch }}"]
+    concurrency:
+      group: smoothfs-runtime-${{ github.ref }}-${{ matrix.arch }}-${{ inputs.suite || 'core' }}
+      cancel-in-progress: false
     timeout-minutes: 240
     steps:
       - name: Check out repository
@@ -144,6 +167,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoothfs-runtime-${{ inputs.arch || 'arm64' }}-${{ inputs.suite || 'core' }}-${{ github.run_attempt }}
+          name: smoothfs-runtime-${{ matrix.arch }}-${{ inputs.suite || 'core' }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/smoothfs-runtime/*.log
           if-no-files-found: ignore
