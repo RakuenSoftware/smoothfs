@@ -68,3 +68,17 @@ jobs:
 
       - name: Build smoothfs module against current Debian headers
         run: make kernel-build-debian
+
+  dkms-package:
+    name: smoothfs-dkms.deb build (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build smoothfs-dkms.deb in debian:trixie
+        run: make dkms-package-debian
