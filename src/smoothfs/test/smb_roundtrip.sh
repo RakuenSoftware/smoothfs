@@ -109,7 +109,16 @@ id $USER >/dev/null 2>&1 || useradd --no-create-home --shell /usr/sbin/nologin $
 ) | smbpasswd -c $ROOT/samba/smb.conf -a -s $USER >/dev/null
 
 echo "=== starting smbd on port $PORT ==="
-smbd --foreground --no-process-group --configfile=$ROOT/samba/smb.conf \
+# Wrap smbd in `setsid` so it runs in its own session/process group. Without
+# this, smbd inherits the test driver's session (because `--no-process-group`
+# tells smbd not to call setsid itself), and on shutdown smbd sends SIGTERM
+# to its inherited process group — which kills the test's cleanup trap before
+# it can `umount -l` the smoothfs mount and its tier mounts. Result: the
+# tier mounts stay busy and either the next harness or systemd's shutdown
+# umount fails with "target is busy". `setsid` here gives smbd its own
+# session (the `--no-process-group` flag prevents smbd from then trying to
+# setsid a second time, which would fail).
+setsid smbd --foreground --no-process-group --configfile=$ROOT/samba/smb.conf \
      --debug-stdout >$ROOT/samba/smbd.stdout 2>&1 &
 SMBD_PID=$!
 # wait for smbd to listen
