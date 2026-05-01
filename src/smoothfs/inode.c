@@ -1252,6 +1252,34 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 	dput(lower_new);
 	smoothfs_copy_attrs(old_dir, d_inode(lower_old_parent));
 	smoothfs_copy_attrs(new_dir, d_inode(lower_new_parent));
+
+	/* Update si->rel_path on the moved inode to its new name.
+	 * smoothfs_lookup falls through to smoothfs_lookup_rel_path on a
+	 * canonical-tier negative lookup, which walks sb_link by si->rel_path
+	 * string-equality. Without updating it here, a fresh stat() of the
+	 * OLD path post-rename keeps resolving to the moved inode (the
+	 * lower has the file at the new name; this list-walk still has it
+	 * keyed under the old name). The visible symptom is dual-resolution
+	 * — the directory listing correctly shows only the new name, but
+	 * stat'ing the old path returns the renamed inode until drop_caches
+	 * evicts the smoothfs inode and the rel_path goes away with it.
+	 * smb_roundtrip and smbtorture base.rename / base.xcopy reproduce
+	 * this deterministically. */
+	{
+		struct inode *moved_inode = d_inode(old_dentry);
+		struct smoothfs_inode_info *si;
+		char *new_rel = smoothfs_rel_path_from_dentry(new_dentry);
+
+		if (moved_inode && new_rel) {
+			si = SMOOTHFS_I(moved_inode);
+			down_write(&SMOOTHFS_SB(old_dir->i_sb)->inode_lock);
+			kfree(si->rel_path);
+			si->rel_path = new_rel;
+			up_write(&SMOOTHFS_SB(old_dir->i_sb)->inode_lock);
+		} else {
+			kfree(new_rel);
+		}
+	}
 	return 0;
 }
 
