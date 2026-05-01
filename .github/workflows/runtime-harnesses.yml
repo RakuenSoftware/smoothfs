@@ -138,6 +138,19 @@ jobs:
           modinfo smoothfs >/dev/null
           sudo -n modprobe smoothfs
 
+      # The smb_vfs_module.sh harness is the only one that needs
+      # /usr/lib/<multiarch>/samba/vfs/smoothfs.so. Build it on demand for
+      # suites that include it. The samba source tree at /tmp/samba-<ver>
+      # is laid down by runner-setup.sh (apt-get source samba); the build
+      # itself takes ~5min on amd64, longer on TCG-emulated arm64. Skip
+      # entirely when the suite doesn't need it (core/ops/push) so the
+      # regression gate doesn't pay the cost.
+      - name: Build smoothfs Samba VFS module
+        if: ${{ inputs.suite == 'protocol' || inputs.suite == 'all' || contains(inputs.tests || '', 'smb_vfs_module') }}
+        run: |
+          set -euo pipefail
+          sudo -n bash src/smoothfs/samba-vfs/build.sh
+
       - name: Run runtime harnesses
         env:
           SUITE: ${{ inputs.suite || 'core' }}
