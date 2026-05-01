@@ -16,6 +16,7 @@ netlink.c         usr/src/smoothfs-0.1.0/
 oid.c             usr/src/smoothfs-0.1.0/
 placement.c       usr/src/smoothfs-0.1.0/
 probe.c           usr/src/smoothfs-0.1.0/
+range_staging.c   usr/src/smoothfs-0.1.0/
 smoothfs.h        usr/src/smoothfs-0.1.0/
 super.c           usr/src/smoothfs-0.1.0/
 uapi_smoothfs.h   usr/src/smoothfs-0.1.0/
