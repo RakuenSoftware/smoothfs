@@ -90,6 +90,18 @@ The workflow has two trigger paths:
 - **`workflow_dispatch`** for operators who want a different `suite`,
   `arch`, `module_mode`, `tests` subset, or `fail_fast`.
 
+To bring up a fresh self-hosted runner host, run
+`src/smoothfs/test/runner-setup.sh` as root on the runner VM. The
+script is idempotent and installs the apt prereqs (build essentials,
+DKMS, Samba + samba-testsuite, NFS, iSCSI / targetcli-fb, mokutil,
+groff, `time`, samba's build-deps with the trixie-backports
+`libngtcp2-dev`), clones and builds the `cthon04` test suite at
+`/opt/cthon04`, fixes the `~/actions-runner/.path` to include
+`/sbin` (without it the workflow's prereqs check fails on
+`mkfs.xfs` / `insmod` / `modinfo`), and grants passwordless sudo to
+the runner user. The kernel itself stays operator-managed: smoothfs
+needs ≥ 6.18, only available on Debian 13 from `trixie-backports`.
+
 Use the workflow inputs as follows:
 
 | Input | Values | Purpose |
