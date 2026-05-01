@@ -55,6 +55,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     build-essential dkms git make gcc bc bison flex \
     libssl-dev xfsprogs e2fsprogs btrfs-progs \
     sudo curl jq ca-certificates devscripts equivs strace \
+    debhelper dh-dkms \
     golang-go
 
 # ---------- 4. protocol + ops suite deps ----------
