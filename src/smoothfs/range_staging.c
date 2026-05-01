@@ -29,6 +29,7 @@
 
 #include <linux/fs.h>
 #include <linux/file.h>
+#include <linux/hex.h>
 #include <linux/namei.h>
 #include <linux/path.h>
 #include <linux/slab.h>
