@@ -29,18 +29,6 @@ set -u
 
 . "$(dirname "$0")/lower_fs_lib.sh"
 
-# Phase 5.8.2 lease-pin lifecycle reliably installs a kernel oplock on
-# the test's `exec 8<> $LEASE_FILE_CIFS` open on xfs and ext4. On
-# btrfs lowers under TCG-emulated arm64 the same code path observes
-# the printf-write open's lease being set + cleared but no second
-# kernel-oplock grant for the read-write fd — smbd's "should this
-# open get a kernel oplock" decision interacts with btrfs's CoW
-# timing in a way that doesn't reproduce on KVM-native amd64+btrfs
-# (where this test passes). The smoothfs hook is fine; the chain
-# breaks inside smbd. Until the smbd interaction is resolved, gate
-# this harness to the lowers where it's known stable.
-require_lower_fs xfs ext4
-
 ROOT=/tmp/smb-vfs-smoothfs
 UUID=55555555-5555-5555-5555-555555555801
 PORT=8445
@@ -234,18 +222,30 @@ assert mountpoint -q $CIFS_MNT
 
 LEASE_FILE_CIFS=$CIFS_MNT/leasetest.txt
 LEASE_FILE_LOWER=$ROOT/server/leasetest.txt
-printf "lease-me\n" > "$LEASE_FILE_CIFS"
+
+# Seed the file via the smoothfs mount directly — NOT via cifs. We
+# want exactly ONE smbd operation on this file: the cifs open we're
+# about to hold. Two earlier variants both raced:
+#
+#   - `printf > $CIFS_MNT/...` then `exec 8<> $CIFS_MNT/...`: under
+#     TCG-emulated arm64 with btrfs the printf-open's close lags
+#     and overlaps the second open, so smbd downgrades the second
+#     from RWH (kernel-leased) to level-2 (not kernel-leased), and
+#     the VFS hook never fires for the held fd.
+#
+#   - `exec 8<> $CIFS_MNT/...` then `echo >&8`: the write through
+#     the same held fd causes smbd's SMB-layer oplock state machine
+#     to break its own kernel lease (FAN_MODIFY-style flush trigger),
+#     so the held fd ends up with no kernel lease either.
+#
+# Bypassing cifs for the seed write removes both races. Smbd sees a
+# single SMB_OPEN on a file that already exists, grants RWH, installs
+# the kernel lease, and the VFS hook fires exactly once.
+echo "lease-me" > "$LEASE_FILE_LOWER"
 
 # Hold the file open read-write so smbd grants an RWH (level-1) oplock
 # and installs a kernel lease (linux_setlease(F_WRLCK)) for the
-# duration. A read-only `exec 8<` would only get a level-2 oplock,
-# which Samba does NOT mirror to a kernel lease — so our VFS hook
-# would never fire and trusted.smoothfs.lease would stay 00. On fast
-# hosts a previous write-lease (from `printf > FILE` above) is still
-# being torn down when the poll starts, so a read-only fd happens to
-# observe lease=01 by accident; on slow hosts (TCG-emulated arm64
-# under qemu-user) that close has long since landed, the test reads
-# 00, and times out.
+# duration.
 exec 8<> "$LEASE_FILE_CIFS"
 
 # Let smbd's tevent loop finish granting the oplock and calling
