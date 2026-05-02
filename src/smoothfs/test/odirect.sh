@@ -21,6 +21,14 @@ set -u
 
 . "$(dirname "$0")/lower_fs_lib.sh"
 
+# btrfs silently falls back to buffered I/O for misaligned O_DIRECT
+# requests instead of returning EINVAL, so assertion #4 above doesn't
+# apply on a btrfs lower — but the underlying smoothfs property
+# (passing direct opens through to the lower) is identical. xfs and
+# ext4 both reject misaligned O_DIRECT with EINVAL, so they exercise
+# the full check.
+require_lower_fs xfs ext4
+
 ROOT=/tmp/smoothfs-odirect
 UUID=00000000-0000-0000-0000-000000000600
 
