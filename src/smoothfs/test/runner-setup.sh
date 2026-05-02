@@ -44,9 +44,17 @@ fi
 apt-get update -q
 
 # ---------- 2. backports headers (kernel itself is operator-managed) ----------
-echo "=== installing matching headers from trixie-backports ==="
+# Install headers for the EXACT running kernel rather than the
+# `linux-headers-<ARCH>` meta-package. On systems running a non-default
+# kernel variant (e.g. Debian's `cloud-amd64` cloud image kernel), the
+# `linux-headers-amd64` meta-package would pull in the regular-amd64
+# kernel headers instead — DKMS would then see two `/lib/modules/<kver>/`
+# trees, build for both, but the unused-variant install can drift out
+# of sync, causing kernel_upgrade.sh to FAIL with
+# "/lib/modules/<unused-kver>/updates/dkms/smoothfs.ko.xz missing".
+echo "=== installing headers for the running kernel ==="
 apt-get install -y -t trixie-backports \
-    "linux-headers-$ARCH" \
+    "linux-headers-$(uname -r)" \
     libelf-dev
 
 # ---------- 3. build essentials + smoothfs build deps ----------
