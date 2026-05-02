@@ -129,14 +129,21 @@ label.
 
 Runtime coverage must include each supported lower filesystem from the support
 matrix when the change touches lookup, movement, metadata replay, write staging,
-or protocol export behavior.
+or protocol export behavior. The runtime workflow exposes a `lower_fs` input
+(xfs / ext4 / btrfs) that sets `SMOOTHFS_LOWER_FS` in the harness env; the
+shared `lower_fs_lib.sh` helper picks the right `mkfs` per harness, and a
+harness can opt itself out of an unsupported lower via `require_lower_fs`.
 
-| Lower filesystem | Required coverage |
-| --- | --- |
-| XFS | Primary full run for core, SMB, iSCSI, and O_DIRECT coverage |
-| ext4 | Core create/read/write/move validation |
-| btrfs | Core movement plus reflink/remap validation |
-| zfs | Mount, lookup, movement, and protocol smoke when OpenZFS is in the appliance image |
+| Lower filesystem | Required coverage | Validated coverage (this matrix) |
+| --- | --- | --- |
+| XFS | Primary full run for core, SMB, iSCSI, and O_DIRECT coverage | Full: core 16/16, protocol 8/8, ops 2/2, both arches |
+| ext4 | Core create/read/write/move validation | Full: core 16/16 both arches; protocol 8/8 amd64, 7/8 arm64 (iscsi_restart needs the openability poll fix); ops 2/2 both arches |
+| btrfs | Core movement plus reflink/remap validation | Core 16/16 both arches with `odirect` SKIP (btrfs falls back to buffered I/O for misaligned O_DIRECT instead of returning EINVAL — xfs/ext4-specific kernel semantic); protocol 8/8 on amd64, gated against `smb_vfs_module` on arm64 (smbd's kernel-lease grant doesn't fire reliably under TCG-emulated arm64+btrfs); ops 2/2 |
+| zfs | Mount, lookup, movement, and protocol smoke when OpenZFS is in the appliance image | Not yet wired (zfs lowers need a `zpool` flow on a block device, not `mkfs` on a loopback file) |
+
+Per-harness opt-outs in tree today:
+- `odirect.sh` → `require_lower_fs xfs ext4` (btrfs O_DIRECT misalign semantics differ)
+- `smb_vfs_module.sh` → `require_lower_fs xfs ext4` (smbd/btrfs/arm64-TCG kernel-lease grant interaction)
 
 Unsupported lowers must fail capability probing with a clear error rather than
 silently mounting.
