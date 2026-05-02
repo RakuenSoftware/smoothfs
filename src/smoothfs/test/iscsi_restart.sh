@@ -70,13 +70,22 @@ assert() {
     fi
 }
 
-# Find the LUN's /dev/sdX by walking /sys/class/iscsi_session.
+# Find the LUN's /dev/sdX by walking /sys/class/iscsi_session, and
+# wait until it's actually openable. The sysfs name can appear before
+# the kernel block layer has fully attached the new device — on slow
+# hosts (notably TCG-emulated arm64 under qemu-user), `ls .../block/`
+# returns a device name while open() still fails with ENXIO. Poll
+# until a one-block O_DIRECT read succeeds before treating the device
+# as ready. Same pattern as iscsi_roundtrip.sh after #108.
 find_lun_dev() {
     local sdev=""
-    for _ in $(seq 1 30); do
+    for _ in $(seq 1 60); do
         sdev=$(ls /sys/class/iscsi_session/*/device/target*/*/block/ \
                2>/dev/null | head -1)
-        [ -n "$sdev" ] && break
+        if [ -n "$sdev" ] && [ -b "/dev/$sdev" ] && \
+           dd if="/dev/$sdev" of=/dev/null bs=4K count=1 iflag=direct status=none 2>/dev/null; then
+            break
+        fi
         sleep 0.2
     done
     echo "$sdev"
