@@ -25,6 +25,8 @@
 
 set -u
 
+. "$(dirname "$0")/lower_fs_lib.sh"
+
 ROOT=/tmp/iscsi-smoothfs
 UUID=00000000-0000-0000-0000-000000000610
 PORTAL=127.0.0.1
@@ -67,8 +69,8 @@ systemctl is-active iscsid >/dev/null 2>&1 || systemctl start iscsid
 echo "=== laying down 2-tier XFS smoothfs ==="
 mkdir -p $ROOT/{fast,slow,server}
 truncate -s 1G $ROOT/fast.img $ROOT/slow.img
-mkfs.xfs -q -f $ROOT/fast.img
-mkfs.xfs -q -f $ROOT/slow.img
+mkfs_lower $ROOT/fast.img
+mkfs_lower $ROOT/slow.img
 mount -o loop $ROOT/fast.img $ROOT/fast
 mount -o loop $ROOT/slow.img $ROOT/slow
 mount -t smoothfs -o pool=iscsi,uuid=$UUID,tiers=$ROOT/fast:$ROOT/slow \

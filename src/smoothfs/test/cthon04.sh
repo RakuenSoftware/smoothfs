@@ -25,6 +25,8 @@
 
 set -u
 
+. "$(dirname "$0")/lower_fs_lib.sh"
+
 ROOT=/tmp/cthon-smoothfs
 UUID=44444444-4444-4444-4444-444444444444
 
@@ -48,8 +50,8 @@ systemctl start nfs-server
 
 mkdir -p $ROOT/{fast,slow,server,client}
 truncate -s 1G $ROOT/fast.img $ROOT/slow.img
-mkfs.xfs -q -f $ROOT/fast.img >/dev/null
-mkfs.xfs -q -f $ROOT/slow.img >/dev/null
+mkfs_lower $ROOT/fast.img >/dev/null
+mkfs_lower $ROOT/slow.img >/dev/null
 mount -o loop $ROOT/fast.img $ROOT/fast
 mount -o loop $ROOT/slow.img $ROOT/slow
 mount -t smoothfs -o pool=cthon,uuid=$UUID,tiers=$ROOT/fast:$ROOT/slow \

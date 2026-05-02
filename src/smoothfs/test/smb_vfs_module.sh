@@ -27,6 +27,8 @@
 
 set -u
 
+. "$(dirname "$0")/lower_fs_lib.sh"
+
 ROOT=/tmp/smb-vfs-smoothfs
 UUID=55555555-5555-5555-5555-555555555801
 PORT=8445
@@ -82,8 +84,8 @@ umount -l $ROOT/server $ROOT/fast $ROOT/slow 2>/dev/null; sleep 0.3
 rm -rf $ROOT
 mkdir -p $ROOT/{fast,slow,server,cifs,samba/private}
 truncate -s 1G $ROOT/fast.img $ROOT/slow.img
-mkfs.xfs -q -f $ROOT/fast.img
-mkfs.xfs -q -f $ROOT/slow.img
+mkfs_lower $ROOT/fast.img
+mkfs_lower $ROOT/slow.img
 mount -o loop $ROOT/fast.img $ROOT/fast
 mount -o loop $ROOT/slow.img $ROOT/slow
 mount -t smoothfs -o pool=vfs58,uuid=$UUID,tiers=$ROOT/fast:$ROOT/slow \
