@@ -70,14 +70,19 @@ SMOOTHFS_RUNTIME_SUITE=all SMOOTHFS_RUNTIME_DRY_RUN=1 \
   bash src/smoothfs/test/run_runtime_harnesses.sh
 ```
 
-Default hosted CI runs manifest validation but does not run privileged
-harnesses. The GitHub Actions workflow `Privileged runtime harnesses` runs
-the same suites on a self-hosted runner labeled `self-hosted`, `linux`, and
+Hosted CI (ubuntu-latest / ubuntu-24.04-arm) runs manifest validation,
+go tests, kernel-module compile, and the `smoothfs-dkms.deb` build, on
+both shipped CPU architectures. It does **not** run privileged harnesses
+— those need root, loop devices, and external services that the
+GitHub-hosted runners don't provide. Privileged harnesses run on
+self-hosted runners labeled `self-hosted`, `linux`, and
 `smoothfs-runtime-<arch>` (one of `smoothfs-runtime-amd64` or
-`smoothfs-runtime-arm64`, matching the workflow's `arch` input). That runner
-must provide passwordless `sudo`, loop devices, XFS tooling, matching kernel
-headers when `module_mode = build-and-load`, and the protocol or DKMS packages
-required by the selected suite.
+`smoothfs-runtime-arm64`). Each arch needs its own registered runner.
+That runner must provide passwordless `sudo`, loop devices, XFS tooling,
+matching kernel headers when `module_mode = build-and-load`, the protocol
+or DKMS packages required by the selected suite, and (for protocol/all
+suites) a Samba source tree at `/tmp/samba-<installed-version>` so the
+workflow can build `vfs_smoothfs.so` on demand.
 
 The workflow has two trigger paths:
 
@@ -94,11 +99,13 @@ The workflow has two trigger paths:
 To bring up a fresh self-hosted runner host, run
 `src/smoothfs/test/runner-setup.sh` as root on the runner VM. The
 script is idempotent and installs the apt prereqs (build essentials,
-DKMS, Samba + samba-testsuite, NFS, iSCSI / targetcli-fb, mokutil,
-groff, `time`, samba's build-deps with the trixie-backports
-`libngtcp2-dev`), clones and builds the `cthon04` test suite at
-`/opt/cthon04`, fixes the `~/actions-runner/.path` to include
-`/sbin` (without it the workflow's prereqs check fails on
+DKMS, `debhelper` + `dh-dkms` for `smoothfs-dkms.deb` builds,
+Samba + samba-testsuite, NFS, iSCSI / targetcli-fb, mokutil, groff,
+`time`, samba's build-deps with the trixie-backports `libngtcp2-dev`),
+runs `apt-get source samba` so the VFS-build workflow step has its
+source-tree prerequisite ready, clones and builds the `cthon04` test
+suite at `/opt/cthon04`, fixes the `~/actions-runner/.path` to
+include `/sbin` (without it the workflow's prereqs check fails on
 `mkfs.xfs` / `insmod` / `modinfo`), and grants passwordless sudo to
 the runner user. The kernel itself stays operator-managed: smoothfs
 needs ≥ 6.18, only available on Debian 13 from `trixie-backports`.
@@ -150,7 +157,8 @@ silently mounting.
 | Static checks | Go formatting/vet, shell syntax, Samba VFS packaging paths, runtime harness manifest | Real mounts, external services, kernel API compile |
 | Go tests (amd64, arm64) | Control-plane unit behavior and race checks on each shipped CPU architecture | Real smoothfs kernel behavior |
 | Kernel module compile (amd64, arm64) | The module builds against current Debian headers on each shipped CPU architecture | Runtime correctness, host-native Proxmox headers, SmoothNAS LTS kernel |
-| Privileged runtime harnesses | Real smoothfs mounts and selected core/protocol/ops behavior on a labeled self-hosted runner | GitHub-hosted PR safety, runners without root, or uninstalled protocol/DKMS dependencies |
+| `smoothfs-dkms.deb` build (amd64, arm64) | `debian/control` + `debian/rules` + `debian/smoothfs-dkms.install` are consistent with the kernel module's Kbuild source list and `dpkg-buildpackage` runs clean against the trixie samba/dkms toolchain | DKMS module compile against the appliance kernel — that's covered by the ops suite via `kernel_upgrade.sh` |
+| Privileged runtime harnesses | Real smoothfs mounts and selected core/protocol/ops behavior on a labeled self-hosted runner. Push-to-`main` runs `core` on both arches as the regression gate; protocol/ops/all are operator-dispatched | GitHub-hosted PR safety, runners without root, or uninstalled protocol/DKMS dependencies |
 
 Any release candidate must attach or link the appliance CI artifacts that fill
 the gaps above.
