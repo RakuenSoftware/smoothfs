@@ -39,6 +39,15 @@ on:
         options:
           - amd64
           - arm64
+      lower_fs:
+        description: Lower-tier filesystem (sets SMOOTHFS_LOWER_FS in the harness env).
+        required: true
+        default: xfs
+        type: choice
+        options:
+          - xfs
+          - ext4
+          - btrfs
   # Auto-trigger the core suite on every push to main that touches
   # kernel sources, the runtime harnesses, the build path, or the
   # control-plane Go code. workflow_dispatch above stays available
@@ -156,6 +165,7 @@ jobs:
           SUITE: ${{ inputs.suite || 'core' }}
           TESTS: ${{ inputs.tests || '' }}
           FAIL_FAST: ${{ inputs.fail_fast || 'false' }}
+          LOWER_FS: ${{ inputs.lower_fs || 'xfs' }}
         run: |
           set -euo pipefail
           log_dir="$RUNNER_TEMP/smoothfs-runtime"
@@ -174,12 +184,13 @@ jobs:
             "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
             "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
             "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
+            "SMOOTHFS_LOWER_FS=$LOWER_FS" \
             bash src/smoothfs/test/run_runtime_harnesses.sh 2>&1 | tee "$log_dir/runtime-harnesses.log"
 
       - name: Upload runtime harness log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoothfs-runtime-${{ matrix.arch }}-${{ inputs.suite || 'core' }}-${{ github.run_attempt }}
+          name: smoothfs-runtime-${{ matrix.arch }}-${{ inputs.lower_fs || 'xfs' }}-${{ inputs.suite || 'core' }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/smoothfs-runtime/*.log
           if-no-files-found: ignore

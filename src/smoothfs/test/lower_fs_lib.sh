@@ -68,3 +68,30 @@ lower_supports_reflink() {
 lower_fs_name() {
 	echo "$LOWER_FS"
 }
+
+# Skip the calling harness if the current lower fs is not in the
+# supported set. Prints a SKIP line to stdout and exits 0 (run-runtime-
+# harnesses treats exit 0 as success). Use at the top of any harness
+# that assumes lower-fs-specific semantics:
+#
+#   require_lower_fs xfs ext4
+#
+# Reasons a harness might exclude a lower:
+#   - btrfs falls back to buffered I/O for misaligned O_DIRECT instead
+#     of returning EINVAL (so odirect's misalign-rejection assertion
+#     doesn't apply on btrfs)
+#   - protocol harnesses (smb*, iscsi*, cthon04) are XFS-primary per
+#     the kernel-test-matrix doc; ext4/btrfs aren't validated for the
+#     full protocol surface
+#   - reflink/remap harnesses need the underlying fs to support shared
+#     extents (xfs and btrfs do, ext4 does not)
+require_lower_fs() {
+	local f
+	for f in "$@"; do
+		if [ "$LOWER_FS" = "$f" ]; then
+			return 0
+		fi
+	done
+	echo "$(basename "${0:-harness}"): SKIP — lower fs $LOWER_FS not in supported set ($*)"
+	exit 0
+}
