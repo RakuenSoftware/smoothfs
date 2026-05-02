@@ -60,6 +60,7 @@ ops_tests=(
 manifest_exclusions=(
 	run_runtime_harnesses.sh
 	tier_spill_lib.sh
+	lower_fs_lib.sh
 	runner-setup.sh
 )
 

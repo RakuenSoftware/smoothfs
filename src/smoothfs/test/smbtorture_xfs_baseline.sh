@@ -16,6 +16,8 @@
 
 set -u
 
+. "$(dirname "$0")/lower_fs_lib.sh"
+
 ROOT=/tmp/smbt-xfs-baseline
 LOGDIR=/tmp/smbt-xfs-baseline-logs
 PORT=8446
@@ -49,7 +51,7 @@ umount -l $ROOT/server 2>/dev/null
 rm -rf $ROOT $LOGDIR
 mkdir -p $ROOT/{server,samba/private} $LOGDIR
 truncate -s 1G $ROOT/xfs.img
-mkfs.xfs -q -f $ROOT/xfs.img
+mkfs_lower $ROOT/xfs.img
 mount -o loop $ROOT/xfs.img $ROOT/server
 chmod 1777 $ROOT/server
 

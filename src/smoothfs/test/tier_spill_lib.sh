@@ -3,6 +3,8 @@
 
 set -u
 
+. "$(dirname "$0")/lower_fs_lib.sh"
+
 SPILL_ROOT=${SPILL_ROOT:-/tmp/smoothfs-tier-spill}
 SPILL_UUID=${SPILL_UUID:-00000000-0000-0000-0000-00000000f001}
 SPILL_FAST_MB=${SPILL_FAST_MB:-512}
@@ -35,8 +37,8 @@ spill_setup_pool() {
 	mkdir -p "$SPILL_ROOT"/{fast,slow,server}
 	truncate -s "${SPILL_FAST_MB}M" "$SPILL_ROOT/fast.img"
 	truncate -s "${SPILL_SLOW_MB}M" "$SPILL_ROOT/slow.img"
-	mkfs.xfs -q -f "$SPILL_ROOT/fast.img"
-	mkfs.xfs -q -f "$SPILL_ROOT/slow.img"
+	mkfs_lower "$SPILL_ROOT/fast.img"
+	mkfs_lower "$SPILL_ROOT/slow.img"
 	mount -o loop "$SPILL_ROOT/fast.img" "$SPILL_ROOT/fast"
 	mount -o loop "$SPILL_ROOT/slow.img" "$SPILL_ROOT/slow"
 	mount -t smoothfs -o "pool=${pool_name},uuid=${uuid},tiers=$SPILL_ROOT/fast:$SPILL_ROOT/slow" \

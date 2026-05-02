@@ -22,6 +22,8 @@
 
 set -u
 
+. "$(dirname "$0")/lower_fs_lib.sh"
+
 ROOT=/tmp/smoothfs-lunpin
 UUID=00000000-0000-0000-0000-000000000620
 
@@ -50,8 +52,8 @@ echo "=== laying down 2-tier XFS smoothfs ==="
 rm -rf $ROOT
 mkdir -p $ROOT/{fast,slow,server}
 truncate -s 1G $ROOT/fast.img $ROOT/slow.img
-mkfs.xfs -q -f $ROOT/fast.img
-mkfs.xfs -q -f $ROOT/slow.img
+mkfs_lower $ROOT/fast.img
+mkfs_lower $ROOT/slow.img
 mount -o loop $ROOT/fast.img $ROOT/fast
 mount -o loop $ROOT/slow.img $ROOT/slow
 mount -t smoothfs -o pool=lunpin,uuid=$UUID,tiers=$ROOT/fast:$ROOT/slow \
