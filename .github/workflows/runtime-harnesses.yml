@@ -99,7 +99,7 @@ jobs:
         arch: ${{ fromJSON(needs.setup.outputs.arches) }}
     runs-on: [self-hosted, linux, "smoothfs-runtime-${{ matrix.arch }}"]
     concurrency:
-      group: smoothfs-runtime-${{ github.ref }}-${{ matrix.arch }}-${{ inputs.suite || 'core' }}
+      group: smoothfs-runtime-${{ github.ref }}-${{ matrix.arch }}-${{ inputs.lower_fs || 'xfs' }}-${{ inputs.suite || 'core' }}
       cancel-in-progress: false
     timeout-minutes: 240
     steps:
