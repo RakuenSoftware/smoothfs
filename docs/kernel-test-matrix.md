@@ -9,17 +9,16 @@ change is promoted into a SmoothNAS release.
 | --- | --- | --- | --- |
 | Debian current headers (amd64) | Compile against the current Debian amd64 kernel header surface | CI `Kernel module compile (ubuntu-latest)`, local `make kernel-build-debian` on amd64 | Yes |
 | Debian current headers (arm64) | Compile against the current Debian arm64 kernel header surface | CI `Kernel module compile (ubuntu-24.04-arm)`, local `make kernel-build-debian` on arm64 | Yes |
-| Host native headers | Compile against the developer or appliance host kernel | `make kernel-build KDIR=/lib/modules/$(uname -r)/build` | Required only when headers are installed |
-| SmoothNAS LTS kernel | Compile against the appliance kernel line, currently 6.18 LTS, on each shipped CPU architecture (amd64, arm64) | Appliance CI or release builder | Required before release |
+| Host native headers | Compile against the developer host kernel | `make kernel-build KDIR=/lib/modules/$(uname -r)/build` | Required only when headers are installed |
 | Kernel upgrade path | DKMS skip/build behavior across unsupported and supported kernels | `SMOOTHFS_RUNTIME_SUITE=ops make runtime-harnesses` | Required before release |
 | Secure Boot signing | DKMS module signing and MOK enrollment helper behavior | `module_signing.sh` in the ops runtime suite | Required before release |
 
 The repository CI uses Debian headers because they are reproducible in GitHub
 Actions and catch kernel API drift before merge. The `kernel-build-debian` target
 selects `linux-headers-$(dpkg --print-architecture)` so the same recipe builds on
-amd64 and arm64 hosted runners. Appliance release CI must still compile against
-the exact SmoothNAS kernel artifact shipped to users, on each shipped CPU
-architecture.
+amd64 and arm64 hosted runners. smoothfs ships as DKMS source against any
+matching upstream Linux kernel headers; there is no smoothfs-specific
+"appliance kernel" target enforced by this repo.
 
 ## Static and Unit Gates
 
@@ -162,12 +161,9 @@ silently mounting.
 | --- | --- | --- |
 | Static checks | Go formatting/vet, shell syntax, Samba VFS packaging paths, runtime harness manifest | Real mounts, external services, kernel API compile |
 | Go tests (amd64, arm64) | Control-plane unit behavior and race checks on each shipped CPU architecture | Real smoothfs kernel behavior |
-| Kernel module compile (amd64, arm64) | The module builds against current Debian headers on each shipped CPU architecture | Runtime correctness, host-native Proxmox headers, SmoothNAS LTS kernel |
-| `smoothfs-dkms.deb` build (amd64, arm64) | `debian/control` + `debian/rules` + `debian/smoothfs-dkms.install` are consistent with the kernel module's Kbuild source list and `dpkg-buildpackage` runs clean against the trixie samba/dkms toolchain | DKMS module compile against the appliance kernel — that's covered by the ops suite via `kernel_upgrade.sh` |
+| Kernel module compile (amd64, arm64) | The module builds against current Debian headers on each shipped CPU architecture | Runtime correctness, host-native developer kernel headers |
+| `smoothfs-dkms.deb` build (amd64, arm64) | `debian/control` + `debian/rules` + `debian/smoothfs-dkms.install` are consistent with the kernel module's Kbuild source list and `dpkg-buildpackage` runs clean against the trixie samba/dkms toolchain | DKMS rebuild against an arbitrary host's kernel — that's covered by the ops suite via `kernel_upgrade.sh` on the self-hosted runner |
 | Privileged runtime harnesses | Real smoothfs mounts and selected core/protocol/ops behavior on a labeled self-hosted runner. Push-to-`main` runs `core` on both arches as the regression gate; protocol/ops/all are operator-dispatched | GitHub-hosted PR safety, runners without root, or uninstalled protocol/DKMS dependencies |
-
-Any release candidate must attach or link the appliance CI artifacts that fill
-the gaps above.
 
 ## Failure Policy
 
