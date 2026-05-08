@@ -123,6 +123,10 @@ func TestRenderMountUnit(t *testing.T) {
 		"Options=pool=tank,uuid=00000000-0000-0000-0000-000000000001,tiers=" + fast + ":" + slow,
 		"What=none",
 		"WantedBy=local-fs.target",
+		// Mount timeout must be uncapped — see template comment for the
+		// cold-cache O(file-count) rationale. Locked here so any future
+		// regression to a finite value surfaces in CI.
+		"TimeoutSec=infinity",
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(body, s) {
