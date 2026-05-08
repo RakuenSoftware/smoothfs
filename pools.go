@@ -123,6 +123,21 @@ What=none
 Where={{.Mountpoint}}
 Type=smoothfs
 Options=pool={{.Name}},uuid={{.UUID}},tiers={{.TierSpec}}
+# Cold-cache smoothfs mount-time scans tier backings; runtime is
+# O(file-count) bounded by readdir IO, which on HDD-backed ZFS or a
+# very large XFS can take many minutes per million files. Any fixed
+# deadline (systemd's 90s default, or any "generous" bound like 15min)
+# breaks the same way once a pool grows past it: the unit times out,
+# the mount is killed, /mnt/{pool} stays empty, and every downstream
+# service is degraded until an operator notices. SmoothFS pools have
+# no real upper bound on file count — a NAS appliance is exactly the
+# workload where one might.
+#
+# Disable the deadline. The mount only ever times out when forward
+# progress stops, which is the failure mode worth surfacing — and at
+# that point an operator can run "systemctl stop" on the unit. While the
+# mount syscall is making progress, let it finish.
+TimeoutSec=infinity
 
 [Install]
 WantedBy=local-fs.target
