@@ -20,6 +20,8 @@
 #include <linux/limits.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/completion.h>
+#include <linux/kref.h>
 
 #include "smoothfs.h"
 
@@ -234,6 +236,64 @@ out:
 	return err;
 }
 
+#define SMOOTHFS_CUTOVER_DRAIN_TIMEOUT_MS 5000
+
+struct smoothfs_cutover_drain {
+	struct rcu_head  rcu;
+	struct kref      ref;
+	struct completion done;
+};
+
+static void smoothfs_cutover_drain_free(struct kref *ref)
+{
+	kfree(container_of(ref, struct smoothfs_cutover_drain, ref));
+}
+
+static void smoothfs_cutover_drain_cb(struct rcu_head *head)
+{
+	struct smoothfs_cutover_drain *d =
+		container_of(head, struct smoothfs_cutover_drain, rcu);
+	complete(&d->done);
+	kref_put(&d->ref, smoothfs_cutover_drain_free);
+}
+
+/*
+ * Wait up to SMOOTHFS_CUTOVER_DRAIN_TIMEOUT_MS for all in-flight
+ * smoothfs_write_iter callers to exit the cutover_srcu read side.
+ * Uses call_srcu (non-blocking) + wait_for_completion_timeout so that a
+ * single writer blocked on a stalled lower-fs I/O cannot hold up cutover
+ * indefinitely — returns -EBUSY on timeout, 0 on success.
+ *
+ * If allocation fails we fall back to unbounded synchronize_srcu; the
+ * OOM path is already degraded enough that the extra wait is the least
+ * of our problems.
+ */
+static int smoothfs_cutover_drain_writers(struct smoothfs_sb_info *sbi)
+{
+	struct smoothfs_cutover_drain *d;
+
+	d = kmalloc(sizeof(*d), GFP_KERNEL);
+	if (!d) {
+		synchronize_srcu(&sbi->cutover_srcu);
+		return 0;
+	}
+
+	kref_init(&d->ref);
+	init_completion(&d->done);
+	kref_get(&d->ref);  /* callback holds a ref; caller holds the other */
+	call_srcu(&sbi->cutover_srcu, &d->rcu, smoothfs_cutover_drain_cb);
+
+	if (!wait_for_completion_timeout(&d->done,
+				msecs_to_jiffies(SMOOTHFS_CUTOVER_DRAIN_TIMEOUT_MS))) {
+		/* Timed out. Release our ref — callback will free when it fires. */
+		kref_put(&d->ref, smoothfs_cutover_drain_free);
+		return -EBUSY;
+	}
+
+	kref_put(&d->ref, smoothfs_cutover_drain_free);
+	return 0;
+}
+
 /*
  * Cutover: tierd has copied data to dest tier and verified it.
  * The kernel atomically:
@@ -315,25 +375,32 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	/*
 	 * Drain in-flight writes via SRCU. New writers entering after the
 	 * state flip above will see CUTOVER_IN_PROGRESS and park on
-	 * cutover_wq; already-in-flight writers are holding the SRCU read
-	 * side and synchronize_srcu blocks until they all exit.
-	 *
-	 * synchronize_srcu is unbounded (unlike the prior
-	 * wait_event_interruptible_timeout 5s), but cutover is never on a
-	 * benchmark path and writers can't sit in vfs_iter_write longer
-	 * than the lower fs takes to complete one iov. If the lower is
-	 * stuck hard enough for this to matter, the whole pool is stuck.
+	 * cutover_wq; already-in-flight writers hold the SRCU read side.
+	 * smoothfs_cutover_drain_writers() waits up to
+	 * SMOOTHFS_CUTOVER_DRAIN_TIMEOUT_MS for them to exit rather than
+	 * blocking indefinitely — a writer stuck on a stalled HDD/NFS I/O
+	 * was holding every cutover hostage and starving backup throughput.
 	 */
-	synchronize_srcu(&sbi->cutover_srcu);
+	err = smoothfs_cutover_drain_writers(sbi);
+	if (err) {
+		inode_lock(inode);
+		if (si->movement_state == SMOOTHFS_MS_CUTOVER_IN_PROGRESS) {
+			si->movement_state = SMOOTHFS_MS_COPY_VERIFIED;
+			wake_up_all(&si->cutover_wq);
+			smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_COPY_VERIFIED,
+						  si->current_tier, si->intended_tier,
+						  /*sync=*/false);
+		}
+		inode_unlock(inode);
+		return -EBUSY;
+	}
 
 	inode_lock(inode);
 	if (si->movement_state != SMOOTHFS_MS_CUTOVER_IN_PROGRESS) {
 		/* Another path raced us out of the cutover state while we
-		 * slept in synchronize_srcu. Roll back. */
+		 * waited in smoothfs_cutover_drain_writers. Roll back. */
 		si->movement_state = SMOOTHFS_MS_COPY_VERIFIED;
 		wake_up_all(&si->cutover_wq);
-		/* Informational rollback; tierd's planner will notice the
-		 * state on its next cycle regardless of durability here. */
 		smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_COPY_VERIFIED,
 					  si->current_tier, si->intended_tier,
 					  /*sync=*/false);
