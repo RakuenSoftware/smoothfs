@@ -43,6 +43,14 @@
 #define SMOOTHFS_PLACEMENT_WB_INTERVAL_MS 1000
 #define SMOOTHFS_PLACEMENT_WB_HIGH_WATER 8192
 
+/* ---- Path index (fast remount without full tier scan) ----
+ * Format: 48-byte header + variable-length entries + 8-byte commit footer.
+ * Written after every full scan; subsequent mounts load it and skip the scan. */
+#define SMOOTHFS_PATH_INDEX_MAGIC     0x534D46504944580AULL  /* "SMFPIDX\n" */
+#define SMOOTHFS_PATH_INDEX_FILE      ".smoothfs/path.idx"
+#define SMOOTHFS_PATH_INDEX_HDR_SZ    48
+#define SMOOTHFS_PATH_INDEX_ENTRY_HDR 20
+
 struct smoothfs_replay_record {
 	struct list_head link;
 	struct hlist_node hash;
@@ -689,12 +697,219 @@ int smoothfs_placement_record(struct smoothfs_sb_info *sbi,
 	return 0;
 }
 
+static int pix_write(struct file *f, const void *buf, size_t len, loff_t *pos)
+{
+	ssize_t n = kernel_write(f, buf, len, pos);
+
+	if (n < 0)
+		return (int)n;
+	return (size_t)n != len ? -EIO : 0;
+}
+
+static int pix_read(struct file *f, void *buf, size_t len, loff_t *pos)
+{
+	ssize_t n = kernel_read(f, buf, len, pos);
+
+	if (n < 0)
+		return (int)n;
+	return (size_t)n != len ? (n == 0 ? -ENODATA : -EIO) : 0;
+}
+
+/*
+ * smoothfs_path_index_write - persist OID-to-path map after a full scan.
+ *
+ * Called once per pool, after smoothfs_scan_tree completes, so the next mount
+ * can load paths directly and skip the O(file-count) tier walk.  A partially-
+ * written file (crash mid-write) is detected by the missing commit footer and
+ * silently ignored; the next mount falls back to the full scan and rewrites
+ * the index cleanly.
+ */
+static int smoothfs_path_index_write(struct smoothfs_sb_info *sbi,
+				     struct list_head *records)
+{
+	struct file *f;
+	struct smoothfs_replay_record *rec;
+	u8 hdr[SMOOTHFS_PATH_INDEX_HDR_SZ];
+	u64 magic_le = cpu_to_le64(SMOOTHFS_PATH_INDEX_MAGIC);
+	u64 count = 0;
+	loff_t pos = 0;
+	int err;
+
+	list_for_each_entry(rec, records, link) {
+		if (rec->chosen_rel_path)
+			count++;
+	}
+
+	f = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
+			   SMOOTHFS_PATH_INDEX_FILE,
+			   O_RDWR | O_CREAT | O_TRUNC, 0600);
+	if (IS_ERR(f))
+		return PTR_ERR(f);
+
+	memset(hdr, 0, sizeof(hdr));
+	*(__le64 *)&hdr[0]  = cpu_to_le64(SMOOTHFS_PATH_INDEX_MAGIC);
+	memcpy(&hdr[8], sbi->pool_uuid.b, 16);
+	*(__le64 *)&hdr[24] = cpu_to_le64(count);
+	*(__le64 *)&hdr[32] = cpu_to_le64(sbi->ntiers);
+
+	err = pix_write(f, hdr, sizeof(hdr), &pos);
+	if (err)
+		goto out;
+
+	list_for_each_entry(rec, records, link) {
+		u8 ehdr[SMOOTHFS_PATH_INDEX_ENTRY_HDR];
+		size_t path_len;
+
+		if (!rec->chosen_rel_path)
+			continue;
+		path_len = strlen(rec->chosen_rel_path) + 1;
+		if (path_len > U16_MAX)
+			continue;
+
+		memcpy(&ehdr[0], rec->oid, 16);
+		ehdr[16] = rec->chosen_tier;
+		ehdr[17] = 0;
+		*(__le16 *)&ehdr[18] = cpu_to_le16((u16)path_len);
+
+		err = pix_write(f, ehdr, sizeof(ehdr), &pos);
+		if (err)
+			goto out;
+		err = pix_write(f, rec->chosen_rel_path, path_len, &pos);
+		if (err)
+			goto out;
+	}
+
+	/* Commit footer - absence means truncated write; reader rejects. */
+	err = pix_write(f, &magic_le, sizeof(magic_le), &pos);
+	if (err)
+		goto out;
+	err = vfs_fsync(f, 0);
+out:
+	fput(f);
+	return err;
+}
+
+/*
+ * smoothfs_path_index_read - load the path index from a prior scan.
+ *
+ * Populates chosen_rel_path / fallback_rel_path on each replay record so
+ * smoothfs_replay_instantiate resolves inodes without walking the tiers.
+ * Returns 0 on success; any error means absent or corrupt - caller falls
+ * back to smoothfs_scan_tree.
+ */
+static int smoothfs_path_index_read(struct smoothfs_sb_info *sbi,
+				    struct list_head *records,
+				    struct hlist_head *index)
+{
+	struct file *f;
+	u8 hdr[SMOOTHFS_PATH_INDEX_HDR_SZ];
+	u64 magic, count, ntiers;
+	loff_t pos = 0;
+	u64 i;
+	int err;
+
+	f = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
+			   SMOOTHFS_PATH_INDEX_FILE, O_RDONLY, 0);
+	if (IS_ERR(f))
+		return PTR_ERR(f);
+
+	err = pix_read(f, hdr, sizeof(hdr), &pos);
+	if (err)
+		goto out;
+
+	magic  = le64_to_cpu(*(__le64 *)&hdr[0]);
+	count  = le64_to_cpu(*(__le64 *)&hdr[24]);
+	ntiers = le64_to_cpu(*(__le64 *)&hdr[32]);
+	if (magic != SMOOTHFS_PATH_INDEX_MAGIC ||
+	    memcmp(&hdr[8], sbi->pool_uuid.b, 16) != 0 ||
+	    ntiers != sbi->ntiers || count > 50000000ULL) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	for (i = 0; i < count; i++) {
+		u8 ehdr[SMOOTHFS_PATH_INDEX_ENTRY_HDR];
+		u16 path_len;
+		u8 tier;
+		char *rel_path;
+		struct smoothfs_replay_record *rec;
+
+		err = pix_read(f, ehdr, sizeof(ehdr), &pos);
+		if (err)
+			goto out;
+
+		tier = ehdr[16];
+		path_len = le16_to_cpu(*(__le16 *)&ehdr[18]);
+		if (path_len == 0 || path_len > PATH_MAX) {
+			err = -EINVAL;
+			goto out;
+		}
+
+		rel_path = kmalloc(path_len, GFP_KERNEL);
+		if (!rel_path) {
+			err = -ENOMEM;
+			goto out;
+		}
+		err = pix_read(f, rel_path, path_len, &pos);
+		if (err) {
+			kfree(rel_path);
+			goto out;
+		}
+		rel_path[path_len - 1] = '\0';
+
+		if (tier >= sbi->ntiers) {
+			kfree(rel_path);
+			continue;
+		}
+
+		rec = smoothfs_replay_get_or_create(records, index, ehdr);
+		if (!rec) {
+			kfree(rel_path);
+			err = -ENOMEM;
+			goto out;
+		}
+
+		/* Prefer authoritative tier from placement log; use index tier
+		 * for files never moved (no log entry, authoritative_tier == U8_MAX). */
+		if (!rec->chosen_rel_path &&
+		    (rec->authoritative_tier == U8_MAX ||
+		     tier == rec->authoritative_tier)) {
+			rec->chosen_rel_path = kstrdup(rel_path, GFP_KERNEL);
+			if (!rec->chosen_rel_path) {
+				kfree(rel_path);
+				err = -ENOMEM;
+				goto out;
+			}
+			rec->chosen_tier = tier;
+		}
+		if (!rec->fallback_rel_path) {
+			rec->fallback_rel_path = rel_path;
+			rec->fallback_tier = tier;
+		} else {
+			kfree(rel_path);
+		}
+	}
+
+	/* Validate commit footer - rejects files truncated by a prior crash. */
+	{
+		u64 footer;
+
+		err = pix_read(f, &footer, sizeof(footer), &pos);
+		if (err || le64_to_cpu(footer) != SMOOTHFS_PATH_INDEX_MAGIC)
+			err = -EINVAL;
+	}
+out:
+	fput(f);
+	return err;
+}
+
 int smoothfs_placement_replay(struct super_block *sb,
 			      struct smoothfs_sb_info *sbi)
 {
 	LIST_HEAD(records);
 	struct hlist_head *index;
 	u8 tier;
+	bool has_path_index;
 	int err;
 
 	if (!sbi->placement_log)
@@ -709,14 +924,32 @@ int smoothfs_placement_replay(struct super_block *sb,
 	if (err)
 		goto out;
 
-	for (tier = 0; tier < sbi->ntiers; tier++) {
-		err = smoothfs_scan_tree(&records, &sbi->tiers[tier].lower_path,
-					 index, tier, "");
-		if (err)
-			goto out;
+	has_path_index = (smoothfs_path_index_read(sbi, &records, index) == 0);
+	if (has_path_index)
+		pr_info("smoothfs: path index valid, skipping tier scan for pool '%s'\n",
+			sbi->pool_name);
+
+	if (!has_path_index) {
+		for (tier = 0; tier < sbi->ntiers; tier++) {
+			err = smoothfs_scan_tree(&records,
+						 &sbi->tiers[tier].lower_path,
+						 index, tier, "");
+			if (err)
+				goto out;
+		}
 	}
 
 	err = smoothfs_replay_instantiate(sb, sbi, &records);
+	if (err)
+		goto out;
+
+	if (!has_path_index) {
+		int idx_err = smoothfs_path_index_write(sbi, &records);
+
+		if (idx_err)
+			pr_warn("smoothfs: path index write failed (%d); next boot will re-scan\n",
+				idx_err);
+	}
 
 out:
 	smoothfs_replay_free_records(&records);
