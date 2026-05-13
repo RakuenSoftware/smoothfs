@@ -92,6 +92,61 @@ static bool smoothfs_tier_near_enospc(struct smoothfs_sb_info *sbi, u8 tier)
 	return (st.f_blocks - st.f_bavail) * 100 >= st.f_blocks * full_pct;
 }
 
+static u8 smoothfs_select_high_water_tier(struct smoothfs_sb_info *sbi)
+{
+	struct kstatfs *stats;
+	bool *stat_ok;
+	u8 tier;
+	u8 best_tier = sbi->fastest_tier;
+	u64 max_blocks = 0;
+	u64 best_avail = 0;
+	u64 water;
+
+	stats = kcalloc(sbi->ntiers, sizeof(*stats), GFP_KERNEL);
+	if (!stats)
+		return sbi->fastest_tier;
+	stat_ok = kcalloc(sbi->ntiers, sizeof(*stat_ok), GFP_KERNEL);
+	if (!stat_ok) {
+		kfree(stats);
+		return sbi->fastest_tier;
+	}
+
+	for (tier = 0; tier < sbi->ntiers; tier++) {
+		int err = vfs_statfs(&sbi->tiers[tier].lower_path,
+				     &stats[tier]);
+
+		if (err || stats[tier].f_blocks == 0)
+			continue;
+		stat_ok[tier] = true;
+		if (stats[tier].f_blocks > max_blocks)
+			max_blocks = stats[tier].f_blocks;
+		if (stats[tier].f_bavail > best_avail) {
+			best_avail = stats[tier].f_bavail;
+			best_tier = tier;
+		}
+	}
+	water = max_blocks / 2;
+	while (water > 0) {
+		for (tier = 0; tier < sbi->ntiers; tier++) {
+			if (!stat_ok[tier])
+				continue;
+			if (tier != sbi->ntiers - 1 &&
+			    smoothfs_tier_near_enospc(sbi, tier))
+				continue;
+			if (stats[tier].f_bavail > water) {
+				kfree(stat_ok);
+				kfree(stats);
+				return tier;
+			}
+		}
+		water /= 2;
+	}
+
+	kfree(stat_ok);
+	kfree(stats);
+	return best_tier;
+}
+
 static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 {
 	u8 tier;
@@ -100,6 +155,10 @@ static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 
 	if (sbi->ntiers <= 1)
 		return sbi->fastest_tier;
+
+	if (READ_ONCE(sbi->create_policy) == SMOOTHFS_CREATE_POLICY_HIGH_WATER)
+		return smoothfs_select_high_water_tier(sbi);
+
 	if (READ_ONCE(sbi->write_staging_enabled) &&
 	    !smoothfs_tier_near_enospc(sbi, sbi->fastest_tier))
 		return sbi->fastest_tier;
