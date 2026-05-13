@@ -1606,6 +1606,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = smoothfs_placement_wb_init(sbi);
 	if (err)
 		goto out_sbi;
+	smoothfs_path_index_async_init(sbi);
 
 	strscpy(sbi->pool_name, ctx->pool, sizeof(sbi->pool_name));
 	if (ctx->uuid_str) {
@@ -1732,6 +1733,7 @@ out_tiers:
 			path_put(&sbi->tiers[i].lower_path);
 	}
 out_sbi:
+	smoothfs_path_index_async_destroy(sbi);
 	smoothfs_placement_wb_destroy(sbi);
 	smoothfs_oid_wb_destroy(sbi);
 	if (sbi->cutover_srcu_ready)
@@ -1789,6 +1791,7 @@ static void smoothfs_put_super(struct super_block *sb)
 
 	if (!sbi)
 		return;
+	smoothfs_path_index_async_destroy(sbi);
 	smoothfs_heat_destroy(sbi);
 	smoothfs_sysfs_pool_remove(sbi);
 	smoothfs_sb_unregister(sbi);

@@ -15,6 +15,7 @@
 #include <linux/namei.h>
 #include <linux/limits.h>
 #include <linux/string.h>
+#include <linux/vmalloc.h>
 
 #include "smoothfs.h"
 
@@ -45,7 +46,7 @@ static void smoothfs_dir_cache_free(struct smoothfs_dir_cache *cache)
 		return;
 	for (i = 0; i < cache->count; i++)
 		kfree(cache->entries[i].name);
-	kfree(cache->entries);
+	kvfree(cache->entries);
 	kfree(cache);
 }
 
@@ -77,9 +78,9 @@ static int smoothfs_dir_cache_add(struct smoothfs_dir_cache *cache,
 	if (cache->count == cache->cap) {
 		size_t new_cap = cache->cap ? cache->cap * 2 : 64;
 
-		grown = krealloc(cache->entries,
-				 new_cap * sizeof(*cache->entries),
-				 GFP_KERNEL);
+		grown = kvrealloc(cache->entries,
+				   new_cap * sizeof(*cache->entries),
+				   GFP_KERNEL);
 		if (!grown)
 			return -ENOMEM;
 		cache->entries = grown;

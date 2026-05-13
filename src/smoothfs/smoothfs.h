@@ -132,6 +132,9 @@ struct smoothfs_sb_info {
 	struct list_head    placement_wb_pending;
 	unsigned int        placement_wb_pending_count;
 	bool                placement_wb_ready;
+	struct delayed_work path_index_work;
+	bool                path_index_work_ready;
+	atomic_t            path_index_stop;
 
 	/* OID -> smoothfs_inode map. rhashtable gives O(1) lookups on the
 	 * hot path (stat, NFS fh_to_dentry, movement netlink commands).
@@ -559,6 +562,8 @@ u64  smoothfs_inode_no_from_oid(const u8 oid[SMOOTHFS_OID_LEN]);
 int  smoothfs_placement_open(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_close(struct smoothfs_sb_info *sbi);
 int  smoothfs_placement_wb_init(struct smoothfs_sb_info *sbi);
+void smoothfs_path_index_async_init(struct smoothfs_sb_info *sbi);
+void smoothfs_path_index_async_destroy(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_wb_destroy(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_wb_drain(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_wb_kick(struct smoothfs_sb_info *sbi);
