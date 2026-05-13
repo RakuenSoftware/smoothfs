@@ -139,6 +139,7 @@ harness can opt itself out of an unsupported lower via `require_lower_fs`.
 | ext4 | Core create/read/write/move validation | Full: core 16/16, protocol 8/8, ops 2/2, both arches |
 | btrfs | Core movement plus reflink/remap validation | Core 15+1 SKIP both arches (`odirect` SKIPs because btrfs falls back to buffered I/O for misaligned O_DIRECT instead of returning EINVAL — that's an xfs/ext4-specific kernel semantic, not a smoothfs bug); protocol 8/8 both arches; ops 2/2 |
 | zfs | Mount, lookup, movement, and protocol smoke when OpenZFS is in the appliance image | Not yet wired (zfs lowers need a `zpool` flow on a block device, not `mkfs` on a loopback file) |
+| bcachefs | Mount, lookup, movement, and reflink/remap validation when bcachefs is in the appliance image | Capability-gate support only on current runners; runtime harness wiring requires a kernel with bcachefs plus `bcachefs-tools` |
 
 Per-harness opt-outs in tree today:
 - `odirect.sh` → `require_lower_fs xfs ext4` (btrfs O_DIRECT misalign semantics differ)
