@@ -1447,12 +1447,14 @@ enum smoothfs_param {
 	Opt_pool,
 	Opt_uuid,
 	Opt_tiers,
+	Opt_create_policy,
 };
 
 static const struct fs_parameter_spec smoothfs_fs_parameters[] = {
-	fsparam_string("pool",  Opt_pool),
-	fsparam_string("uuid",  Opt_uuid),
-	fsparam_string("tiers", Opt_tiers),
+	fsparam_string("pool",          Opt_pool),
+	fsparam_string("uuid",          Opt_uuid),
+	fsparam_string("tiers",         Opt_tiers),
+	fsparam_string("create_policy", Opt_create_policy),
 	{}
 };
 
@@ -1460,6 +1462,7 @@ struct smoothfs_fc_ctx {
 	char    *pool;
 	char    *uuid_str;
 	char    *tiers;     /* colon-separated lower paths */
+	char    *create_policy;
 };
 
 static int smoothfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
@@ -1491,10 +1494,31 @@ static int smoothfs_parse_param(struct fs_context *fc, struct fs_parameter *para
 		if (!ctx->tiers)
 			return -ENOMEM;
 		break;
+	case Opt_create_policy:
+		kfree(ctx->create_policy);
+		ctx->create_policy = kstrdup(param->string, GFP_KERNEL);
+		if (!ctx->create_policy)
+			return -ENOMEM;
+		break;
 	default:
 		return -EINVAL;
 	}
 	return 0;
+}
+
+static int smoothfs_parse_create_policy(struct smoothfs_sb_info *sbi,
+					const char *policy)
+{
+	if (!policy || !*policy || !strcmp(policy, "fastest")) {
+		sbi->create_policy = SMOOTHFS_CREATE_POLICY_FASTEST;
+		return 0;
+	}
+	if (!strcmp(policy, "high-water") || !strcmp(policy, "high_water")) {
+		sbi->create_policy = SMOOTHFS_CREATE_POLICY_HIGH_WATER;
+		return 0;
+	}
+	pr_err("smoothfs: unsupported create_policy=%s\n", policy);
+	return -EINVAL;
 }
 
 static int smoothfs_resolve_tiers(struct smoothfs_sb_info *sbi,
@@ -1609,6 +1633,9 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	smoothfs_path_index_async_init(sbi);
 
 	strscpy(sbi->pool_name, ctx->pool, sizeof(sbi->pool_name));
+	err = smoothfs_parse_create_policy(sbi, ctx->create_policy);
+	if (err)
+		goto out_sbi;
 	if (ctx->uuid_str) {
 		err = uuid_parse(ctx->uuid_str, &sbi->pool_uuid);
 		if (err) {
@@ -1759,6 +1786,7 @@ static void smoothfs_free_fc(struct fs_context *fc)
 	kfree(ctx->pool);
 	kfree(ctx->uuid_str);
 	kfree(ctx->tiers);
+	kfree(ctx->create_policy);
 	kfree(ctx);
 	fc->fs_private = NULL;
 }

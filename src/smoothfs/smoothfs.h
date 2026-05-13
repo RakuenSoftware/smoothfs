@@ -46,6 +46,9 @@
 #define SMOOTHFS_GEN_LEN        4   /* monotonic uint32 */
 #define SMOOTHFS_PLACEMENT_REC_SIZE 64
 
+#define SMOOTHFS_CREATE_POLICY_FASTEST     0
+#define SMOOTHFS_CREATE_POLICY_HIGH_WATER  1
+
 /* Lower-fs capability bits, mirroring Phase 0 contract §0.6. */
 #define SMOOTHFS_CAP_XATTR_USER             BIT(0)
 #define SMOOTHFS_CAP_XATTR_TRUSTED          BIT(1)
@@ -120,6 +123,7 @@ struct smoothfs_sb_info {
 	u32                 fsid;            /* xxhash32(pool_uuid), per §0.7 */
 	u8                  ntiers;
 	u8                  fastest_tier;    /* rank 0 always; recorded for clarity */
+	u8                  create_policy;
 	struct smoothfs_tier tiers[SMOOTHFS_MAX_TIERS];
 
 	/* Placement log on the fastest tier (per §0.2 metadata-on-SSD). */
