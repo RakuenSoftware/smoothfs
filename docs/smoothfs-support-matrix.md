@@ -66,7 +66,7 @@ A smoothfs pool is a stack over N tier targets; each target is a lower filesyste
 | `ext4` | **Supported** | Phase 3 | Fully functional; slower reflink than XFS. |
 | `btrfs` | **Supported** | Phase 3 (+ explicit reflink / subvolume coverage) | Reflink via `FICLONERANGE` tested; snapshot-on-the-lower works. |
 | `zfs` | **Supported** | Phase 1 / 2 baseline | Whole-dataset tier target; pool UUID must match. |
-| `bcachefs` | Not supported | — | Phase 3 capability gate would accept it if proven; nothing has driven that validation yet. |
+| `bcachefs` | **Supported** | Phase 3 capability gate | Accepted by lower-fs probing with required smoothfs semantics plus reflink and copy-file-range capabilities. Runtime coverage depends on an appliance kernel and tools that ship bcachefs. |
 
 Other filesystems (fat / ntfs-3g / overlayfs / fuse / etc.) are not capability-gate-accepted and smoothfs will refuse to mount over them (returns `EOPNOTSUPP` with a `dmesg` line).
 

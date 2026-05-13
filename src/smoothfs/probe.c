@@ -25,6 +25,10 @@
 #define ZFS_SUPER_MAGIC 0x2fc12fc1
 #endif
 
+#ifndef BCACHEFS_SUPER_MAGIC
+#define BCACHEFS_SUPER_MAGIC 0xca451a4e
+#endif
+
 static u32 smoothfs_caps_for_magic(unsigned long magic)
 {
 	switch (magic) {
@@ -50,6 +54,10 @@ static u32 smoothfs_caps_for_magic(unsigned long magic)
 		       SMOOTHFS_CAP_REFLINK         |
 		       SMOOTHFS_CAP_COPY_FILE_RANGE |
 		       SMOOTHFS_CAP_FSCRYPT;
+	case BCACHEFS_SUPER_MAGIC:
+		return SMOOTHFS_CAPS_REQUIRED |
+		       SMOOTHFS_CAP_REFLINK         |
+		       SMOOTHFS_CAP_COPY_FILE_RANGE;
 	default:
 		return 0;
 	}
@@ -64,7 +72,7 @@ int smoothfs_probe_capabilities(struct smoothfs_tier *tier)
 	caps = smoothfs_caps_for_magic(sb->s_magic);
 	if (!caps) {
 		pr_warn("smoothfs: lower fs '%s' (magic 0x%lx) is not in "
-			"the compatibility matrix (xfs, zfs, ext4, btrfs)\n",
+			"the compatibility matrix (xfs, zfs, ext4, btrfs, bcachefs)\n",
 			name, sb->s_magic);
 	}
 
