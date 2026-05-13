@@ -32,6 +32,7 @@
 #include <linux/dirent.h>
 #include <linux/hashtable.h>
 #include <linux/jhash.h>
+#include <linux/sched.h>
 
 #include "smoothfs.h"
 
@@ -50,6 +51,7 @@
 #define SMOOTHFS_PATH_INDEX_FILE      ".smoothfs/path.idx"
 #define SMOOTHFS_PATH_INDEX_HDR_SZ    48
 #define SMOOTHFS_PATH_INDEX_ENTRY_HDR 20
+#define SMOOTHFS_PATH_INDEX_REBUILD_DELAY_MS 5000
 
 struct smoothfs_replay_record {
 	struct list_head link;
@@ -260,18 +262,33 @@ static int smoothfs_scan_dir_entries(struct path *dir, struct list_head *names)
 	return 0;
 }
 
-static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
+static int smoothfs_scan_node(struct smoothfs_sb_info *sbi,
+			      struct list_head *records, u8 tier_rank,
 			      struct hlist_head *index,
 			      const char *rel_path, struct dentry *dentry)
 {
 	struct smoothfs_replay_record *rec;
 	u8 oid[SMOOTHFS_OID_LEN];
 	u32 gen = 0;
+	int err;
 
-	if (!S_ISREG(d_inode(dentry)->i_mode))
+	if (!S_ISREG(d_inode(dentry)->i_mode) &&
+	    !S_ISDIR(d_inode(dentry)->i_mode))
 		return 0;
-	if (smoothfs_read_oid_xattr(dentry, oid))
+
+	err = smoothfs_read_oid_xattr(dentry, oid);
+	if (err == -ENODATA) {
+		err = smoothfs_alloc_oid(sbi, oid);
+		if (err)
+			return err;
+		err = smoothfs_write_oid_xattr(dentry, oid);
+		if (err == -EEXIST)
+			err = smoothfs_read_oid_xattr(dentry, oid);
+		if (err)
+			return err;
+	} else if (err) {
 		return 0;
+	}
 	(void)smoothfs_read_gen_xattr(dentry, &gen);
 
 	rec = smoothfs_replay_get_or_create(records, index, oid);
@@ -302,13 +319,18 @@ static int smoothfs_scan_file(struct list_head *records, u8 tier_rank,
 	return 0;
 }
 
-static int smoothfs_scan_tree(struct list_head *records, struct path *dir,
+static int smoothfs_scan_tree(struct smoothfs_sb_info *sbi,
+			      struct list_head *records, struct path *dir,
 			      struct hlist_head *index, u8 tier_rank,
 			      const char *prefix)
 {
 	LIST_HEAD(names);
 	struct smoothfs_scan_name *entry, *tmp;
 	int err;
+
+	if (atomic_read(&sbi->path_index_stop))
+		return -ECANCELED;
+	cond_resched();
 
 	err = smoothfs_scan_dir_entries(dir, &names);
 	if (err)
@@ -347,17 +369,26 @@ static int smoothfs_scan_tree(struct list_head *records, struct path *dir,
 		mntget(child_path.mnt);
 
 		if (S_ISDIR(d_inode(child)->i_mode)) {
-			if (strcmp(rel_path, SMOOTHFS_PLACEMENT_DIR) != 0)
-				err = smoothfs_scan_tree(records, &child_path,
-							 index, tier_rank, rel_path);
+			if (strcmp(rel_path, SMOOTHFS_PLACEMENT_DIR) != 0) {
+				err = smoothfs_scan_node(sbi, records, tier_rank,
+							 index, rel_path, child);
+				if (!err)
+					err = smoothfs_scan_tree(sbi, records,
+								 &child_path, index,
+								 tier_rank, rel_path);
+			}
 		} else {
-			err = smoothfs_scan_file(records, tier_rank, index,
+			err = smoothfs_scan_node(sbi, records, tier_rank, index,
 						 rel_path, child);
 		}
 		path_put(&child_path);
 		kfree(rel_path);
 		if (err)
 			break;
+		if (atomic_read(&sbi->path_index_stop)) {
+			err = -ECANCELED;
+			break;
+		}
 	}
 	smoothfs_scan_names_free(&names);
 	return err;
@@ -903,13 +934,99 @@ out:
 	return err;
 }
 
+static int smoothfs_path_index_rebuild(struct smoothfs_sb_info *sbi)
+{
+	LIST_HEAD(records);
+	struct hlist_head *index;
+	u8 tier;
+	int err;
+
+	if (!sbi->placement_log)
+		return -ENODEV;
+
+	index = kvcalloc(SMOOTHFS_REPLAY_HASH_SIZE, sizeof(*index), GFP_KERNEL);
+	if (!index)
+		return -ENOMEM;
+	smoothfs_replay_index_init(index);
+
+	smoothfs_placement_wb_drain(sbi);
+	mutex_lock(&sbi->placement_lock);
+	err = smoothfs_replay_load_log(sbi, &records, index);
+	mutex_unlock(&sbi->placement_lock);
+	if (err)
+		goto out;
+
+	for (tier = 0; tier < sbi->ntiers; tier++) {
+		err = smoothfs_scan_tree(sbi, &records,
+					 &sbi->tiers[tier].lower_path,
+					 index, tier, "");
+		if (err)
+			goto out;
+	}
+
+	err = smoothfs_path_index_write(sbi, &records);
+out:
+	smoothfs_replay_free_records(&records);
+	kvfree(index);
+	return err;
+}
+
+static void smoothfs_path_index_workfn(struct work_struct *work)
+{
+	struct smoothfs_sb_info *sbi =
+		container_of(to_delayed_work(work), struct smoothfs_sb_info,
+			     path_index_work);
+	int err;
+
+	if (!READ_ONCE(sbi->path_index_work_ready) ||
+	    atomic_read(&sbi->path_index_stop))
+		return;
+
+	pr_info("smoothfs: rebuilding path index for pool '%s' in background\n",
+		sbi->pool_name);
+	err = smoothfs_path_index_rebuild(sbi);
+	if (err == -ECANCELED)
+		return;
+	if (err)
+		pr_warn("smoothfs: path index background rebuild failed for pool '%s': %d\n",
+			sbi->pool_name, err);
+	else
+		pr_info("smoothfs: path index background rebuild complete for pool '%s'\n",
+			sbi->pool_name);
+}
+
+void smoothfs_path_index_async_init(struct smoothfs_sb_info *sbi)
+{
+	atomic_set(&sbi->path_index_stop, 0);
+	INIT_DELAYED_WORK(&sbi->path_index_work, smoothfs_path_index_workfn);
+	WRITE_ONCE(sbi->path_index_work_ready, true);
+}
+
+static void smoothfs_path_index_async_schedule(struct smoothfs_sb_info *sbi)
+{
+	if (!READ_ONCE(sbi->path_index_work_ready) ||
+	    atomic_read(&sbi->path_index_stop))
+		return;
+	queue_delayed_work(system_long_wq, &sbi->path_index_work,
+			   msecs_to_jiffies(SMOOTHFS_PATH_INDEX_REBUILD_DELAY_MS));
+}
+
+void smoothfs_path_index_async_destroy(struct smoothfs_sb_info *sbi)
+{
+	if (!READ_ONCE(sbi->path_index_work_ready))
+		return;
+	WRITE_ONCE(sbi->path_index_work_ready, false);
+	atomic_set(&sbi->path_index_stop, 1);
+	cancel_delayed_work_sync(&sbi->path_index_work);
+}
+
 int smoothfs_placement_replay(struct super_block *sb,
 			      struct smoothfs_sb_info *sbi)
 {
 	LIST_HEAD(records);
 	struct hlist_head *index;
-	u8 tier;
 	bool has_path_index;
+	int idx_err;
 	int err;
 
 	if (!sbi->placement_log)
@@ -924,32 +1041,21 @@ int smoothfs_placement_replay(struct super_block *sb,
 	if (err)
 		goto out;
 
-	has_path_index = (smoothfs_path_index_read(sbi, &records, index) == 0);
+	idx_err = smoothfs_path_index_read(sbi, &records, index);
+	has_path_index = (idx_err == 0);
 	if (has_path_index)
 		pr_info("smoothfs: path index valid, skipping tier scan for pool '%s'\n",
 			sbi->pool_name);
-
-	if (!has_path_index) {
-		for (tier = 0; tier < sbi->ntiers; tier++) {
-			err = smoothfs_scan_tree(&records,
-						 &sbi->tiers[tier].lower_path,
-						 index, tier, "");
-			if (err)
-				goto out;
-		}
-	}
+	else
+		pr_info("smoothfs: path index unavailable for pool '%s' (%d); mounting now and rebuilding it on the fastest tier\n",
+			sbi->pool_name, idx_err);
 
 	err = smoothfs_replay_instantiate(sb, sbi, &records);
 	if (err)
 		goto out;
 
-	if (!has_path_index) {
-		int idx_err = smoothfs_path_index_write(sbi, &records);
-
-		if (idx_err)
-			pr_warn("smoothfs: path index write failed (%d); next boot will re-scan\n",
-				idx_err);
-	}
+	if (!has_path_index)
+		smoothfs_path_index_async_schedule(sbi);
 
 out:
 	smoothfs_replay_free_records(&records);

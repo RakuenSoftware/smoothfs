@@ -61,6 +61,8 @@ static void smoothfs_kill_sb(struct super_block *sb)
 	LIST_HEAD(to_release);
 
 	if (sbi) {
+		smoothfs_path_index_async_destroy(sbi);
+
 		down_write(&sbi->inode_lock);
 		list_for_each_entry_safe(si, tmp, &sbi->inode_list, sb_link) {
 			if (atomic_xchg(&si->replay_pinned, 0))
