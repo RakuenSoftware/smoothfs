@@ -19,6 +19,21 @@ spill_assert test -f "$SPILL_ROOT/fast/fastdir/anchor.txt"
 
 echo "=== fill fast tier, then create spilled source on tier 1 ==="
 spill_fill_fast_tier
+mkdir "$SPILL_ROOT/server/.smb-tmp-dir"
+spill_assert test -d "$SPILL_ROOT/slow/.smb-tmp-dir"
+
+echo "=== same-parent rename of spilled directory should stay on tier 1 ==="
+python3 - <<'PY' "$SPILL_ROOT/server/.smb-tmp-dir" "$SPILL_ROOT/server/smb-final-dir"
+import os, sys
+os.rename(sys.argv[1], sys.argv[2])
+PY
+spill_rc=$(( spill_rc + $? ))
+spill_assert test ! -e "$SPILL_ROOT/server/.smb-tmp-dir"
+spill_assert test -d "$SPILL_ROOT/server/smb-final-dir"
+spill_assert test -d "$SPILL_ROOT/slow/smb-final-dir"
+rmdir "$SPILL_ROOT/server/smb-final-dir"
+
+echo "=== create spilled source file on tier 1 ==="
 echo spill > "$SPILL_ROOT/server/spilled.txt"
 spill_assert test -f "$SPILL_ROOT/slow/spilled.txt"
 

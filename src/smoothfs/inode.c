@@ -1223,11 +1223,35 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 	struct dentry *lower_new_parent = smoothfs_lower_dentry(new_dentry->d_parent);
 	struct dentry *lower_old = smoothfs_lower_dentry(old_dentry);
 	struct dentry *lower_new = smoothfs_lower_dentry(new_dentry);
+	struct dentry *actual_old_parent = lower_old ? lower_old->d_parent : lower_old_parent;
+	struct dentry *actual_new_parent = lower_new_parent;
 	struct dentry *trap;
 	struct renamedata rd = {};
 	int err;
 
-	if (lower_old_parent->d_sb != lower_new_parent->d_sb)
+	/*
+	 * A file or directory can live on a non-canonical tier while its
+	 * visible parent dentry still maps to the canonical tier. Samba's
+	 * mkdir path creates a temporary directory and then renames it to
+	 * the final name in the same visible parent; after tier spill the
+	 * temp dentry's real lower parent is lower_old->d_parent, not the
+	 * visible parent's canonical lower. Keep that same-directory rename
+	 * on the source tier. Cross-directory cross-tier rename remains EXDEV
+	 * so callers can fall back to copy+delete.
+	 */
+	if (old_dentry->d_parent == new_dentry->d_parent &&
+	    actual_old_parent != lower_old_parent &&
+	    actual_old_parent->d_sb != lower_new_parent->d_sb) {
+		if (lower_new && d_really_is_positive(lower_new))
+			return -EXDEV;
+		if (lower_new) {
+			smoothfs_set_lower_dentry(new_dentry, NULL);
+			lower_new = NULL;
+		}
+		actual_new_parent = actual_old_parent;
+	}
+
+	if (actual_old_parent->d_sb != actual_new_parent->d_sb)
 		return -EXDEV;
 	/* Cross-tier rename: source and destination resolve to lower
 	 * dentries on different lower filesystems (e.g. source on fast,
@@ -1243,7 +1267,7 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 	if (lower_new)
 		dget(lower_new);
 
-	trap = lock_rename_child(lower_old, lower_new_parent);
+	trap = lock_rename_child(lower_old, actual_new_parent);
 	if (IS_ERR(trap)) {
 		if (lower_new)
 			dput(lower_new);
@@ -1252,44 +1276,44 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 	if (!lower_new) {
 		lower_new = smoothfs_compat_lookup(&nop_mnt_idmap,
 						   &new_dentry->d_name,
-						   lower_new_parent);
+						   actual_new_parent);
 		if (IS_ERR(lower_new)) {
-			unlock_rename(lower_old_parent, lower_new_parent);
+			unlock_rename(actual_old_parent, actual_new_parent);
 			return PTR_ERR(lower_new);
 		}
 	}
-	if (d_unhashed(lower_old) || lower_old_parent != lower_old->d_parent) {
-		unlock_rename(lower_old->d_parent, lower_new_parent);
+	if (d_unhashed(lower_old) || actual_old_parent != lower_old->d_parent) {
+		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
 		return -EINVAL;
 	}
-	if (d_unhashed(lower_new) || lower_new_parent != lower_new->d_parent) {
-		unlock_rename(lower_old->d_parent, lower_new_parent);
+	if (d_unhashed(lower_new) || actual_new_parent != lower_new->d_parent) {
+		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
 		return -EINVAL;
 	}
 	if (trap == lower_old) {
-		unlock_rename(lower_old->d_parent, lower_new_parent);
+		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
 		return -EINVAL;
 	}
 	if (trap == lower_new) {
 		err = (flags & RENAME_EXCHANGE) ? -EINVAL : -ENOTEMPTY;
-		unlock_rename(lower_old->d_parent, lower_new_parent);
+		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
 		return err;
 	}
 	if (d_really_is_positive(lower_new) && (flags & RENAME_NOREPLACE)) {
-		unlock_rename(lower_old_parent, lower_new_parent);
+		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
 		return -EEXIST;
 	}
 
 	memset(&rd, 0, sizeof(rd));
 	rd.mnt_idmap = idmap;
-	rd.old_parent = dget(lower_old->d_parent);
+	rd.old_parent = dget(actual_old_parent);
 	rd.old_dentry = dget(lower_old);
-	rd.new_parent = lower_new_parent;
+	rd.new_parent = actual_new_parent;
 	rd.new_dentry = dget(lower_new);
 	rd.flags = flags;
 
@@ -1320,8 +1344,8 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 	smoothfs_set_lower_dentry(old_dentry, lower_old);
 	smoothfs_set_lower_dentry(new_dentry, NULL);
 	dput(lower_new);
-	smoothfs_copy_attrs(old_dir, d_inode(lower_old_parent));
-	smoothfs_copy_attrs(new_dir, d_inode(lower_new_parent));
+	smoothfs_copy_attrs(old_dir, d_inode(actual_old_parent));
+	smoothfs_copy_attrs(new_dir, d_inode(actual_new_parent));
 
 	/* Update si->rel_path on the moved inode to its new name.
 	 * smoothfs_lookup falls through to smoothfs_lookup_rel_path on a
