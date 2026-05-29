@@ -620,6 +620,14 @@ static loff_t smoothfs_remap_file_range(struct file *file_in, loff_t pos_in,
 	err = smoothfs_lower_file_error(lower_out);
 	if (err)
 		return err;
+	/* The lower remap/reflink op is only valid within a single backing
+	 * filesystem. With tiering, file_in and file_out can resolve to lower
+	 * files on different tiers (different superblocks); handing one lower
+	 * fs's remap_file_range a file from another crashes it (e.g.
+	 * xfs_file_remap_range NULL-derefs). Refuse so the caller's
+	 * vfs_copy_file_range falls back to a generic byte copy. */
+	if (file_inode(lower_in)->i_sb != file_inode(lower_out)->i_sb)
+		return -EXDEV;
 	srcu_idx = smoothfs_begin_data_change(out_inode);
 	if (srcu_idx < 0)
 		return srcu_idx;
