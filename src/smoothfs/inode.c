@@ -500,12 +500,18 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 							  child, 0755);
 			if (IS_ERR(new_child)) {
 				err = PTR_ERR(new_child);
-				dput(child);
-				inode_unlock(d_inode(cur.dentry));
+				/*
+				 * vfs_mkdir() (6.15+) already dput()s the
+				 * passed-in dentry AND unlocks the parent when
+				 * it returns an error pointer. Repeating either
+				 * corrupts the dcache (double dput -> dput()
+				 * WARN at fs/dcache.c) and the parent inode
+				 * lock.
+				 */
 				goto out_err;
 			}
 			if (new_child != child) {
-				dput(child);
+				/* vfs_mkdir() consumed the original on replace */
 				child = new_child;
 			}
 			created = true;
@@ -1135,17 +1141,20 @@ static struct dentry *smoothfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 			struct dentry *new_lower = smoothfs_compat_mkdir(idmap,
 							d_inode(parent_path.dentry),
 							lower, mode);
-			inode_unlock(d_inode(parent_path.dentry));
 			if (IS_ERR(new_lower)) {
 				err = PTR_ERR(new_lower);
-				dput(lower);
+				/*
+				 * vfs_mkdir() already dput()'d lower and
+				 * unlocked the parent on error; do not repeat.
+				 */
 				path_put(&parent_path);
 				if (err == -ENOSPC)
 					continue;
 				goto out_err;
 			}
+			inode_unlock(d_inode(parent_path.dentry));
 			if (new_lower != lower) {
-				dput(lower);
+				/* vfs_mkdir() consumed the original on replace */
 				lower = new_lower;
 			}
 		}
