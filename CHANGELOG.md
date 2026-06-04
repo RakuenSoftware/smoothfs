@@ -1,0 +1,34 @@
+# Changelog
+
+## [0.2.0](https://github.com/RakuenSoftware/smoothfs/compare/v0.1.0...v0.2.0) (2026-06-04)
+
+
+### Features
+
+* accept bcachefs lower filesystems ([befc0d9](https://github.com/RakuenSoftware/smoothfs/commit/befc0d9f798c12e462c92d215b65f42f8e758051))
+* add high-water create policy ([107d187](https://github.com/RakuenSoftware/smoothfs/commit/107d18783219ed29ff0b2d53ac74e4888abe8fb2))
+* add high-water create policy ([6012b15](https://github.com/RakuenSoftware/smoothfs/commit/6012b152c9ea17dee02e555f537373f69b229010))
+
+
+### Bug Fixes
+
+* address smoothfs audit findings ([b8ab1f7](https://github.com/RakuenSoftware/smoothfs/commit/b8ab1f7d6c91c318aca4208f4171d5f85c62d592))
+* avoid blocking mounts on cold path index ([e881bcf](https://github.com/RakuenSoftware/smoothfs/commit/e881bcfd15f0f6af7774abf48ef873f82413766b))
+* avoid blocking smoothfs mounts on cold path index ([c753635](https://github.com/RakuenSoftware/smoothfs/commit/c75363594c899f5a655c47ab97d1cdd1842050e8))
+* close service client on cancellation ([5208456](https://github.com/RakuenSoftware/smoothfs/commit/52084565fe9a7b4d97a1ecc865657ae05499b8da))
+* close service client on cancellation ([7ef71a7](https://github.com/RakuenSoftware/smoothfs/commit/7ef71a7e8bb2bc32f49ddf2831612dbc399fba13))
+* complete remaining audit remediations ([6d214bd](https://github.com/RakuenSoftware/smoothfs/commit/6d214bd4ac2f9dead835b31cf950f6606fcfeba0))
+* declare materialized parent helper before use ([31a694c](https://github.com/RakuenSoftware/smoothfs/commit/31a694c8ed5f2896ad8416a620d2802f99031642))
+* guard movement cutover with write sequence ([ca29a86](https://github.com/RakuenSoftware/smoothfs/commit/ca29a86e43ca0739a997e6e11b3fcdfed92d2ea1))
+* include statfs for kernel module build ([84714d0](https://github.com/RakuenSoftware/smoothfs/commit/84714d01c154d9884726de46765a18b611d7ddcd))
+* **inode:** drop placement identity on unlink/rmdir to stop zombie dirs ([#128](https://github.com/RakuenSoftware/smoothfs/issues/128)) ([b76f7d7](https://github.com/RakuenSoftware/smoothfs/commit/b76f7d761d8842212ba83eb031669a4a852499f6))
+* **pools:** set TimeoutSec=infinity on generated mount unit ([26df046](https://github.com/RakuenSoftware/smoothfs/commit/26df046ea35402807c391ee3ae974089a2339857))
+* **pools:** set TimeoutSec=infinity on generated mount unit ([c2a32b3](https://github.com/RakuenSoftware/smoothfs/commit/c2a32b324449c74e0779e665809f77cc7b332390))
+* **smoothfs:** refuse cross-tier remap to avoid lower-fs NULL deref ([#127](https://github.com/RakuenSoftware/smoothfs/issues/127)) ([cfcc948](https://github.com/RakuenSoftware/smoothfs/commit/cfcc948d528bf693adbfbe2f3c360f7782b36ba0))
+
+
+### Performance Improvements
+
+* **placement:** add path index to skip tier scan on remount ([50a814b](https://github.com/RakuenSoftware/smoothfs/commit/50a814bae8894832d2c230b52b279a981807d131))
+* **placement:** path index to skip tier scan on remount ([28d68d8](https://github.com/RakuenSoftware/smoothfs/commit/28d68d87187011fe20ddf60b03746cbe53fd5eee))
+* **placement:** path index to skip tier scan on remount ([28d68d8](https://github.com/RakuenSoftware/smoothfs/commit/28d68d87187011fe20ddf60b03746cbe53fd5eee))
