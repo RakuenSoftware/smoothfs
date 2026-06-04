@@ -748,6 +748,77 @@ out_unlock:
 	return err;
 }
 
+/* Remove an (empty) directory at rel_path on a specific tier. The directory
+ * sibling of smoothfs_unlink_rel_path_on_tier: smoothfs_rmdir only removes the
+ * canonical tier, so this purges the now-empty copies smoothfs replicated onto
+ * spill tiers to host tier-bound/spilled children. Best-effort — a missing
+ * parent or entry on this tier is success, since there is nothing to purge. */
+static int smoothfs_rmdir_rel_path_on_tier(struct smoothfs_sb_info *sbi,
+					   u8 tier, const char *rel_path)
+{
+	struct path parent_path;
+	struct dentry *lower;
+	struct qstr qname;
+	char *work, *slash, *name, *parent_rel;
+	int err;
+
+	if (!rel_path || !*rel_path)
+		return -EINVAL;
+
+	work = kstrdup(rel_path, GFP_KERNEL);
+	if (!work)
+		return -ENOMEM;
+
+	slash = strrchr(work, '/');
+	if (slash) {
+		*slash = '\0';
+		parent_rel = work;
+		name = slash + 1;
+	} else {
+		parent_rel = "";
+		name = work;
+	}
+	if (!*name) {
+		kfree(work);
+		return -EINVAL;
+	}
+
+	err = smoothfs_resolve_rel_path_on_tier(sbi, tier, parent_rel,
+						&parent_path);
+	if (err) {
+		kfree(work);
+		return (err == -ENOENT) ? 0 : err;
+	}
+
+	qname = (struct qstr)QSTR_INIT(name, strlen(name));
+	inode_lock(d_inode(parent_path.dentry));
+	lower = smoothfs_compat_lookup(&nop_mnt_idmap, &qname,
+				       parent_path.dentry);
+	if (IS_ERR(lower)) {
+		err = PTR_ERR(lower);
+		goto out_unlock;
+	}
+	if (d_really_is_negative(lower)) {
+		dput(lower);
+		err = 0;
+		goto out_unlock;
+	}
+	if (!d_is_dir(lower)) {
+		dput(lower);
+		err = -ENOTDIR;
+		goto out_unlock;
+	}
+	err = smoothfs_compat_rmdir(&nop_mnt_idmap, d_inode(parent_path.dentry),
+				    lower);
+	dput(lower);
+
+out_unlock:
+	inode_unlock(d_inode(parent_path.dentry));
+	path_put(&parent_path);
+	kfree(work);
+	return err;
+}
+
 static struct inode *smoothfs_write_staging_find_drainable_rehome(struct smoothfs_sb_info *sbi)
 {
 	struct smoothfs_inode_info *si;
@@ -2083,6 +2154,59 @@ void smoothfs_copy_attrs(struct inode *dst, struct inode *src)
 	inode_set_ctime_to_ts(dst, inode_get_ctime(src));
 	i_size_write(dst, i_size_read(src));
 	set_nlink(dst, src->i_nlink);
+}
+
+/*
+ * Invalidate a removed inode's placement identity.
+ *
+ * smoothfs tags every materialized inode with si->rel_path and, for the
+ * directories it auto-creates to host a tier-bound/spilled child, pins the
+ * inode on sbi->inode_list via si->replay_pinned. On a canonical-tier negative
+ * lookup, smoothfs_lookup falls back to smoothfs_lookup_rel_path, which walks
+ * inode_list by si->rel_path string-equality. A stale rel_path therefore
+ * resurrects the inode of an already-removed path: for a directory whose lower
+ * backing is gone this is a zombie (i_nlink 0, cannot hold children, cannot be
+ * rmdir'd). smoothfs_rename already rewrites si->rel_path for exactly this
+ * reason; unlink and rmdir must clear it.
+ *
+ * With purge_dir_tiers set (rmdir), also remove the directory's now-empty
+ * copies from every spill tier. smoothfs_rmdir removes only the canonical
+ * tier, and a surviving spill copy would otherwise be re-tracked by
+ * smoothfs_lookup_rel_across_tiers on the next lookup — dual-resolution, and a
+ * plugin reinstall hitting "already exists".
+ *
+ * The caller holds the dentry's reference to inode; this drops only the extra
+ * reference the replay pin held (the iget that smoothfs_track_placed never
+ * released), letting the inode be evicted once the VFS releases the dentry.
+ */
+void smoothfs_forget_placement(struct super_block *sb, struct inode *inode,
+			       bool purge_dir_tiers)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(sb);
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	char *rel_path = NULL;
+
+	down_write(&sbi->inode_lock);
+	if (si->rel_path) {
+		rel_path = si->rel_path;
+		si->rel_path = NULL;
+	}
+	up_write(&sbi->inode_lock);
+
+	if (purge_dir_tiers && rel_path) {
+		u8 tier;
+
+		for (tier = 0; tier < sbi->ntiers; tier++) {
+			if (!smoothfs_metadata_tier_active(sbi, tier))
+				continue;
+			(void)smoothfs_rmdir_rel_path_on_tier(sbi, tier,
+							      rel_path);
+		}
+	}
+	kfree(rel_path);
+
+	if (atomic_xchg(&si->replay_pinned, 0))
+		iput(inode);
 }
 
 struct smoothfs_inode_info *smoothfs_lookup_rel_path(struct smoothfs_sb_info *sbi,
