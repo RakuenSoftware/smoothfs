@@ -535,12 +535,15 @@ static int smoothfs_placement_ensure_dir(struct smoothfs_sb_info *sbi)
 		new_dir = smoothfs_compat_mkdir(&nop_mnt_idmap,
 						d_inode(parent.dentry),
 						dir, 0700);
-		if (IS_ERR(new_dir))
-			err = PTR_ERR(new_dir);
-		else if (new_dir != dir) {
-			dput(dir);
-			dir = new_dir;
+		if (IS_ERR(new_dir)) {
+			/*
+			 * vfs_mkdir() already dput()'d dir and unlocked the
+			 * parent on error.
+			 */
+			return PTR_ERR(new_dir);
 		}
+		/* vfs_mkdir() consumed the original on replacement */
+		dir = new_dir;
 	}
 	dput(dir);
 	inode_unlock(d_inode(parent.dentry));
