@@ -136,8 +136,11 @@ smoothfs_compat_create(struct mnt_idmap *idmap, struct inode *dir,
  *
  * Helper does the now-canonical "may-replace-dentry" dance: returns
  * the dentry the caller should use (either input or replacement),
- * or ERR_PTR on failure. Callers always dput their original on
- * replacement.
+ * or ERR_PTR on failure. NOTE: vfs_mkdir() itself dput()s the
+ * passed-in dentry whenever it returns a *different* pointer
+ * (a replacement OR an ERR_PTR), and additionally unlocks the parent
+ * on error. Callers must therefore NOT dput the original on
+ * replacement/error, and must not unlock the parent again on error.
  */
 static inline struct dentry *
 smoothfs_compat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
