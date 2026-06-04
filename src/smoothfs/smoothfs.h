@@ -530,6 +530,8 @@ extern const struct dentry_operations smoothfs_dentry_ops;
 void smoothfs_copy_attrs(struct inode *dst, struct inode *src);
 struct smoothfs_inode_info *smoothfs_lookup_rel_path(struct smoothfs_sb_info *sbi,
 						     const char *rel_path);
+void smoothfs_forget_placement(struct super_block *sb, struct inode *inode,
+			       bool purge_dir_tiers);
 
 /* file.c */
 extern const struct file_operations          smoothfs_file_ops;

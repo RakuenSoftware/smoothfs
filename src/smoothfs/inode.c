@@ -1065,6 +1065,13 @@ static int smoothfs_unlink(struct inode *dir, struct dentry *dentry)
 		/* Copy from the parent we actually modified (lower->d_parent),
 		 * not the canonical lower_parent which never saw the unlink. */
 		smoothfs_copy_attrs(dir, d_inode(lower->d_parent));
+		/* Last link gone: drop the placement identity so a stale
+		 * si->rel_path cannot resurrect this backing-less inode on the
+		 * next lookup of the path. A surviving hardlink keeps i_nlink
+		 * > 0, where the inode is still reachable via its other name. */
+		if (d_inode(dentry)->i_nlink == 0)
+			smoothfs_forget_placement(dir->i_sb, d_inode(dentry),
+						  false);
 	}
 	return err;
 }
@@ -1204,12 +1211,20 @@ static int smoothfs_rmdir(struct inode *dir, struct dentry *dentry)
 		/* Drop d_fsdata so this dentry releases its pin on the
 		 * lower dentry; si->lower_path stays until evict_inode.
 		 * See smoothfs_unlink for the full rationale. */
-		clear_nlink(d_inode(dentry));
+		struct inode *removed = d_inode(dentry);
+
+		clear_nlink(removed);
 		smoothfs_set_lower_dentry(dentry, NULL);
 		d_drop(dentry);
 		/* Copy from the parent we actually modified (lower->d_parent);
 		 * see smoothfs_unlink for the canonical-vs-actual rationale. */
 		smoothfs_copy_attrs(dir, d_inode(lower->d_parent));
+		/* Purge the directory's empty copies on every spill tier
+		 * (smoothfs_compat_rmdir above removed only the canonical one)
+		 * and drop the placement identity + replay pin, so neither a
+		 * surviving spill copy nor a stale si->rel_path resurrects the
+		 * directory on the next lookup. */
+		smoothfs_forget_placement(dir->i_sb, removed, true);
 	}
 	return err;
 }
