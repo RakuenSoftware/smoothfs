@@ -631,6 +631,23 @@ static struct dentry *smoothfs_lookup(struct inode *dir, struct dentry *dentry,
 		}
 		if (rel_path) {
 			replayed = smoothfs_lookup_rel_path(sbi, rel_path);
+			/* Skip a stale alias whose lower backing was already
+			 * removed. When a directory that smoothfs auto-created on
+			 * more than one tier (to host spilled children) is
+			 * rmdir'd, smoothfs_forget_placement clears the placement
+			 * identity of only the canonical inode (d_inode(dentry))
+			 * and purges the lower copies — but a spill-tier alias
+			 * inode keeps this rel_path in the lookup map. Reusing it
+			 * resurrects a zombie directory (i_nlink 0, lower purged)
+			 * that still resolves and so blocks rename-into-place
+			 * (e.g. Steam's runtime swap: rm steam-runtime then rename
+			 * steam-runtime.tmp onto it). Drop the stale alias; the
+			 * across-tiers scan below yields a correct negative when
+			 * no tier still backs the path. */
+			if (replayed &&
+			    (!replayed->lower_path.dentry ||
+			     d_really_is_negative(replayed->lower_path.dentry)))
+				replayed = NULL;
 			if (replayed) {
 				struct path replay_path = replayed->lower_path;
 				int was_replay_pinned;
