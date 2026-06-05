@@ -207,6 +207,7 @@ static int smoothfs_ensure_oid_persisted(struct smoothfs_inode_info *si)
 static int smoothfs_set_inode_placement(struct smoothfs_inode_info *si,
 					const char *rel_path, u8 tier)
 {
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(si->vfs_inode.i_sb);
 	char *dup = NULL;
 
 	if (rel_path) {
@@ -215,8 +216,10 @@ static int smoothfs_set_inode_placement(struct smoothfs_inode_info *si,
 			return -ENOMEM;
 	}
 
+	smoothfs_path_map_del(sbi, si);
 	kfree(si->rel_path);
 	si->rel_path = dup;
+	smoothfs_path_map_add(sbi, si);
 	si->current_tier = tier;
 	si->intended_tier = tier;
 	si->movement_state = SMOOTHFS_MS_PLACED;
@@ -370,9 +373,11 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 	old_path = si->lower_path;
 	old_tier = smoothfs_tier_of(sbi, old_path.mnt);
 	si->lower_path = new_path;
+	smoothfs_path_map_del(sbi, si);
 	kfree(si->rel_path);
 	si->rel_path = rel_dup;
 	rel_dup = NULL;
+	smoothfs_path_map_add(sbi, si);
 	si->current_tier = sbi->fastest_tier;
 	si->intended_tier = sbi->fastest_tier;
 	si->movement_state = SMOOTHFS_MS_PLACED;
@@ -1389,11 +1394,15 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 		char *new_rel = smoothfs_rel_path_from_dentry(new_dentry);
 
 		if (moved_inode && new_rel) {
+			struct smoothfs_sb_info *sbi = SMOOTHFS_SB(old_dir->i_sb);
+
 			si = SMOOTHFS_I(moved_inode);
-			down_write(&SMOOTHFS_SB(old_dir->i_sb)->inode_lock);
+			down_write(&sbi->inode_lock);
+			smoothfs_path_map_del(sbi, si);
 			kfree(si->rel_path);
 			si->rel_path = new_rel;
-			up_write(&SMOOTHFS_SB(old_dir->i_sb)->inode_lock);
+			smoothfs_path_map_add(sbi, si);
+			up_write(&sbi->inode_lock);
 		} else {
 			kfree(new_rel);
 		}

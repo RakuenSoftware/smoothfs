@@ -16,6 +16,7 @@
 #include <linux/namei.h>
 #include <linux/limits.h>
 #include <linux/parser.h>
+#include <linux/jhash.h>
 #include <linux/rhashtable.h>
 #include <linux/sysfs.h>
 #include <linux/slab.h>
@@ -1208,6 +1209,90 @@ void smoothfs_oid_map_remove(struct smoothfs_sb_info *sbi,
 			       smoothfs_oid_rht_params);
 }
 
+/* ---- rel_path -> smoothfs_inode map ----
+ *
+ * Variable-length string key held by pointer (si->rel_path), so we can't
+ * use key_offset/key_len like oid_map; supply custom hash/compare fns. The
+ * key lives as long as the inode is hashed: smoothfs_path_map_del runs
+ * before every kfree/replacement of rel_path (set_inode_placement, the
+ * movement cutover, inode destroy), so a hashed node always has a stable,
+ * non-NULL rel_path. Per-inode rel_path mutation is serialised by the VFS
+ * inode lock during create/rename and by the refcount at destroy, mirroring
+ * how oid_map relies on the oid being effectively immutable per inode; the
+ * path_hashed flag guards against a double insert/remove. */
+static u32 smoothfs_path_key_hashfn(const void *data, u32 len, u32 seed)
+{
+	const char *path = data;
+
+	return jhash(path, strlen(path), seed);
+}
+
+static u32 smoothfs_path_obj_hashfn(const void *data, u32 len, u32 seed)
+{
+	const struct smoothfs_inode_info *si = data;
+
+	return jhash(si->rel_path, strlen(si->rel_path), seed);
+}
+
+static int smoothfs_path_obj_cmpfn(struct rhashtable_compare_arg *arg,
+				   const void *obj)
+{
+	const struct smoothfs_inode_info *si = obj;
+	const char *key = arg->key;
+
+	if (!si->rel_path)
+		return 1;
+	return strcmp(si->rel_path, key) ? 1 : 0;
+}
+
+const struct rhashtable_params smoothfs_path_rht_params = {
+	.head_offset = offsetof(struct smoothfs_inode_info, path_hash_node),
+	.hashfn      = smoothfs_path_key_hashfn,
+	.obj_hashfn  = smoothfs_path_obj_hashfn,
+	.obj_cmpfn   = smoothfs_path_obj_cmpfn,
+	.automatic_shrinking = true,
+};
+
+int smoothfs_path_map_init(struct smoothfs_sb_info *sbi)
+{
+	int err;
+
+	err = rhashtable_init(&sbi->path_map, &smoothfs_path_rht_params);
+	if (err)
+		return err;
+	WRITE_ONCE(sbi->path_map_ready, true);
+	return 0;
+}
+
+void smoothfs_path_map_destroy(struct smoothfs_sb_info *sbi)
+{
+	if (!sbi->path_map_ready)
+		return;
+	WRITE_ONCE(sbi->path_map_ready, false);
+	rhashtable_destroy(&sbi->path_map);
+}
+
+void smoothfs_path_map_add(struct smoothfs_sb_info *sbi,
+			   struct smoothfs_inode_info *si)
+{
+	if (!READ_ONCE(sbi->path_map_ready) || !si->rel_path || si->path_hashed)
+		return;
+	if (rhashtable_insert_fast(&sbi->path_map, &si->path_hash_node,
+				   smoothfs_path_rht_params) == 0)
+		si->path_hashed = true;
+}
+
+void smoothfs_path_map_del(struct smoothfs_sb_info *sbi,
+			   struct smoothfs_inode_info *si)
+{
+	if (!si->path_hashed)
+		return;
+	if (READ_ONCE(sbi->path_map_ready))
+		rhashtable_remove_fast(&sbi->path_map, &si->path_hash_node,
+				       smoothfs_path_rht_params);
+	si->path_hashed = false;
+}
+
 /* ---- (tier_idx, lower_ino) -> smoothfs ino_no cache ---- */
 
 const struct rhashtable_params smoothfs_lower_ino_rht_params = {
@@ -1459,6 +1544,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	mutex_init(&si->range_staging_lock);
 	INIT_LIST_HEAD(&si->range_staged_ranges);
 	si->rel_path = NULL;
+	si->path_hashed = false;
 	atomic_set(&si->replay_pinned, 0);
 	INIT_LIST_HEAD(&si->sb_link);
 	return &si->vfs_inode;
@@ -1480,6 +1566,7 @@ static void smoothfs_evict_inode(struct inode *inode)
 	if (sbi) {
 		smoothfs_clear_write_reservation(sbi, si);
 		smoothfs_oid_map_remove(sbi, si);
+		smoothfs_path_map_del(sbi, si);
 		if (si->lower_path.dentry && si->lower_path.mnt) {
 			u8 tier_idx = smoothfs_tier_of(sbi, si->lower_path.mnt);
 			if (tier_idx < SMOOTHFS_MAX_TIERS)
@@ -1691,6 +1778,9 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = smoothfs_lower_ino_map_init(sbi);
 	if (err)
 		goto out_sbi;
+	err = smoothfs_path_map_init(sbi);
+	if (err)
+		goto out_sbi;
 	err = init_srcu_struct(&sbi->cutover_srcu);
 	if (err)
 		goto out_sbi;
@@ -1838,6 +1928,7 @@ out_sbi:
 		cleanup_srcu_struct(&sbi->cutover_srcu);
 	smoothfs_lower_ino_map_destroy(sbi);
 	smoothfs_oid_map_destroy(sbi);
+	smoothfs_path_map_destroy(sbi);
 	kfree(sbi);
 	sb->s_fs_info = NULL;
 	return err;
@@ -1903,6 +1994,7 @@ static void smoothfs_put_super(struct super_block *sb)
 		cleanup_srcu_struct(&sbi->cutover_srcu);
 	smoothfs_lower_ino_map_destroy(sbi);
 	smoothfs_oid_map_destroy(sbi);
+	smoothfs_path_map_destroy(sbi);
 	for (i = 0; i < sbi->ntiers; i++)
 		path_put(&sbi->tiers[i].lower_path);
 	kfree(sbi);
@@ -2188,6 +2280,7 @@ void smoothfs_forget_placement(struct super_block *sb, struct inode *inode,
 
 	down_write(&sbi->inode_lock);
 	if (si->rel_path) {
+		smoothfs_path_map_del(sbi, si);
 		rel_path = si->rel_path;
 		si->rel_path = NULL;
 	}
@@ -2209,21 +2302,27 @@ void smoothfs_forget_placement(struct super_block *sb, struct inode *inode,
 		iput(inode);
 }
 
+/*
+ * O(1) rel_path -> inode resolution via sbi->path_map. This used to walk
+ * sbi->inode_list and strcmp every entry under inode_lock — O(files-in-pool)
+ * per call, and smoothfs_lookup hits it on every uncached/negative lookup
+ * (e.g. the create-fallback path), so on a pool with hundreds of thousands of
+ * tracked inodes a tar of many small files spent the bulk of its wall time
+ * here, not on I/O. The hashtable is kept in sync with rel_path at every
+ * mutation site and populated during mount-time placement replay, so no
+ * inode_list scan or on-disk index regeneration is needed.
+ *
+ * rhashtable_lookup_fast manages its own RCU read section. The returned inode
+ * is not pinned here — same contract as the previous list walk, which also
+ * returned the bare pointer after dropping inode_lock; callers operate on
+ * replay-pinned inodes that cannot be evicted underneath them.
+ */
 struct smoothfs_inode_info *smoothfs_lookup_rel_path(struct smoothfs_sb_info *sbi,
 						     const char *rel_path)
 {
-	struct smoothfs_inode_info *si, *found = NULL;
-
-	if (!rel_path)
+	if (!rel_path || !READ_ONCE(sbi->path_map_ready))
 		return NULL;
 
-	down_read(&sbi->inode_lock);
-	list_for_each_entry(si, &sbi->inode_list, sb_link) {
-		if (si->rel_path && strcmp(si->rel_path, rel_path) == 0) {
-			found = si;
-			break;
-		}
-	}
-	up_read(&sbi->inode_lock);
-	return found;
+	return rhashtable_lookup_fast(&sbi->path_map, rel_path,
+				      smoothfs_path_rht_params);
 }

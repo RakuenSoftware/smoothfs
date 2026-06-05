@@ -148,6 +148,18 @@ struct smoothfs_sb_info {
 	struct rhashtable   oid_map;
 	bool                oid_map_ready;
 
+	/* rel_path -> smoothfs_inode map. O(1) path lookups for the
+	 * negative-dentry / create fallback in smoothfs_lookup, which used
+	 * to walk inode_list and strcmp every entry — O(files-in-pool) per
+	 * uncached lookup, i.e. tens of ms once a pool holds 100k+ files
+	 * (a tar of many small files spent the bulk of its time here). The
+	 * key is the inode's rel_path, so insert/remove tracks the rel_path
+	 * lifetime: set_inode_placement, movement cutover, inode destroy,
+	 * and the mount-time placement-log replay (built in memory on load,
+	 * no extra scan). The list + rwsem stay as the iteration surface. */
+	struct rhashtable   path_map;
+	bool                path_map_ready;
+
 	/* (tier_idx, lower_inode_no) -> smoothfs ino_no cache. Lets
 	 * smoothfs_iget skip the two vfs_getxattr calls on CREATE and
 	 * cold-cache opens when we've seen this lower inode before.
@@ -362,6 +374,8 @@ struct smoothfs_inode_info {
 
 	struct list_head sb_link;
 	struct rhash_head hash_node;          /* oid_map membership */
+	struct rhash_head path_hash_node;     /* path_map membership */
+	bool              path_hashed;        /* currently linked in path_map */
 };
 
 static __always_inline struct smoothfs_inode_info *SMOOTHFS_I(struct inode *inode)
@@ -471,6 +485,13 @@ int  smoothfs_oid_map_insert(struct smoothfs_sb_info *sbi,
 			     struct smoothfs_inode_info *si);
 void smoothfs_oid_map_remove(struct smoothfs_sb_info *sbi,
 			     struct smoothfs_inode_info *si);
+extern const struct rhashtable_params smoothfs_path_rht_params;
+int  smoothfs_path_map_init(struct smoothfs_sb_info *sbi);
+void smoothfs_path_map_destroy(struct smoothfs_sb_info *sbi);
+void smoothfs_path_map_add(struct smoothfs_sb_info *sbi,
+			   struct smoothfs_inode_info *si);
+void smoothfs_path_map_del(struct smoothfs_sb_info *sbi,
+			   struct smoothfs_inode_info *si);
 int  smoothfs_sysfs_pool_add(struct smoothfs_sb_info *sbi);
 void smoothfs_sysfs_pool_remove(struct smoothfs_sb_info *sbi);
 void smoothfs_spill_note_success(struct smoothfs_sb_info *sbi,
