@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.0...v0.2.1) (2026-06-05)
+
+
+### Performance Improvements
+
+* O(1) rel_path lookups via path_map rhashtable ([#134](https://github.com/RakuenSoftware/smoothfs/issues/134)) ([27f3468](https://github.com/RakuenSoftware/smoothfs/commit/27f346823b22b208633f045a70403acab6285876))
+
 ## [0.2.0](https://github.com/RakuenSoftware/smoothfs/compare/v0.1.0...v0.2.0) (2026-06-04)
 
 
