@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.1...v0.2.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* don't resurrect a removed multi-tier directory from a stale alias ([#135](https://github.com/RakuenSoftware/smoothfs/issues/135)) ([d07e41d](https://github.com/RakuenSoftware/smoothfs/commit/d07e41d149692ff1790461281beb8d892d3ca174))
+
 ## [0.2.1](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.0...v0.2.1) (2026-06-05)
 
 
