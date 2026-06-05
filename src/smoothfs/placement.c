@@ -488,10 +488,12 @@ static int smoothfs_replay_instantiate(struct super_block *sb,
 			return PTR_ERR(inode);
 
 		si = SMOOTHFS_I(inode);
+		smoothfs_path_map_del(sbi, si);
 		kfree(si->rel_path);
 		si->rel_path = kstrdup(rel_path, GFP_KERNEL);
 		if (!si->rel_path)
 			return -ENOMEM;
+		smoothfs_path_map_add(sbi, si);
 		si->current_tier = tier;
 		si->intended_tier = normalized ? tier : rec->intended_tier;
 		si->movement_state = rec->normalized_state;

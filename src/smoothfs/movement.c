@@ -433,9 +433,11 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 
 	si->lower_path = dest_path;     /* owns lookup/mnt refs from resolver */
 	if (rel_path) {
+		smoothfs_path_map_del(sbi, si);
 		kfree(si->rel_path);
 		si->rel_path = rel_path;
 		rel_path = NULL;
+		smoothfs_path_map_add(sbi, si);
 	}
 
 	{
