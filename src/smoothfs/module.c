@@ -151,4 +151,4 @@ module_exit(smoothfs_exit);
 MODULE_AUTHOR("RakuenSoftware");
 MODULE_DESCRIPTION("Stacked tiering filesystem (Phase 1)");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.2.2"); /* x-release-please-version */
+MODULE_VERSION("0.2.3"); /* x-release-please-version */

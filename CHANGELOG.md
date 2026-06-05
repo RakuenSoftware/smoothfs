@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.2...v0.2.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* detect removed dir alias by lower nlink, not d_really_is_negative ([#137](https://github.com/RakuenSoftware/smoothfs/issues/137)) ([67fcd64](https://github.com/RakuenSoftware/smoothfs/commit/67fcd64698541946edc38054cccb2321b3c6f90c))
+
 ## [0.2.2](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.1...v0.2.2) (2026-06-05)
 
 
