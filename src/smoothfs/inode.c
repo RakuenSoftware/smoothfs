@@ -1251,6 +1251,31 @@ static int smoothfs_rmdir(struct inode *dir, struct dentry *dentry)
 		 * lower dentry; si->lower_path stays until evict_inode.
 		 * See smoothfs_unlink for the full rationale. */
 		struct inode *removed = d_inode(dentry);
+		struct smoothfs_inode_info *rsi = SMOOTHFS_I(removed);
+		struct smoothfs_sb_info *sbi = SMOOTHFS_SB(dir->i_sb);
+
+		/* A directory resolved via the canonical lower (a plain lookup
+		 * hit) reaches here with si->rel_path unset — only the replay
+		 * and across-tiers fallbacks call smoothfs_track_placed. Without
+		 * rel_path, smoothfs_forget_placement below skips its spill-tier
+		 * purge, so for a directory mirrored onto more than one tier an
+		 * empty copy survives on a non-canonical tier and the next
+		 * lookup resurrects it as a zombie (nlink-2, lower-backed) that
+		 * blocks rename-into-place (e.g. Steam's runtime swap). Backfill
+		 * rel_path from the dentry (always available here) so the purge
+		 * runs. */
+		if (!rsi->rel_path) {
+			char *rel = smoothfs_rel_path_from_dentry(dentry);
+
+			if (rel) {
+				down_write(&sbi->inode_lock);
+				if (!rsi->rel_path)
+					rsi->rel_path = rel;
+				else
+					kfree(rel);
+				up_write(&sbi->inode_lock);
+			}
+		}
 
 		clear_nlink(removed);
 		smoothfs_set_lower_dentry(dentry, NULL);
