@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.6...v0.2.7) (2026-06-06)
+
+
+### Bug Fixes
+
+* run all backing ops with privileged creds and present a uniform owner ([#145](https://github.com/RakuenSoftware/smoothfs/issues/145)) ([5f9e4c1](https://github.com/RakuenSoftware/smoothfs/commit/5f9e4c1e8beb1736e0bf581218b62bf94e2a5f00))
+
 ## [0.2.6](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.5...v0.2.6) (2026-06-06)
 
 
