@@ -161,7 +161,8 @@ static ssize_t smoothfs_range_stage_write(struct kiocb *iocb,
 		mutex_unlock(&si->range_staging_lock);
 		return err;
 	}
-	stage = dentry_open(&si->range_staged_path, O_RDWR, current_cred());
+	stage = dentry_open(&si->range_staged_path, O_RDWR,
+			    SMOOTHFS_SB(inode->i_sb)->creator_cred);
 	if (IS_ERR(stage)) {
 		mutex_unlock(&si->range_staging_lock);
 		return PTR_ERR(stage);
@@ -219,7 +220,8 @@ static ssize_t smoothfs_range_stage_overlay_locked(struct inode *inode,
 	if (!smoothfs_range_overlaps(si, pos, pos + len))
 		return 0;
 
-	stage = dentry_open(&si->range_staged_path, O_RDONLY, current_cred());
+	stage = dentry_open(&si->range_staged_path, O_RDONLY,
+			    SMOOTHFS_SB(inode->i_sb)->creator_cred);
 	if (IS_ERR(stage))
 		return PTR_ERR(stage);
 

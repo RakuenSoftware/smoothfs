@@ -11,6 +11,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/cred.h>
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
 #include <linux/namei.h>
@@ -1887,6 +1888,15 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	INIT_LIST_HEAD(&sbi->inode_list);
 	atomic64_set(&sbi->oid_monotonic, 0);
 
+	/* Capture the mounter's (root) creds. All lower-fs namespace and open
+	 * operations run under these so backing ownership never blocks I/O —
+	 * see the creator_cred comment in smoothfs.h. */
+	sbi->creator_cred = get_cred(current_cred());
+
+	/* Uniform owner presented for every inode — see sbi->force_uid. */
+	sbi->force_uid = make_kuid(&init_user_ns, SMOOTHFS_FORCE_UID);
+	sbi->force_gid = make_kgid(&init_user_ns, SMOOTHFS_FORCE_GID);
+
 	err = smoothfs_oid_map_init(sbi);
 	if (err)
 		goto out_sbi;
@@ -2044,6 +2054,8 @@ out_sbi:
 	smoothfs_lower_ino_map_destroy(sbi);
 	smoothfs_oid_map_destroy(sbi);
 	smoothfs_path_map_destroy(sbi);
+	if (sbi->creator_cred)
+		put_cred(sbi->creator_cred);
 	kfree(sbi);
 	sb->s_fs_info = NULL;
 	return err;
@@ -2112,6 +2124,8 @@ static void smoothfs_put_super(struct super_block *sb)
 	smoothfs_path_map_destroy(sbi);
 	for (i = 0; i < sbi->ntiers; i++)
 		path_put(&sbi->tiers[i].lower_path);
+	if (sbi->creator_cred)
+		put_cred(sbi->creator_cred);
 	kfree(sbi);
 	sb->s_fs_info = NULL;
 }
@@ -2352,9 +2366,15 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 
 void smoothfs_copy_attrs(struct inode *dst, struct inode *src)
 {
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(dst->i_sb);
+
 	dst->i_mode  = src->i_mode;
-	dst->i_uid   = src->i_uid;
-	dst->i_gid   = src->i_gid;
+	/* Present a uniform owner regardless of the backing object's on-disk
+	 * owner (which is root for spilled backing). This keeps the appliance's
+	 * primary user passing the owner DAC check on every tier; other uids
+	 * remain bound by the mode bits. See sbi->force_uid. */
+	dst->i_uid   = sbi->force_uid;
+	dst->i_gid   = sbi->force_gid;
 	dst->i_rdev  = src->i_rdev;
 	inode_set_atime_to_ts(dst, inode_get_atime(src));
 	inode_set_mtime_to_ts(dst, inode_get_mtime(src));

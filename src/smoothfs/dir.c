@@ -159,7 +159,8 @@ static int smoothfs_resolve_rel_path_on_tier(struct smoothfs_sb_info *sbi,
 }
 
 static int smoothfs_collect_one_dir(struct smoothfs_dir_cache *cache,
-				    struct path *dir_path)
+				    struct path *dir_path,
+				    const struct cred *cred)
 {
 	struct file *dirf;
 	struct smoothfs_collect_ctx collect = {
@@ -170,7 +171,11 @@ static int smoothfs_collect_one_dir(struct smoothfs_dir_cache *cache,
 	};
 	int err;
 
-	dirf = dentry_open(dir_path, O_RDONLY | O_DIRECTORY, current_cred());
+	/* Open the lower directory under the mounter's privileged creds: tier
+	 * backing dirs are root-owned (and may be restrictive-mode, e.g. 0700),
+	 * so a caller cannot read them directly. The smoothfs-layer DAC was
+	 * already enforced by the VFS on the smoothfs dir before iterate. */
+	dirf = dentry_open(dir_path, O_RDONLY | O_DIRECTORY, cred);
 	if (IS_ERR(dirf))
 		return PTR_ERR(dirf);
 	err = iterate_dir(dirf, &collect.ctx);
@@ -204,7 +209,7 @@ static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
 	if (canonical_tier >= sbi->ntiers)
 		canonical_tier = sbi->fastest_tier;
 
-	err = smoothfs_collect_one_dir(cache, &si->lower_path);
+	err = smoothfs_collect_one_dir(cache, &si->lower_path, sbi->creator_cred);
 	if (err) {
 		kfree(rel_path);
 		smoothfs_dir_cache_free(cache);
@@ -224,7 +229,7 @@ static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
 		if (err)
 			continue;
 		if (d_is_dir(tier_path.dentry))
-			(void)smoothfs_collect_one_dir(cache, &tier_path);
+			(void)smoothfs_collect_one_dir(cache, &tier_path, sbi->creator_cred);
 		path_put(&tier_path);
 	}
 

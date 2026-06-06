@@ -50,8 +50,11 @@ static struct file *open_lower_now(struct inode *inode, fmode_t flags,
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
 	struct path lower_path;
 	const struct cred *old_cred;
+	const struct cred *priv = SMOOTHFS_SB(inode->i_sb)->creator_cred;
 	struct file *f;
 	int err;
+
+	(void)cred;
 
 	inode_lock_shared(inode);
 	lower_path = si->lower_path;
@@ -67,7 +70,7 @@ static struct file *open_lower_now(struct inode *inode, fmode_t flags,
 	 * scratch. inode_permission against the saved cred is the smallest
 	 * change that re-applies the access check that VFS would otherwise
 	 * have performed at open(2) time. */
-	old_cred = override_creds(cred);
+	old_cred = override_creds(priv);
 	err = inode_permission(&nop_mnt_idmap, d_inode(lower_path.dentry),
 			       reissue_perm_mask(flags));
 	revert_creds(old_cred);
@@ -77,7 +80,7 @@ static struct file *open_lower_now(struct inode *inode, fmode_t flags,
 	}
 
 	f = dentry_open(&lower_path,
-			flags & ~(O_CREAT | O_EXCL | O_NOCTTY), cred);
+			flags & ~(O_CREAT | O_EXCL | O_NOCTTY), priv);
 	path_put(&lower_path);
 	return f;
 }
