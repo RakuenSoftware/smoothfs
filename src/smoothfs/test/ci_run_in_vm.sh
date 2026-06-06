@@ -29,5 +29,10 @@ SMOOTHFS_LOWER_FS="${SMOOTHFS_LOWER_FS:-xfs}" \
 	bash src/smoothfs/test/run_runtime_harnesses.sh
 rc=$?
 
+if [ "${rc}" != "0" ] || [ -n "${SMOOTHFS_CI_DMESG:-}" ]; then
+	echo "== guest: dmesg (smoothfs) =="
+	dmesg 2>/dev/null | grep -iE "smoothfs|range.?stag|EACCES|denied|reissue" | tail -80 || true
+fi
+
 echo "== guest: suite exit ${rc} =="
 exit "${rc}"
