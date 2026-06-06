@@ -33,6 +33,9 @@
 #include <linux/hashtable.h>
 #include <linux/jhash.h>
 #include <linux/sched.h>
+#include <linux/workqueue.h>
+#include <linux/cpumask.h>
+#include <linux/mm.h>
 
 #include "smoothfs.h"
 
@@ -451,70 +454,204 @@ static int smoothfs_replay_load_log(struct smoothfs_sb_info *sbi,
 	}
 }
 
+/*
+ * Materialize a single replayed record: resolve its lower path, iget the
+ * inode, record placement, and pin it in cache for OID/rel_path recovery.
+ * Returns 0 on success or skip (missing/invalid path), negative on a fatal
+ * error. The expensive lower lookup + iget run lock-free; only the per-inode
+ * map/field mutation is serialized under inode_lock (distinct records map to
+ * distinct inodes except for hardlinks, which share one). Every primitive
+ * used here is already concurrency-safe in normal operation, so this is safe
+ * to run across records in parallel.
+ */
+static int smoothfs_replay_instantiate_one(struct super_block *sb,
+					   struct smoothfs_sb_info *sbi,
+					   struct smoothfs_replay_record *rec)
+{
+	struct path lower;
+	struct inode *inode;
+	struct smoothfs_inode_info *si;
+	u8 tier;
+	char *rel_path, *dup;
+	bool normalized;
+	int err;
+
+	if (!rec->chosen_rel_path && rec->fallback_rel_path) {
+		rec->chosen_rel_path = rec->fallback_rel_path;
+		rec->fallback_rel_path = NULL;
+		rec->chosen_tier = rec->fallback_tier;
+		rec->chosen_gen = rec->fallback_gen;
+	}
+	if (!rec->chosen_rel_path || rec->chosen_tier >= sbi->ntiers)
+		return 0;
+
+	tier = rec->chosen_tier;
+	rel_path = rec->chosen_rel_path;
+	normalized = rec->normalized;
+
+	err = smoothfs_resolve_rel_path(&sbi->tiers[tier], rel_path, &lower);
+	if (err)
+		return 0;
+	inode = smoothfs_iget(sb, &lower, false, false);
+	path_put(&lower);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+
+	si = SMOOTHFS_I(inode);
+	dup = kstrdup(rel_path, GFP_KERNEL);
+	if (!dup) {
+		iput(inode);
+		return -ENOMEM;
+	}
+
+	down_write(&sbi->inode_lock);
+	smoothfs_path_map_del(sbi, si);
+	kfree(si->rel_path);
+	si->rel_path = dup;
+	smoothfs_path_map_add(sbi, si);
+	si->current_tier = tier;
+	si->intended_tier = normalized ? tier : rec->intended_tier;
+	si->movement_state = rec->normalized_state;
+	si->pin_state = rec->pin_state;
+	si->gen = rec->chosen_gen;
+	if (normalized)
+		si->transaction_seq = 0;
+	/* Keep the replayed inode pinned in-cache so OID- and rel_path-based
+	 * recovery survives until a real dentry alias is created by lookup/open
+	 * after remount. The matching iput happens lazily in smoothfs_lookup
+	 * (when a dentry alias takes over) or, for any remaining pins at unmount
+	 * time, in smoothfs_kill_sb so generic_shutdown_super doesn't see
+	 * "Busy inodes". */
+	atomic_set(&si->replay_pinned, 1);
+	up_write(&sbi->inode_lock);
+
+	if (normalized)
+		smoothfs_placement_record(sbi, rec->oid, SMOOTHFS_MS_PLACED,
+					  tier, tier, /*sync=*/true);
+	return 0;
+}
+
+/* One parallel slice of the replay record array. */
+struct smoothfs_replay_chunk {
+	struct work_struct work;
+	struct super_block *sb;
+	struct smoothfs_sb_info *sbi;
+	struct smoothfs_replay_record **recs;
+	unsigned int n;
+	int err;
+};
+
+static void smoothfs_replay_chunk_fn(struct work_struct *w)
+{
+	struct smoothfs_replay_chunk *c =
+		container_of(w, struct smoothfs_replay_chunk, work);
+	unsigned int i;
+
+	for (i = 0; i < c->n; i++) {
+		int e = smoothfs_replay_instantiate_one(c->sb, c->sbi, c->recs[i]);
+
+		if (e) {
+			c->err = e;
+			return;
+		}
+	}
+}
+
+static int smoothfs_replay_instantiate_serial(struct super_block *sb,
+					      struct smoothfs_sb_info *sbi,
+					      struct smoothfs_replay_record **arr,
+					      unsigned int n)
+{
+	unsigned int i;
+	int err;
+
+	for (i = 0; i < n; i++) {
+		err = smoothfs_replay_instantiate_one(sb, sbi, arr[i]);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+
+/*
+ * Instantiate every replayed record. The per-record cost is a cold lower
+ * path-walk + iget (xattr reads) — pure I/O latency at queue-depth-1 if done
+ * serially, which dominated mount time (~83s for ~141K records). Fan the work
+ * out across a bounded pool of workers so the lower-fs reads overlap; the
+ * device's queue depth, not a single walk's latency, becomes the limit.
+ */
 static int smoothfs_replay_instantiate(struct super_block *sb,
 				       struct smoothfs_sb_info *sbi,
 				       struct list_head *records)
 {
-	struct smoothfs_replay_record *rec;
-	int err;
+	struct smoothfs_replay_record *rec, **arr;
+	struct smoothfs_replay_chunk *chunks;
+	struct workqueue_struct *wq;
+	unsigned int n = 0, i, nw, per, idx;
+	int err = 0;
 
-	list_for_each_entry(rec, records, link) {
-		struct path lower;
-		struct inode *inode;
-		struct smoothfs_inode_info *si;
-		u8 tier;
-		char *rel_path;
-		bool normalized;
+	list_for_each_entry(rec, records, link)
+		n++;
+	if (n == 0)
+		return 0;
 
-		if (!rec->chosen_rel_path && rec->fallback_rel_path) {
-			rec->chosen_rel_path = rec->fallback_rel_path;
-			rec->fallback_rel_path = NULL;
-			rec->chosen_tier = rec->fallback_tier;
-			rec->chosen_gen = rec->fallback_gen;
+	arr = kvmalloc_array(n, sizeof(*arr), GFP_KERNEL);
+	if (!arr) {
+		/* Out of memory for the index — fall back to the in-place
+		 * serial walk so mount still succeeds, just slowly. */
+		list_for_each_entry(rec, records, link) {
+			err = smoothfs_replay_instantiate_one(sb, sbi, rec);
+			if (err)
+				return err;
 		}
-		if (!rec->chosen_rel_path || rec->chosen_tier >= sbi->ntiers)
-			continue;
-
-		tier = rec->chosen_tier;
-		rel_path = rec->chosen_rel_path;
-		normalized = rec->normalized;
-
-		err = smoothfs_resolve_rel_path(&sbi->tiers[tier], rel_path, &lower);
-		if (err)
-			continue;
-		inode = smoothfs_iget(sb, &lower, false, false);
-		path_put(&lower);
-		if (IS_ERR(inode))
-			return PTR_ERR(inode);
-
-		si = SMOOTHFS_I(inode);
-		smoothfs_path_map_del(sbi, si);
-		kfree(si->rel_path);
-		si->rel_path = kstrdup(rel_path, GFP_KERNEL);
-		if (!si->rel_path)
-			return -ENOMEM;
-		smoothfs_path_map_add(sbi, si);
-		si->current_tier = tier;
-		si->intended_tier = normalized ? tier : rec->intended_tier;
-		si->movement_state = rec->normalized_state;
-		si->pin_state = rec->pin_state;
-		si->gen = rec->chosen_gen;
-		if (normalized)
-			si->transaction_seq = 0;
-
-		if (normalized)
-			smoothfs_placement_record(sbi, rec->oid, SMOOTHFS_MS_PLACED,
-						  tier, tier, /*sync=*/true);
-		/* Keep the replayed inode pinned in-cache so OID- and
-		 * rel_path-based recovery survives until a real dentry alias
-		 * is created by lookup/open after remount. The matching iput
-		 * happens lazily in smoothfs_lookup (when a dentry alias takes
-		 * over) or, for any remaining pins at unmount time, in
-		 * smoothfs_kill_sb so generic_shutdown_super doesn't see
-		 * "Busy inodes". */
-		atomic_set(&si->replay_pinned, 1);
+		return 0;
 	}
-	return 0;
+	i = 0;
+	list_for_each_entry(rec, records, link)
+		arr[i++] = rec;
+
+	nw = min3(n, (unsigned int)num_online_cpus() * 2u, 16u);
+	if (nw < 1)
+		nw = 1;
+	chunks = kcalloc(nw, sizeof(*chunks), GFP_KERNEL);
+	if (!chunks) {
+		err = smoothfs_replay_instantiate_serial(sb, sbi, arr, n);
+		goto out_arr;
+	}
+	wq = alloc_workqueue("smoothfs_replay", WQ_UNBOUND | WQ_MEM_RECLAIM, nw);
+	if (!wq) {
+		err = smoothfs_replay_instantiate_serial(sb, sbi, arr, n);
+		kfree(chunks);
+		goto out_arr;
+	}
+
+	per = (n + nw - 1) / nw;
+	idx = 0;
+	for (i = 0; i < nw && idx < n; i++) {
+		chunks[i].sb = sb;
+		chunks[i].sbi = sbi;
+		chunks[i].recs = &arr[idx];
+		chunks[i].n = min(per, n - idx);
+		chunks[i].err = 0;
+		INIT_WORK(&chunks[i].work, smoothfs_replay_chunk_fn);
+		queue_work(wq, &chunks[i].work);
+		idx += chunks[i].n;
+	}
+	nw = i;  /* actual number of chunks queued */
+
+	flush_workqueue(wq);
+	destroy_workqueue(wq);
+
+	for (i = 0; i < nw; i++) {
+		if (chunks[i].err) {
+			err = chunks[i].err;
+			break;
+		}
+	}
+	kfree(chunks);
+out_arr:
+	kvfree(arr);
+	return err;
 }
 
 static int smoothfs_placement_ensure_dir(struct smoothfs_sb_info *sbi)
