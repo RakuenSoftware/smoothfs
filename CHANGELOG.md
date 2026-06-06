@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.5...v0.2.6) (2026-06-06)
+
+
+### Bug Fixes
+
+* own materialized spill-tier dirs to match the canonical tier ([#143](https://github.com/RakuenSoftware/smoothfs/issues/143)) ([c0c1bf9](https://github.com/RakuenSoftware/smoothfs/commit/c0c1bf9b1f40682f06f5ccd0932d7e90ca97e52b))
+
 ## [0.2.5](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.4...v0.2.5) (2026-06-06)
 
 
