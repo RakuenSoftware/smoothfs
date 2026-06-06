@@ -207,7 +207,6 @@ jobs:
           # propagates its exit code (via the virtme.ret port) as vng's exit
           # code — so `set -e` + pipefail make this step fail iff the suite
           # fails. Env is inlined into the one-line command.
-          vng --help 2>&1 | sed -n '1,8p' || true
           sudo vng --run "/boot/vmlinuz-${GUEST_KVER}" \
             --cpus 4 --memory 4G --rwdir "$PWD" --user root \
             -- env "SMOOTHFS_RUNTIME_SUITE=$SUITE" "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
