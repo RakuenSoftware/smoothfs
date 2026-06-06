@@ -48,6 +48,14 @@ done
 log "installing debs"
 sudo dpkg -i ./*.deb >&2 2>&1 || sudo apt-get -f install -y >&2
 
+# The kernel postinst that normally runs depmod does not fire inside the
+# container, leaving no modules.dep — so the initramfs cannot modprobe
+# virtio_console/9p/xfs and virtme-init panics ("cannot find script I/O
+# ports"). Run depmod explicitly against the installed module tree.
+kdir_ver="$(ls -1 /lib/modules | sort -V | tail -1)"
+log "depmod $kdir_ver"
+sudo depmod "$kdir_ver" >&2
+
 # The installed kernel version = the modules directory just created.
 kver="$(basename "$img" | sed -E 's/^linux-image-unsigned-([0-9][^_]*)-generic_.*/\1-generic/')"
 if [ ! -d "/lib/modules/$kver" ]; then
