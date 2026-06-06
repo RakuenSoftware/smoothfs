@@ -1306,6 +1306,8 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 	struct dentry *actual_new_parent = lower_new_parent;
 	struct dentry *trap;
 	struct renamedata rd = {};
+	char *spill_old_rel = NULL;
+	bool spill_is_dir = lower_old && d_is_dir(lower_old);
 	int err;
 
 	/*
@@ -1388,6 +1390,12 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 		return -EEXIST;
 	}
 
+	/* Capture the source path before vfs_rename d_moves old_dentry, so the
+	 * spill-tier copies of a renamed directory can be moved to match (see
+	 * smoothfs_rename_spill_tiers below). */
+	if (spill_is_dir)
+		spill_old_rel = smoothfs_rel_path_from_dentry(old_dentry);
+
 	memset(&rd, 0, sizeof(rd));
 	rd.mnt_idmap = idmap;
 	rd.old_parent = dget(actual_old_parent);
@@ -1402,6 +1410,7 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 	dput(rd.new_dentry);
 	dput(rd.old_parent);
 	if (err) {
+		kfree(spill_old_rel);
 		dput(lower_new);
 		return err;
 	}
@@ -1457,6 +1466,22 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 			kfree(new_rel);
 		}
 	}
+
+	/* smoothfs_rename above renamed only the canonical-tier lower. A
+	 * directory smoothfs replicated onto spill tiers still has its copy
+	 * under the OLD name there, so the renamed directory is missing its
+	 * spill-tier contents until this moves them. (Files live on a single
+	 * tier, so only directories need this.) */
+	if (spill_is_dir && spill_old_rel) {
+		char *new_rel = smoothfs_rel_path_from_dentry(new_dentry);
+
+		if (new_rel) {
+			smoothfs_rename_spill_tiers(SMOOTHFS_SB(old_dir->i_sb),
+						   spill_old_rel, new_rel);
+			kfree(new_rel);
+		}
+	}
+	kfree(spill_old_rel);
 	return 0;
 }
 
