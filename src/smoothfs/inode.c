@@ -150,8 +150,6 @@ static u8 smoothfs_select_high_water_tier(struct smoothfs_sb_info *sbi)
 static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 {
 	u8 tier;
-	u8 best_tier;
-	int best_load;
 
 	if (sbi->ntiers <= 1)
 		return sbi->fastest_tier;
@@ -159,32 +157,37 @@ static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 	if (READ_ONCE(sbi->create_policy) == SMOOTHFS_CREATE_POLICY_HIGH_WATER)
 		return smoothfs_select_high_water_tier(sbi);
 
-	if (READ_ONCE(sbi->write_staging_enabled) &&
-	    !smoothfs_tier_near_enospc(sbi, sbi->fastest_tier))
-		return sbi->fastest_tier;
-
-	best_tier = sbi->fastest_tier;
-	best_load = atomic_read(&sbi->tiers[best_tier].active_writes) +
-		    atomic_read(&sbi->tiers[best_tier].pending_writes);
-	if (best_load == 0)
-		return best_tier;
-
+	/*
+	 * SMOOTHFS_CREATE_POLICY_FASTEST: place new files on the fastest
+	 * tier that still has space, falling through to slower tiers only
+	 * when a faster one is at its ENOSPC watermark. Tiers are indexed in
+	 * rank order (0 == fastest), so a fastest->slowest scan returns the
+	 * first tier with room. The slowest tier is always eligible as a
+	 * last resort — there is nowhere slower to fall to.
+	 *
+	 * This deliberately ignores per-tier write load. An earlier variant
+	 * routed each new file to the least-loaded tier, which on a busy
+	 * pool meant a fresh file frequently landed on an idle *slow* tier
+	 * while its directory and siblings lived on the fast tier. Apps that
+	 * write atomically via tmp+rename within one directory (Steam
+	 * appmanifests, SQLite, dpkg, git, editors) then renamed across
+	 * tiers, and a cross-tier rename(2) returns EXDEV — so the write
+	 * failed. "Fastest tier with space" keeps a freshly created tmp
+	 * co-located with its rename target on the same tier.
+	 *
+	 * write_staging is now orthogonal to placement: it controls the
+	 * staging/drain machinery, not which tier a create lands on (the
+	 * fastest-with-space scan already subsumes the old write_staging
+	 * fast path of "fastest tier unless near ENOSPC").
+	 */
 	for (tier = 0; tier < sbi->ntiers; tier++) {
-		int load;
-
-		if (tier == best_tier)
-			continue;
-		load = atomic_read(&sbi->tiers[tier].active_writes) +
-		       atomic_read(&sbi->tiers[tier].pending_writes);
-		if (load == 0)
+		if (tier == sbi->ntiers - 1)
 			return tier;
-		if (load < best_load) {
-			best_load = load;
-			best_tier = tier;
-		}
+		if (!smoothfs_tier_near_enospc(sbi, tier))
+			return tier;
 	}
 
-	return best_tier;
+	return sbi->fastest_tier;
 }
 
 static int smoothfs_ensure_oid_persisted(struct smoothfs_inode_info *si)
