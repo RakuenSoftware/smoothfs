@@ -42,6 +42,12 @@
 #define SMOOTHFS_GEN_XATTR      "trusted.smoothfs.gen"
 #define SMOOTHFS_FILEID_XATTR   "trusted.smoothfs.fileid"
 #define SMOOTHFS_LEASE_XATTR    "trusted.smoothfs.lease"
+/* Uniform owner presented for every inode. SmoothNAS runs its workloads
+ * (containers, exports) as the primary user uid/gid 1000; presenting that
+ * owner everywhere keeps DAC working without it being defeated by a file's
+ * backing spilling onto a root-owned tier. See sbi->force_uid/force_gid. */
+#define SMOOTHFS_FORCE_UID      1000
+#define SMOOTHFS_FORCE_GID      1000
 #define SMOOTHFS_OID_LEN        16  /* UUIDv7, 128 bits */
 #define SMOOTHFS_GEN_LEN        4   /* monotonic uint32 */
 #define SMOOTHFS_PLACEMENT_REC_SIZE 64
@@ -125,6 +131,24 @@ struct smoothfs_sb_info {
 	u8                  fastest_tier;    /* rank 0 always; recorded for clarity */
 	u8                  create_policy;
 	struct smoothfs_tier tiers[SMOOTHFS_MAX_TIERS];
+
+	/* Privileged creds captured from the mounter (root) at fill_super.
+	 * smoothfs spreads a file's backing across tiers whose roots are
+	 * root-owned; materializing a spill dir-chain or opening a spilled
+	 * (root-owned) backing object as the *calling* user fails EACCES.
+	 * All lower-fs namespace and open operations run under these creds
+	 * so backing ownership never blocks I/O — ownership is presentation,
+	 * not enforcement, on this single-trust-domain appliance. */
+	const struct cred  *creator_cred;
+
+	/* Uniform owner presented for every inode (see smoothfs_copy_attrs /
+	 * smoothfs_getattr). A file's backing can land on any tier, and spilled
+	 * backing is root-owned on disk (created under creator_cred); presenting
+	 * one stable owner means the appliance's primary user always passes the
+	 * owner DAC check no matter where the backing lives, while other uids
+	 * stay subject to the mode bits. Defaults to SMOOTHFS_FORCE_UID/GID. */
+	kuid_t              force_uid;
+	kgid_t              force_gid;
 
 	/* Placement log on the fastest tier (per §0.2 metadata-on-SSD). */
 	struct file        *placement_log;

@@ -346,7 +346,14 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 	new_path.dentry = lower;
 	mntget(new_path.mnt);
 
-	err = notify_change(idmap, lower, attr, NULL);
+	{
+		/* Apply attrs to the freshly staged backing object under
+		 * privileged creds — it may be root-owned. See smoothfs_mknod. */
+		const struct cred *old = override_creds(sbi->creator_cred);
+
+		err = notify_change(idmap, lower, attr, NULL);
+		revert_creds(old);
+	}
 	if (err)
 		goto out_new_path;
 
@@ -500,9 +507,17 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 		}
 		if (d_really_is_negative(child)) {
 			struct dentry *new_child;
+			const struct cred *old_cred;
 
+			/* The spill-tier root is root-owned; the calling user
+			 * cannot mkdir under it. Run the namespace op under the
+			 * mounter's privileged creds so the spill dir-chain is
+			 * always created (its ownership is irrelevant — DAC is
+			 * not enforced at this layer). */
+			old_cred = override_creds(sbi->creator_cred);
 			new_child = smoothfs_compat_mkdir(idmap, d_inode(cur.dentry),
 							  child, 0755);
+			revert_creds(old_cred);
 			if (IS_ERR(new_child)) {
 				err = PTR_ERR(new_child);
 				/*
@@ -535,38 +550,12 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 		if (created) {
 			struct inode *inode;
 
-			/* The spill-tier dir was just created via vfs_mkdir in
-			 * this (kernel/root) context, so it is root-owned with
-			 * mode 0755. A non-root file create later placed on this
-			 * tier would then be denied (EACCES) — the cause of e.g.
-			 * Steam's runtime extraction failing to write any files
-			 * and re-extracting forever. Copy the canonical
-			 * (fastest-tier) dir's owner and mode so the spill copy
-			 * matches and writes succeed on any tier. Best-effort. */
-			if (tier != sbi->fastest_tier) {
-				struct path canon;
-
-				if (!smoothfs_resolve_rel_path_on_tier(sbi,
-						sbi->fastest_tier, built, &canon)) {
-					if (d_really_is_positive(canon.dentry)) {
-						struct inode *ci = d_inode(canon.dentry);
-						struct iattr ia = {
-							.ia_valid = ATTR_UID | ATTR_GID |
-								    ATTR_MODE,
-							.ia_uid   = ci->i_uid,
-							.ia_gid   = ci->i_gid,
-							.ia_mode  = ci->i_mode & 07777,
-						};
-
-						inode_lock(d_inode(child));
-						(void)notify_change(&nop_mnt_idmap,
-								    child, &ia, NULL);
-						inode_unlock(d_inode(child));
-					}
-					path_put(&canon);
-				}
-			}
-
+			/* The spill-tier dir is root-owned (created above under
+			 * privileged creds). That is fine: DAC is not enforced
+			 * at the smoothfs layer (see smoothfs_permission) and all
+			 * lower-fs ops on it run privileged, so file creates and
+			 * opens placed on this tier never get blocked by the
+			 * backing ownership. No ownership fix-up is needed. */
 			inode = smoothfs_iget(sb, &child_path, false, true);
 			if (IS_ERR(inode)) {
 				path_put(&child_path);
@@ -603,8 +592,32 @@ out_err:
 /* Lookup                                                            */
 /* ----------------------------------------------------------------- */
 
+/*
+ * All backing operations — including lookups and the path traversal they do
+ * across tier dirs — run under the mounter's privileged creds. The backing
+ * objects are root-owned (created privileged), so a non-root caller (or any
+ * caller, against a restrictive-mode root-owned dir like pressure-vessel's
+ * 0700 var/) cannot even traverse them. The smoothfs-layer DAC was already
+ * enforced by the VFS against the (uniformly-owned) smoothfs inode before we
+ * get here; this only elevates the lower-fs access. See smoothfs_mknod.
+ */
+static struct dentry *smoothfs_lookup_inner(struct inode *dir,
+					    struct dentry *dentry,
+					    unsigned int flags);
+
 static struct dentry *smoothfs_lookup(struct inode *dir, struct dentry *dentry,
 				      unsigned int flags)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	struct dentry *ret = smoothfs_lookup_inner(dir, dentry, flags);
+
+	revert_creds(old);
+	return ret;
+}
+
+static struct dentry *smoothfs_lookup_inner(struct inode *dir,
+					    struct dentry *dentry,
+					    unsigned int flags)
 {
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(dir->i_sb);
 	struct smoothfs_inode_info *parent = SMOOTHFS_I(dir);
@@ -787,11 +800,31 @@ static int smoothfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 	/* Preserve smoothfs's synthesised inode identity (§0.1). */
 	stat->ino = inode->i_ino;
 	stat->dev = inode->i_sb->s_dev;
+	/* Present the uniform owner, matching what smoothfs_copy_attrs stored
+	 * on the inode (the on-disk backing owner is root for spilled data). */
+	stat->uid = SMOOTHFS_SB(inode->i_sb)->force_uid;
+	stat->gid = SMOOTHFS_SB(inode->i_sb)->force_gid;
 	return 0;
 }
 
+/* Privileged wrapper — covers the staging materialize/lookup + notify_change.
+ * setattr_prepare (DAC) already ran against the smoothfs inode. See smoothfs_lookup. */
+static int smoothfs_setattr_inner(struct mnt_idmap *idmap, struct dentry *dentry,
+				  struct iattr *attr);
+
 static int smoothfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 			    struct iattr *attr)
+{
+	const struct cred *old =
+		override_creds(SMOOTHFS_SB(dentry->d_sb)->creator_cred);
+	int err = smoothfs_setattr_inner(idmap, dentry, attr);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_setattr_inner(struct mnt_idmap *idmap, struct dentry *dentry,
+				  struct iattr *attr)
 {
 	struct dentry *lower = smoothfs_lower_dentry(dentry);
 	struct inode *inode = d_inode(dentry);
@@ -819,7 +852,18 @@ static int smoothfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 	}
 
 	inode_lock(d_inode(lower));
-	err = notify_change(idmap, lower, attr, NULL);
+	{
+		/* setattr_prepare above already enforced DAC against the
+		 * presented (uniform) owner. The backing object may be
+		 * root-owned on a spill tier, so apply the change to the lower
+		 * under privileged creds — otherwise chmod/utimes/chown on
+		 * spilled data fails EPERM (e.g. tar setting mode/mtime on
+		 * extracted files). See smoothfs_mknod. */
+		const struct cred *old =
+			override_creds(SMOOTHFS_SB(inode->i_sb)->creator_cred);
+		err = notify_change(idmap, lower, attr, NULL);
+		revert_creds(old);
+	}
 	inode_unlock(d_inode(lower));
 	if (err) {
 		smoothfs_end_data_change(inode, srcu_idx);
@@ -837,8 +881,22 @@ static int smoothfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 /* Create / mknod / symlink / link / mkdir / rmdir / unlink / rename */
 /* ----------------------------------------------------------------- */
 
+/* Privileged wrapper — covers the backing lookup + create. See smoothfs_lookup. */
+static int smoothfs_create_inner(struct mnt_idmap *idmap, struct inode *dir,
+				 struct dentry *dentry, umode_t mode, bool excl);
+
 static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 			   struct dentry *dentry, umode_t mode, bool excl)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	int err = smoothfs_create_inner(idmap, dir, dentry, mode, excl);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_create_inner(struct mnt_idmap *idmap, struct inode *dir,
+				 struct dentry *dentry, umode_t mode, bool excl)
 {
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(dir->i_sb);
 	struct path parent_path;
@@ -902,8 +960,17 @@ static int smoothfs_create(struct mnt_idmap *idmap, struct inode *dir,
 			path_put(&parent_path);
 			goto out;
 		}
-		err = smoothfs_compat_create(idmap, d_inode(parent_path.dentry),
-					     lower, mode, excl);
+		{
+			/* Parent may be a root-owned spill dir; create the
+			 * backing file under privileged creds (DAC is not
+			 * enforced at this layer — see smoothfs_permission). */
+			const struct cred *old_cred =
+				override_creds(sbi->creator_cred);
+			err = smoothfs_compat_create(idmap,
+						     d_inode(parent_path.dentry),
+						     lower, mode, excl);
+			revert_creds(old_cred);
+		}
 		inode_unlock(d_inode(parent_path.dentry));
 		if (err) {
 			dput(lower);
@@ -955,8 +1022,31 @@ out:
 	return err;
 }
 
+/*
+ * Backing namespace mutations (create/remove/rename) must run under the
+ * mounter's privileged creds. A target may live on a spill tier whose backing
+ * dir is root-owned (materialized under creator_cred), so the calling user
+ * cannot create within, unlink from, rmdir, or rename it otherwise — this is
+ * what left steam.sh's "rm -rf steam-runtime; mv tmp final" failing forever.
+ * Ownership is still presented uniformly (smoothfs_copy_attrs) and DAC is
+ * enforced against that presented owner; only the lower-fs op is elevated.
+ * Each op below is a thin privileged wrapper around an _inner implementation.
+ */
+static int smoothfs_mknod_inner(struct mnt_idmap *idmap, struct inode *dir,
+				struct dentry *dentry, umode_t mode, dev_t rdev);
+
 static int smoothfs_mknod(struct mnt_idmap *idmap, struct inode *dir,
 			  struct dentry *dentry, umode_t mode, dev_t rdev)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	int err = smoothfs_mknod_inner(idmap, dir, dentry, mode, rdev);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_mknod_inner(struct mnt_idmap *idmap, struct inode *dir,
+				struct dentry *dentry, umode_t mode, dev_t rdev)
 {
 	struct dentry *lower_parent = smoothfs_lower_dentry(dentry->d_parent);
 	struct dentry *lower;
@@ -991,8 +1081,22 @@ static int smoothfs_mknod(struct mnt_idmap *idmap, struct inode *dir,
 	return 0;
 }
 
+/* Privileged wrapper — see smoothfs_mknod. */
+static int smoothfs_symlink_inner(struct mnt_idmap *idmap, struct inode *dir,
+				  struct dentry *dentry, const char *symname);
+
 static int smoothfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 			    struct dentry *dentry, const char *symname)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	int err = smoothfs_symlink_inner(idmap, dir, dentry, symname);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_symlink_inner(struct mnt_idmap *idmap, struct inode *dir,
+				  struct dentry *dentry, const char *symname)
 {
 	struct dentry *lower_parent = smoothfs_lower_dentry(dentry->d_parent);
 	struct dentry *lower;
@@ -1030,8 +1134,22 @@ static int smoothfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 /* link(2): always within one tier. Cross-tier link returns EXDEV per
  * POSIX semantics §0.4. Phase 1 keeps the source tier; the
  * scheduler-observed nlink>1 will pin the link-set per Phase 2. */
+/* Privileged wrapper — see smoothfs_mknod. */
+static int smoothfs_link_inner(struct dentry *old_dentry, struct inode *dir,
+			       struct dentry *dentry);
+
 static int smoothfs_link(struct dentry *old_dentry, struct inode *dir,
 			 struct dentry *dentry)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	int err = smoothfs_link_inner(old_dentry, dir, dentry);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_link_inner(struct dentry *old_dentry, struct inode *dir,
+			       struct dentry *dentry)
 {
 	struct dentry *lower_old = smoothfs_lower_dentry(old_dentry);
 	struct dentry *lower_parent = smoothfs_lower_dentry(dentry->d_parent);
@@ -1073,7 +1191,19 @@ static int smoothfs_link(struct dentry *old_dentry, struct inode *dir,
 	return 0;
 }
 
+/* Privileged wrapper — see smoothfs_mknod. */
+static int smoothfs_unlink_inner(struct inode *dir, struct dentry *dentry);
+
 static int smoothfs_unlink(struct inode *dir, struct dentry *dentry)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	int err = smoothfs_unlink_inner(dir, dentry);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_unlink_inner(struct inode *dir, struct dentry *dentry)
 {
 	struct dentry *lower = smoothfs_lower_dentry(dentry);
 	struct dentry *removing;
@@ -1144,8 +1274,24 @@ static int smoothfs_unlink(struct inode *dir, struct dentry *dentry)
 	return err;
 }
 
+/* Privileged wrapper — covers the backing lookup + mkdir. See smoothfs_lookup. */
+static struct dentry *smoothfs_mkdir_inner(struct mnt_idmap *idmap,
+					   struct inode *dir,
+					   struct dentry *dentry, umode_t mode);
+
 static struct dentry *smoothfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 				     struct dentry *dentry, umode_t mode)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	struct dentry *ret = smoothfs_mkdir_inner(idmap, dir, dentry, mode);
+
+	revert_creds(old);
+	return ret;
+}
+
+static struct dentry *smoothfs_mkdir_inner(struct mnt_idmap *idmap,
+					   struct inode *dir,
+					   struct dentry *dentry, umode_t mode)
 {
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(dir->i_sb);
 	struct path parent_path;
@@ -1200,9 +1346,12 @@ static struct dentry *smoothfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 			goto out_err;
 		}
 		{
+			const struct cred *old_cred =
+				override_creds(sbi->creator_cred);
 			struct dentry *new_lower = smoothfs_compat_mkdir(idmap,
 							d_inode(parent_path.dentry),
 							lower, mode);
+			revert_creds(old_cred);
 			if (IS_ERR(new_lower)) {
 				err = PTR_ERR(new_lower);
 				/*
@@ -1260,7 +1409,19 @@ out_err:
 	return ERR_PTR(err);
 }
 
+/* Privileged wrapper — see smoothfs_mknod. */
+static int smoothfs_rmdir_inner(struct inode *dir, struct dentry *dentry);
+
 static int smoothfs_rmdir(struct inode *dir, struct dentry *dentry)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(dir->i_sb)->creator_cred);
+	int err = smoothfs_rmdir_inner(dir, dentry);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_rmdir_inner(struct inode *dir, struct dentry *dentry)
 {
 	struct dentry *lower = smoothfs_lower_dentry(dentry);
 	struct dentry *removing;
@@ -1325,10 +1486,29 @@ static int smoothfs_rmdir(struct inode *dir, struct dentry *dentry)
 	return err;
 }
 
+/* Privileged wrapper — see smoothfs_mknod. */
+static int smoothfs_rename_inner(struct mnt_idmap *idmap,
+				 struct inode *old_dir, struct dentry *old_dentry,
+				 struct inode *new_dir, struct dentry *new_dentry,
+				 unsigned int flags);
+
 static int smoothfs_rename(struct mnt_idmap *idmap,
 			   struct inode *old_dir, struct dentry *old_dentry,
 			   struct inode *new_dir, struct dentry *new_dentry,
 			   unsigned int flags)
+{
+	const struct cred *old = override_creds(SMOOTHFS_SB(old_dir->i_sb)->creator_cred);
+	int err = smoothfs_rename_inner(idmap, old_dir, old_dentry,
+					new_dir, new_dentry, flags);
+
+	revert_creds(old);
+	return err;
+}
+
+static int smoothfs_rename_inner(struct mnt_idmap *idmap,
+				 struct inode *old_dir, struct dentry *old_dentry,
+				 struct inode *new_dir, struct dentry *new_dentry,
+				 unsigned int flags)
 {
 	struct dentry *lower_old_parent = smoothfs_lower_dentry(old_dentry->d_parent);
 	struct dentry *lower_new_parent = smoothfs_lower_dentry(new_dentry->d_parent);
@@ -1519,12 +1699,13 @@ static int smoothfs_rename(struct mnt_idmap *idmap,
 
 /*
  * .permission is deliberately NOT installed. The VFS falls back to
- * generic_permission(inode, mask) on the smoothfs inode, using the
- * mode/uid/gid we mirror from the lower at create time and refresh
- * in smoothfs_setattr. For the Phase 3 compat set (xfs, ext4, btrfs,
- * zfs) that's semantically identical to routing through the lower's
- * inode_permission — and it saves a full access-check stack + LSM
- * hook on every path-walk step.
+ * generic_permission(inode, mask) on the smoothfs inode. Ownership is
+ * presented uniformly as the appliance's primary user (see
+ * smoothfs_force_owner / SMOOTHFS_FORCE_UID) so that user always passes
+ * the owner check regardless of which tier a file's backing landed on —
+ * spilled backing objects are created under privileged creds and are
+ * thus root-owned on disk, but that is invisible here. Other uids remain
+ * subject to the mode bits, so DAC is still enforced.
  */
 
 /* ----------------------------------------------------------------- */
