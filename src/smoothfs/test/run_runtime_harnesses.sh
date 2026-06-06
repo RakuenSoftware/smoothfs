@@ -30,6 +30,7 @@ core_tests=(
 	tier_spill_unlink_finds_right_tier.sh
 	tier_spill_rmdir_placement.sh
 	tier_spill_rename_xdev.sh
+	tier_spill_rename_same_dir.sh
 	tier_spill_crash_replay.sh
 	metadata_tier_activity_gate.sh
 	write_staging_truncate.sh
@@ -63,6 +64,8 @@ manifest_exclusions=(
 	tier_spill_lib.sh
 	lower_fs_lib.sh
 	runner-setup.sh
+	ci_fetch_guest_kernel.sh
+	ci_run_in_vm.sh
 )
 
 tests_for_suite() {

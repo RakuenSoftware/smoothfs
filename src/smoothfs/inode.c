@@ -1489,6 +1489,41 @@ static int smoothfs_rmdir_inner(struct inode *dir, struct dentry *dentry)
 	return err;
 }
 
+/*
+ * A same-directory rename whose source and existing target landed on
+ * different tiers is completed by renaming the source within its own tier
+ * to the target's name (no data copy — the source already holds the new
+ * content on its tier). This leaves a stale lower copy of the target on
+ * its original tier, which must go: a copy on the canonical tier would
+ * shadow the renamed file (dual-resolution), and a spill copy would leak.
+ * Mirrors smoothfs_unlink's lower removal, then forgets the displaced
+ * target inode's placement so the rel_path fallback — now reached because
+ * the canonical name went negative — resolves to the renamed source rather
+ * than this stale inode. The inode's lower_ino_map entry and lower_path are
+ * released when it evicts; we must not touch si->lower_path here.
+ */
+static void smoothfs_drop_stale_rename_target(struct super_block *sb,
+					      struct dentry *stale_lower,
+					      struct inode *stale_inode)
+{
+	struct dentry *removing;
+	struct inode *lower_dir = NULL;
+
+	removing = smoothfs_compat_start_removing(stale_lower->d_parent,
+						  stale_lower, &lower_dir);
+	if (!IS_ERR(removing)) {
+		struct inode *lower_inode = d_inode(removing);
+
+		if (!(lower_inode && lower_inode->i_nlink == 0))
+			(void)vfs_unlink(&nop_mnt_idmap, lower_dir, removing,
+					 NULL);
+		smoothfs_compat_end_removing(removing, lower_dir);
+	}
+
+	if (stale_inode)
+		smoothfs_forget_placement(sb, stale_inode, false);
+}
+
 /* Privileged wrapper — see smoothfs_mknod. */
 static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 				 struct inode *old_dir, struct dentry *old_dentry,
@@ -1523,24 +1558,42 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	struct renamedata rd = {};
 	char *spill_old_rel = NULL;
 	bool spill_is_dir = lower_old && d_is_dir(lower_old);
+	struct dentry *stale_lower = NULL;
+	struct inode *stale_inode = NULL;
 	int err;
 
 	/*
-	 * A file or directory can live on a non-canonical tier while its
-	 * visible parent dentry still maps to the canonical tier. Samba's
-	 * mkdir path creates a temporary directory and then renames it to
-	 * the final name in the same visible parent; after tier spill the
-	 * temp dentry's real lower parent is lower_old->d_parent, not the
-	 * visible parent's canonical lower. Keep that same-directory rename
-	 * on the source tier. Cross-directory cross-tier rename remains EXDEV
-	 * so callers can fall back to copy+delete.
+	 * Same-directory rename: complete it on the source's own tier no
+	 * matter which tiers the source and the (possibly pre-existing)
+	 * target landed on. A file or directory can live on a non-canonical
+	 * tier while its visible parent still maps to the canonical tier —
+	 * Samba's mkdir-then-rename of a temp name, or an atomic tmp+rename
+	 * whose tmp spilled off a full fast tier onto a slower tier than the
+	 * file it replaces. Renaming within the source's tier needs no data
+	 * copy (the source already holds the new content there) and keeps the
+	 * result co-located with its name, so apps that write atomically via
+	 * tmp+rename (Steam appmanifests, SQLite, dpkg, git, editors) never
+	 * see EXDEV on a same-directory rename.
+	 *
+	 * If an existing target sits on a different tier than the source,
+	 * stash its lower and inode so the stale copy is dropped after the
+	 * rename (smoothfs_drop_stale_rename_target). Cross-tier rename of a
+	 * directory over an existing directory keeps returning EXDEV — that
+	 * has merge/rmdir semantics this no-copy path does not implement — as
+	 * do RENAME_EXCHANGE/WHITEOUT. Cross-DIRECTORY renames still return
+	 * EXDEV below so callers fall back to copy+delete.
 	 */
-	if (old_dentry->d_parent == new_dentry->d_parent &&
-	    actual_old_parent != lower_old_parent &&
-	    actual_old_parent->d_sb != lower_new_parent->d_sb) {
-		if (lower_new && d_really_is_positive(lower_new))
-			return -EXDEV;
-		if (lower_new) {
+	if (old_dentry->d_parent == new_dentry->d_parent) {
+		if (lower_new && lower_new->d_sb != actual_old_parent->d_sb) {
+			if (d_really_is_positive(lower_new)) {
+				if (d_is_dir(lower_new) ||
+				    (flags & (RENAME_EXCHANGE | RENAME_WHITEOUT)))
+					return -EXDEV;
+				if (flags & RENAME_NOREPLACE)
+					return -EEXIST;
+				stale_lower = dget(lower_new);
+				stale_inode = d_inode(new_dentry);
+			}
 			smoothfs_set_lower_dentry(new_dentry, NULL);
 			lower_new = NULL;
 		}
@@ -1549,14 +1602,16 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 
 	if (actual_old_parent->d_sb != actual_new_parent->d_sb)
 		return -EXDEV;
-	/* Cross-tier rename: source and destination resolve to lower
-	 * dentries on different lower filesystems (e.g. source on fast,
-	 * destination is a tier-fallthrough hit on slow). vfs_rename
+	/* Cross-DIRECTORY cross-tier rename: source and destination resolve
+	 * to lower dentries on different lower filesystems (e.g. source on
+	 * fast, destination is a tier-fallthrough hit on slow). vfs_rename
 	 * across superblocks is invalid; return -EXDEV so the caller
 	 * (typically coreutils mv / Python shutil.move) falls back to
 	 * copy+delete instead of crashing into the d_parent identity
 	 * check below with EINVAL — which userspace then mis-interprets
-	 * as "cannot move to a subdirectory of itself" and bails out. */
+	 * as "cannot move to a subdirectory of itself" and bails out.
+	 * (Same-directory cross-tier renames were handled above and never
+	 * reach here with mismatched lower superblocks.) */
 	if (lower_old && lower_new &&
 	    lower_old->d_sb != lower_new->d_sb)
 		return -EXDEV;
@@ -1627,6 +1682,7 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	if (err) {
 		kfree(spill_old_rel);
 		dput(lower_new);
+		dput(stale_lower);
 		return err;
 	}
 
@@ -1680,6 +1736,18 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 		} else {
 			kfree(new_rel);
 		}
+	}
+
+	/* Same-directory cross-tier rename onto an existing target: the source
+	 * was renamed into place on its own tier above, so drop the target's
+	 * now-stale lower on its original tier (and forget its placement) — a
+	 * canonical-tier copy would shadow the renamed file and a spill copy
+	 * would leak. Done after the source's rel_path is re-keyed above so the
+	 * new name resolves to the source throughout. */
+	if (stale_lower) {
+		smoothfs_drop_stale_rename_target(old_dir->i_sb, stale_lower,
+						  stale_inode);
+		dput(stale_lower);
 	}
 
 	/* smoothfs_rename above renamed only the canonical-tier lower. A

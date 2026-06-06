@@ -87,7 +87,7 @@ jobs:
           if [ "$EVENT" = "workflow_dispatch" ]; then
             printf 'arches=["%s"]\n' "$DISPATCH_ARCH" >> "$GITHUB_OUTPUT"
           else
-            printf 'arches=["arm64","amd64"]\n' >> "$GITHUB_OUTPUT"
+            printf 'arches=["amd64"]\n' >> "$GITHUB_OUTPUT"
           fi
 
   runtime-harnesses:
@@ -106,46 +106,75 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      # gh-runner workers share the host kernel (where production smoothfs
+      # is already loaded) and run an older kernel than smoothfs's 6.18
+      # floor, so we cannot build/insmod against the host kernel. Instead
+      # boot a clean >=6.18 guest under virtme-ng/QEMU (KVM via the worker's
+      # /dev/kvm), build the module against that guest kernel, and load +
+      # test it inside the guest where no production smoothfs is loaded.
+      - name: Install QEMU, virtme-ng and build deps
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 virtme-ng virtiofsd busybox-static zstd cpio \
+            build-essential bc flex bison libelf-dev libssl-dev kmod udev \
+            xfsprogs e2fsprogs python3 curl ca-certificates iproute2
+          # Ubuntu mainline kernels are built with a specific gcc (e.g.
+          # gcc-15); install it best-effort so the module build can match,
+          # otherwise the build step falls back to the default gcc.
+          sudo apt-get install -y --no-install-recommends gcc-15 \
+            || echo "gcc-15 unavailable; module build will use default gcc"
+          # virtme-init powers the guest off via `poweroff`, absent from the
+          # minimal worker rootfs (shared into the guest); provide it via
+          # busybox so a clean shutdown propagates the script's exit code.
+          bb="$(command -v busybox || echo /bin/busybox)"
+          sudo ln -sf "$bb" /usr/sbin/poweroff
+          sudo ln -sf "$bb" /sbin/poweroff 2>/dev/null || true
 
-      - name: Check privileged runner prerequisites
+      - name: Fetch a >=6.18 guest kernel
         run: |
           set -euo pipefail
-          command -v sudo >/dev/null
-          sudo -n true
-          command -v bash >/dev/null
-          command -v go >/dev/null
-          command -v make >/dev/null
-          command -v mount >/dev/null
-          command -v mkfs.xfs >/dev/null
-          command -v insmod >/dev/null
-          command -v lsmod >/dev/null
-          command -v modinfo >/dev/null
-          command -v modprobe >/dev/null
-          test -e /dev/loop-control
+          bash src/smoothfs/test/ci_fetch_guest_kernel.sh | tee /tmp/kfetch.out
+          grep '^GUEST_KVER=' /tmp/kfetch.out >> "$GITHUB_ENV"
 
-      - name: Build and load smoothfs module
-        if: ${{ (inputs.module_mode || 'build-and-load') == 'build-and-load' }}
+      - name: Build smoothfs.ko against the guest kernel
         run: |
-          set -euo pipefail
-          test -d "/lib/modules/$(uname -r)/build"
-          make kernel-build
-          if lsmod | awk '{print $1}' | grep -qx smoothfs; then
-            echo "smoothfs module is already loaded"
-          else
-            sudo -n insmod src/smoothfs/smoothfs.ko
-          fi
+          set -euxo pipefail
+          # The mainline kernel records the gcc it was built with; use a
+          # matching gcc-15 when present, else the default gcc. vermagic
+          # does not encode the gcc version, so the module still loads.
+          cc="$(command -v gcc-15 || command -v gcc)"
+          make -C src/smoothfs KDIR="/lib/modules/${GUEST_KVER}/build" \
+            CC="$cc" HOSTCC="$cc"
+          ls -l src/smoothfs/smoothfs.ko
+          # Install into the guest module tree so the crash-replay harnesses'
+          # `rmmod smoothfs; modprobe smoothfs` reload cycle works (the guest
+          # shares /lib/modules via virtiofs).
+          sudo install -D -m0644 src/smoothfs/smoothfs.ko \
+            "/lib/modules/${GUEST_KVER}/extra/smoothfs.ko"
+          sudo depmod "${GUEST_KVER}"
 
-      - name: Verify preinstalled smoothfs module
-        if: ${{ (inputs.module_mode || 'build-and-load') == 'preinstalled' }}
+      - name: Install Go + warm module cache (movement-test helpers)
         run: |
-          set -euo pipefail
-          modinfo smoothfs >/dev/null
-          sudo -n modprobe smoothfs
+          set -euxo pipefail
+          # Several harnesses build a Go helper with `go run`. setup-go does
+          # not work in this worker, so install the go.mod toolchain directly
+          # and warm GOCACHE/GOMODCACHE inside the 9p-shared checkout so the
+          # guest (which shares this dir rw, but has no network/toolchain) can
+          # build offline.
+          go_ver="$(sed -nE 's/^go ([0-9.]+).*/\1/p' go.mod)"
+          curl -fsSL "https://go.dev/dl/go${go_ver}.linux-amd64.tar.gz" -o /tmp/go.tgz
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz
+          export PATH=/usr/local/go/bin:$PATH
+          export GOCACHE="$PWD/.gocache" GOMODCACHE="$PWD/.gomodcache" \
+                 GOFLAGS=-mod=mod GOTOOLCHAIN=local
+          go version
+          go mod download
+          # Pre-compile the std + module objects into GOCACHE so the guest's
+          # `go run` is a cache hit (no network).
+          go build ./... >/dev/null 2>&1 || true
 
       # The smb_vfs_module.sh harness is the only one that needs
       # /usr/lib/<multiarch>/samba/vfs/smoothfs.so. Build it on demand for
@@ -167,25 +196,23 @@ jobs:
           FAIL_FAST: ${{ inputs.fail_fast || 'false' }}
           LOWER_FS: ${{ inputs.lower_fs || 'xfs' }}
         run: |
-          set -euo pipefail
-          log_dir="$RUNNER_TEMP/smoothfs-runtime"
-          mkdir -p "$log_dir" "$RUNNER_TEMP/go-cache" "$RUNNER_TEMP/go-mod"
-
+          set -euxo pipefail
           fail_fast=0
-          if [ "$FAIL_FAST" = "true" ]; then
-            fail_fast=1
-          fi
-
-          sudo -n env \
-            "PATH=$PATH" \
-            "HOME=$RUNNER_TEMP" \
-            "GOCACHE=$RUNNER_TEMP/go-cache" \
-            "GOMODCACHE=$RUNNER_TEMP/go-mod" \
-            "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
-            "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
-            "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
-            "SMOOTHFS_LOWER_FS=$LOWER_FS" \
-            bash src/smoothfs/test/run_runtime_harnesses.sh 2>&1 | tee "$log_dir/runtime-harnesses.log"
+          if [ "$FAIL_FAST" = "true" ]; then fail_fast=1; fi
+          log_dir="$RUNNER_TEMP/smoothfs-runtime"
+          mkdir -p "$log_dir"
+          # Boot the guest kernel under KVM, sharing this checkout (rw) so the
+          # freshly built .ko + harness scripts are visible. --script-sh runs
+          # the command in the guest, pipes its stdout to our stdout, and
+          # propagates its exit code (via the virtme.ret port) as vng's exit
+          # code — so `set -e` + pipefail make this step fail iff the suite
+          # fails. Env is inlined into the one-line command.
+          sudo vng --run "/boot/vmlinuz-${GUEST_KVER}" \
+            --cpus 4 --memory 4G --rwdir "$PWD" --user root \
+            -- env "SMOOTHFS_RUNTIME_SUITE=$SUITE" "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
+            "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" "SMOOTHFS_LOWER_FS=$LOWER_FS" \
+            "SMOOTHFS_CI_WORKDIR=$PWD" bash src/smoothfs/test/ci_run_in_vm.sh \
+            2>&1 | tee "$log_dir/runtime-harnesses.log"
 
       - name: Upload runtime harness log
         if: always()
