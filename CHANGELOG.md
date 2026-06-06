@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.3...v0.2.4) (2026-06-06)
+
+
+### Bug Fixes
+
+* purge spill-tier copies when rmdir'ing a canonically-resolved dir ([#139](https://github.com/RakuenSoftware/smoothfs/issues/139)) ([c451706](https://github.com/RakuenSoftware/smoothfs/commit/c451706796bd713b01640934a20be59981bd2535))
+
 ## [0.2.3](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.2...v0.2.3) (2026-06-05)
 
 
