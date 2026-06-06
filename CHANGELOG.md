@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.10](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.9...v0.2.10) (2026-06-06)
+
+
+### Bug Fixes
+
+* **placement:** create_policy=fastest places on fastest tier with space ([#151](https://github.com/RakuenSoftware/smoothfs/issues/151)) ([fddaf68](https://github.com/RakuenSoftware/smoothfs/commit/fddaf68e301fcb5ed9db3643562a319fed9b59d1))
+
 ## [0.2.9](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.8...v0.2.9) (2026-06-06)
 
 
