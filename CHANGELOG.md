@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.4...v0.2.5) (2026-06-06)
+
+
+### Bug Fixes
+
+* move spill-tier copies when renaming a multi-tier directory ([#141](https://github.com/RakuenSoftware/smoothfs/issues/141)) ([9aec0ef](https://github.com/RakuenSoftware/smoothfs/commit/9aec0efb4a8b84a842ad93123228e94b6f72006a))
+
 ## [0.2.4](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.3...v0.2.4) (2026-06-06)
 
 
