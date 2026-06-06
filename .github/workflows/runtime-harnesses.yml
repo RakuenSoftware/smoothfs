@@ -174,14 +174,16 @@ jobs:
           # the freshly built .ko and the harness scripts are visible. The
           # guest loads the module and runs the suite; ci_run_in_vm.sh writes
           # the suite exit code to vm_result.txt in the shared dir.
+          # virtme-ng: command via --exec, guest env via trailing KEY=VAL.
           sudo vng --run "/boot/vmlinuz-${GUEST_KVER}" \
             --cpus 4 --memory 4G --rwdir "$PWD" --user root \
-            --env "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
-            --env "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
-            --env "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
-            --env "SMOOTHFS_LOWER_FS=$LOWER_FS" \
-            --env "SMOOTHFS_CI_WORKDIR=$PWD" \
-            -- bash src/smoothfs/test/ci_run_in_vm.sh 2>&1 | tee "$log_dir/runtime-harnesses.log"
+            --exec "bash src/smoothfs/test/ci_run_in_vm.sh" \
+            "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
+            "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
+            "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
+            "SMOOTHFS_LOWER_FS=$LOWER_FS" \
+            "SMOOTHFS_CI_WORKDIR=$PWD" \
+            2>&1 | tee "$log_dir/runtime-harnesses.log"
           rc="$(cat vm_result.txt 2>/dev/null || echo 1)"
           echo "guest suite exit code: $rc"
           test "$rc" = "0"
