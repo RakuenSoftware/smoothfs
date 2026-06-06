@@ -126,6 +126,15 @@ jobs:
           # otherwise the build step falls back to the default gcc.
           sudo apt-get install -y --no-install-recommends gcc-15 \
             || echo "gcc-15 unavailable; module build will use default gcc"
+          # virtme-ng 1.35 carries virtio_console only as a modalias
+          # ("virtio:d00000003v00001AF4") which does not resolve against a
+          # mainline modules.alias, so its initramfs omits virtio_console and
+          # the guest cannot create the virtio-serial script I/O ports that
+          # virtme-init needs. MODALIASES also accepts plain module names
+          # (it appends "overlay" that way), so add virtio_console by name.
+          vm=/usr/lib/python3/dist-packages/virtme/virtmods.py
+          sudo sed -i 's/^MODALIASES = \[/MODALIASES = [\n    "virtio_console",/' "$vm"
+          grep -n '"virtio_console"' "$vm"
 
       - name: Fetch a >=6.18 guest kernel
         run: |
@@ -170,12 +179,6 @@ jobs:
           log_dir="$RUNNER_TEMP/smoothfs-runtime"
           mkdir -p "$log_dir"
           rm -f vm_result.txt
-          echo "=== vng version + qemu command (dry-run) ==="
-          vng --version || true
-          sudo vng --dry-run --verbose --run "/boot/vmlinuz-${GUEST_KVER}" \
-            --cpus 4 --memory 4G --rwdir "$PWD" --user root \
-            --exec "true" 2>&1 | tr ' ' '\n' | grep -iE "serial|virtconsole|vport|chardev|-device|-append" -A1 | head -60 || true
-          echo "=== end dry-run ==="
           # Boot the guest kernel under KVM, sharing this checkout (rw) so
           # the freshly built .ko and the harness scripts are visible. The
           # guest loads the module and runs the suite; ci_run_in_vm.sh writes
