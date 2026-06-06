@@ -135,6 +135,13 @@ jobs:
           vm=/usr/lib/python3/dist-packages/virtme/virtmods.py
           sudo sed -i 's/^MODALIASES = \[/MODALIASES = [\n    "virtio_console",/' "$vm"
           grep -n '"virtio_console"' "$vm"
+          # When virtio-serial script I/O ports are absent, virtme-init runs
+          # the script on the console then calls `poweroff` — which the
+          # minimal worker rootfs (shared into the guest) lacks, so the guest
+          # panics instead of shutting down. Provide poweroff via busybox.
+          bb="$(command -v busybox || echo /bin/busybox)"
+          sudo ln -sf "$bb" /usr/sbin/poweroff
+          sudo ln -sf "$bb" /sbin/poweroff 2>/dev/null || true
 
       - name: Fetch a >=6.18 guest kernel
         run: |
