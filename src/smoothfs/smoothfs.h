@@ -553,6 +553,8 @@ struct smoothfs_inode_info *smoothfs_lookup_rel_path(struct smoothfs_sb_info *sb
 						     const char *rel_path);
 void smoothfs_forget_placement(struct super_block *sb, struct inode *inode,
 			       bool purge_dir_tiers);
+void smoothfs_rename_spill_tiers(struct smoothfs_sb_info *sbi,
+				 const char *old_rel, const char *new_rel);
 
 /* file.c */
 extern const struct file_operations          smoothfs_file_ops;

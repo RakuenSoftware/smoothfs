@@ -830,6 +830,111 @@ out_unlock:
 	return err;
 }
 
+/* Rename old_rel -> new_rel on a specific tier. Sibling of the unlink/rmdir
+ * per-tier helpers: smoothfs_rename renames only the canonical-tier copy, so
+ * for a directory smoothfs replicated onto spill tiers the spill copy keeps
+ * the OLD name and the renamed directory is left missing its spill-tier
+ * contents (this is what loops Steam's runtime swap: mv steam-runtime.tmp
+ * steam-runtime moves only the NVME copy). Best-effort — a missing parent or
+ * source entry on this tier is success (nothing to move here). */
+static int smoothfs_rename_rel_path_on_tier(struct smoothfs_sb_info *sbi, u8 tier,
+					    const char *old_rel, const char *new_rel)
+{
+	struct path op = {}, np = {};
+	struct dentry *old_d = NULL, *new_d = NULL, *trap;
+	struct renamedata rd;
+	struct qstr oq, nq;
+	char *ow = NULL, *nw = NULL, *s, *o_name, *n_name, *o_parent, *n_parent;
+	int err;
+
+	if (!old_rel || !*old_rel || !new_rel || !*new_rel)
+		return -EINVAL;
+
+	ow = kstrdup(old_rel, GFP_KERNEL);
+	nw = kstrdup(new_rel, GFP_KERNEL);
+	if (!ow || !nw) {
+		err = -ENOMEM;
+		goto out_free;
+	}
+	s = strrchr(ow, '/');
+	if (s) { *s = '\0'; o_parent = ow; o_name = s + 1; }
+	else   { o_parent = ""; o_name = ow; }
+	s = strrchr(nw, '/');
+	if (s) { *s = '\0'; n_parent = nw; n_name = s + 1; }
+	else   { n_parent = ""; n_name = nw; }
+	if (!*o_name || !*n_name) {
+		err = -EINVAL;
+		goto out_free;
+	}
+
+	err = smoothfs_resolve_rel_path_on_tier(sbi, tier, o_parent, &op);
+	if (err) { err = (err == -ENOENT) ? 0 : err; op.dentry = NULL; goto out_free; }
+	if (d_really_is_negative(op.dentry)) { err = 0; goto out_putold; }
+
+	err = smoothfs_resolve_rel_path_on_tier(sbi, tier, n_parent, &np);
+	if (err) { err = (err == -ENOENT) ? 0 : err; np.dentry = NULL; goto out_putold; }
+	if (d_really_is_negative(np.dentry)) { err = 0; goto out_putnew; }
+
+	trap = lock_rename(op.dentry, np.dentry);
+	if (IS_ERR(trap)) { err = PTR_ERR(trap); goto out_putnew; }
+
+	oq = (struct qstr)QSTR_INIT(o_name, strlen(o_name));
+	old_d = smoothfs_compat_lookup(&nop_mnt_idmap, &oq, op.dentry);
+	if (IS_ERR(old_d)) { err = PTR_ERR(old_d); old_d = NULL; goto out_unlock; }
+	if (d_really_is_negative(old_d)) { err = 0; goto out_unlock; }
+
+	nq = (struct qstr)QSTR_INIT(n_name, strlen(n_name));
+	new_d = smoothfs_compat_lookup(&nop_mnt_idmap, &nq, np.dentry);
+	if (IS_ERR(new_d)) { err = PTR_ERR(new_d); new_d = NULL; goto out_unlock; }
+
+	if (trap == old_d || trap == new_d) { err = -EINVAL; goto out_unlock; }
+
+	memset(&rd, 0, sizeof(rd));
+	rd.mnt_idmap = &nop_mnt_idmap;
+	rd.old_parent = dget(op.dentry);
+	rd.old_dentry = dget(old_d);
+	rd.new_parent = np.dentry;
+	rd.new_dentry = dget(new_d);
+	err = vfs_rename(&rd);
+	dput(rd.old_dentry);
+	dput(rd.new_dentry);
+	dput(rd.old_parent);
+
+out_unlock:
+	unlock_rename(op.dentry, np.dentry);
+	if (old_d && !IS_ERR(old_d))
+		dput(old_d);
+	if (new_d && !IS_ERR(new_d))
+		dput(new_d);
+out_putnew:
+	if (np.dentry)
+		path_put(&np);
+out_putold:
+	if (op.dentry)
+		path_put(&op);
+out_free:
+	kfree(ow);
+	kfree(nw);
+	return err;
+}
+
+/* Move a renamed directory's spill-tier copies to match the canonical rename
+ * smoothfs_rename already did. Loops every metadata-active tier; the canonical
+ * tier is a no-op (its old name is already gone). */
+void smoothfs_rename_spill_tiers(struct smoothfs_sb_info *sbi,
+				 const char *old_rel, const char *new_rel)
+{
+	u8 tier;
+
+	if (!old_rel || !new_rel)
+		return;
+	for (tier = 0; tier < sbi->ntiers; tier++) {
+		if (!smoothfs_metadata_tier_active(sbi, tier))
+			continue;
+		(void)smoothfs_rename_rel_path_on_tier(sbi, tier, old_rel, new_rel);
+	}
+}
+
 static struct inode *smoothfs_write_staging_find_drainable_rehome(struct smoothfs_sb_info *sbi)
 {
 	struct smoothfs_inode_info *si;
