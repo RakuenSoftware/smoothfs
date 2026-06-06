@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.8](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.7...v0.2.8) (2026-06-06)
+
+
+### Performance Improvements
+
+* parallelize mount-time placement replay ([#147](https://github.com/RakuenSoftware/smoothfs/issues/147)) ([371cf58](https://github.com/RakuenSoftware/smoothfs/commit/371cf58110111e8e5b2402e0ab2b914cab6d25ee))
+
 ## [0.2.7](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.6...v0.2.7) (2026-06-06)
 
 
