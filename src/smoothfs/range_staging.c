@@ -472,7 +472,7 @@ static int smoothfs_range_replay_one(struct super_block *sb,
 	if (source_tier >= sbi->ntiers)
 		return -EINVAL;
 
-	si = smoothfs_lookup_oid(sbi, oid);
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
 	if (!si) {
 		/* No corresponding inode in the OID map. The placement log
 		 * may not have caught up before the crash. Leave the .meta

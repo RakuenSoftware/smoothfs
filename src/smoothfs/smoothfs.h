@@ -195,6 +195,22 @@ struct smoothfs_sb_info {
 	struct rw_semaphore inode_lock;
 	struct list_head    inode_list;
 
+	/* Lazy mount-replay recovery index. The placement records (OID ->
+	 * tier + rel_path) are kept here, immutable after mount, instead of
+	 * eagerly instantiating every logged inode (which cost ~83s/~42s for
+	 * ~141K records, dominated by cold HDD-tier media). smoothfs_recovery_
+	 * resolve_oid instantiates one on demand for OID-based access (NFS
+	 * fh_to_dentry, tier movement, which have no by-OID tier scan); path
+	 * access uses smoothfs_lookup's across-tiers scan instead.
+	 * recovery_resolve_lock serializes the on-demand iget; the index itself
+	 * is read-only after mount so needs no lock. sb backpointer is what the
+	 * resolver needs for iget. */
+	struct super_block *sb;
+	struct hlist_head  *recovery_oid_index;
+	struct list_head    recovery_records;
+	struct mutex        recovery_resolve_lock;
+	bool                recovery_ready;
+
 	/* True if any lower filesystem installs a d_revalidate callback.
 	 * Set at mount time from the capability probe; read (RCU-safe) by
 	 * smoothfs_d_revalidate to fast-return 1 for lowers that don't
@@ -633,6 +649,18 @@ int  smoothfs_placement_record(struct smoothfs_sb_info *sbi,
 			       u8 intended_tier, bool sync);
 int  smoothfs_placement_replay(struct super_block *sb,
 			       struct smoothfs_sb_info *sbi);
+
+/* Lazy replay recovery. resolve_oid instantiates a placement-logged inode on
+ * demand from the recovery index (sleepable — must NOT be called under RCU).
+ * lookup_oid_resolve is the sleepable wrapper: fast oid_map hit, else resolve.
+ * destroy frees the index + records at unmount. */
+struct smoothfs_inode_info *
+smoothfs_recovery_resolve_oid(struct smoothfs_sb_info *sbi,
+			      const u8 oid[SMOOTHFS_OID_LEN]);
+struct smoothfs_inode_info *
+smoothfs_lookup_oid_resolve(struct smoothfs_sb_info *sbi,
+			    const u8 oid[SMOOTHFS_OID_LEN]);
+void smoothfs_recovery_destroy(struct smoothfs_sb_info *sbi);
 
 /* range_staging.c — Phase 6O recovery. Persists per-inode range-staging
  * metadata to a sidecar file alongside the .stage data file, replays it

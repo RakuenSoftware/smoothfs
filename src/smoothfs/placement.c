@@ -455,18 +455,19 @@ static int smoothfs_replay_load_log(struct smoothfs_sb_info *sbi,
 }
 
 /*
- * Materialize a single replayed record: resolve its lower path, iget the
- * inode, record placement, and pin it in cache for OID/rel_path recovery.
- * Returns 0 on success or skip (missing/invalid path), negative on a fatal
- * error. The expensive lower lookup + iget run lock-free; only the per-inode
- * map/field mutation is serialized under inode_lock (distinct records map to
- * distinct inodes except for hardlinks, which share one). Every primitive
- * used here is already concurrency-safe in normal operation, so this is safe
- * to run across records in parallel.
+ * Resolve a single replayed record into a live inode on demand: resolve its
+ * lower path, iget the inode, record placement, and pin it in cache for OID/
+ * rel_path recovery. Called lazily from smoothfs_recovery_resolve_oid (NFS
+ * fh_to_dentry / tier movement) rather than eagerly for every record at mount.
+ * Returns the inode-info, or NULL on skip (missing/invalid path) or error.
+ * The caller (recovery resolver) serializes concurrent resolves.
+ * The expensive lower lookup + iget run before the brief per-inode mutation,
+ * which is serialized under inode_lock (hardlink guard).
  */
-static int smoothfs_replay_instantiate_one(struct super_block *sb,
-					   struct smoothfs_sb_info *sbi,
-					   struct smoothfs_replay_record *rec)
+static struct smoothfs_inode_info *
+smoothfs_replay_instantiate_one(struct super_block *sb,
+				struct smoothfs_sb_info *sbi,
+				struct smoothfs_replay_record *rec)
 {
 	struct path lower;
 	struct inode *inode;
@@ -483,7 +484,7 @@ static int smoothfs_replay_instantiate_one(struct super_block *sb,
 		rec->chosen_gen = rec->fallback_gen;
 	}
 	if (!rec->chosen_rel_path || rec->chosen_tier >= sbi->ntiers)
-		return 0;
+		return NULL;
 
 	tier = rec->chosen_tier;
 	rel_path = rec->chosen_rel_path;
@@ -491,17 +492,17 @@ static int smoothfs_replay_instantiate_one(struct super_block *sb,
 
 	err = smoothfs_resolve_rel_path(&sbi->tiers[tier], rel_path, &lower);
 	if (err)
-		return 0;
+		return NULL;
 	inode = smoothfs_iget(sb, &lower, false, false);
 	path_put(&lower);
 	if (IS_ERR(inode))
-		return PTR_ERR(inode);
+		return NULL;
 
 	si = SMOOTHFS_I(inode);
 	dup = kstrdup(rel_path, GFP_KERNEL);
 	if (!dup) {
 		iput(inode);
-		return -ENOMEM;
+		return NULL;
 	}
 
 	down_write(&sbi->inode_lock);
@@ -528,130 +529,63 @@ static int smoothfs_replay_instantiate_one(struct super_block *sb,
 	if (normalized)
 		smoothfs_placement_record(sbi, rec->oid, SMOOTHFS_MS_PLACED,
 					  tier, tier, /*sync=*/true);
-	return 0;
-}
-
-/* One parallel slice of the replay record array. */
-struct smoothfs_replay_chunk {
-	struct work_struct work;
-	struct super_block *sb;
-	struct smoothfs_sb_info *sbi;
-	struct smoothfs_replay_record **recs;
-	unsigned int n;
-	int err;
-};
-
-static void smoothfs_replay_chunk_fn(struct work_struct *w)
-{
-	struct smoothfs_replay_chunk *c =
-		container_of(w, struct smoothfs_replay_chunk, work);
-	unsigned int i;
-
-	for (i = 0; i < c->n; i++) {
-		int e = smoothfs_replay_instantiate_one(c->sb, c->sbi, c->recs[i]);
-
-		if (e) {
-			c->err = e;
-			return;
-		}
-	}
-}
-
-static int smoothfs_replay_instantiate_serial(struct super_block *sb,
-					      struct smoothfs_sb_info *sbi,
-					      struct smoothfs_replay_record **arr,
-					      unsigned int n)
-{
-	unsigned int i;
-	int err;
-
-	for (i = 0; i < n; i++) {
-		err = smoothfs_replay_instantiate_one(sb, sbi, arr[i]);
-		if (err)
-			return err;
-	}
-	return 0;
+	return si;
 }
 
 /*
- * Instantiate every replayed record. The per-record cost is a cold lower
- * path-walk + iget (xattr reads) — pure I/O latency at queue-depth-1 if done
- * serially, which dominated mount time (~83s for ~141K records). Fan the work
- * out across a bounded pool of workers so the lower-fs reads overlap; the
- * device's queue depth, not a single walk's latency, becomes the limit.
+ * Lazy replay. Rather than instantiate every placement-logged record at mount
+ * (a kern_path + iget per record — ~83s serial / ~42s parallel for ~141K
+ * records, dominated by the cold media files spilled to the HDD tier), keep
+ * the records as an immutable OID-keyed recovery index and resolve each on
+ * demand. Path-based access doesn't need this: smoothfs_lookup's across-tiers
+ * scan finds spilled files and tracks them. Only OID-based access — NFS
+ * fh_to_dentry and tier movement, which have no by-OID tier scan — resolves
+ * through here.
+ *
+ * Ownership of the records list and the OID hash index (both built by
+ * smoothfs_replay_load_log) is transferred to sbi; they are read-only after
+ * mount, so resolves need no index lock — only a mutex serializing the iget
+ * itself.
  */
-static int smoothfs_replay_instantiate(struct super_block *sb,
-				       struct smoothfs_sb_info *sbi,
-				       struct list_head *records)
+static void smoothfs_recovery_populate(struct smoothfs_sb_info *sbi,
+				       struct list_head *records,
+				       struct hlist_head *oid_index)
 {
-	struct smoothfs_replay_record *rec, **arr;
-	struct smoothfs_replay_chunk *chunks;
-	struct workqueue_struct *wq;
-	unsigned int n = 0, i, nw, per, idx;
-	int err = 0;
+	list_splice_init(records, &sbi->recovery_records);
+	sbi->recovery_oid_index = oid_index;
+	smp_wmb();
+	WRITE_ONCE(sbi->recovery_ready, true);
+}
 
-	list_for_each_entry(rec, records, link)
-		n++;
-	if (n == 0)
-		return 0;
+struct smoothfs_inode_info *
+smoothfs_recovery_resolve_oid(struct smoothfs_sb_info *sbi,
+			      const u8 oid[SMOOTHFS_OID_LEN])
+{
+	struct smoothfs_inode_info *si;
+	struct smoothfs_replay_record *rec;
 
-	arr = kvmalloc_array(n, sizeof(*arr), GFP_KERNEL);
-	if (!arr) {
-		/* Out of memory for the index — fall back to the in-place
-		 * serial walk so mount still succeeds, just slowly. */
-		list_for_each_entry(rec, records, link) {
-			err = smoothfs_replay_instantiate_one(sb, sbi, rec);
-			if (err)
-				return err;
-		}
-		return 0;
+	if (!READ_ONCE(sbi->recovery_ready) || !sbi->sb)
+		return NULL;
+
+	mutex_lock(&sbi->recovery_resolve_lock);
+	/* Re-check the live map: a racing resolver (or a path lookup that
+	 * already instantiated this OID) may have populated it. */
+	si = smoothfs_lookup_oid(sbi, oid);
+	if (!si) {
+		rec = smoothfs_replay_find(sbi->recovery_oid_index, oid);
+		if (rec)
+			si = smoothfs_replay_instantiate_one(sbi->sb, sbi, rec);
 	}
-	i = 0;
-	list_for_each_entry(rec, records, link)
-		arr[i++] = rec;
+	mutex_unlock(&sbi->recovery_resolve_lock);
+	return si;
+}
 
-	nw = min3(n, (unsigned int)num_online_cpus() * 2u, 16u);
-	if (nw < 1)
-		nw = 1;
-	chunks = kcalloc(nw, sizeof(*chunks), GFP_KERNEL);
-	if (!chunks) {
-		err = smoothfs_replay_instantiate_serial(sb, sbi, arr, n);
-		goto out_arr;
-	}
-	wq = alloc_workqueue("smoothfs_replay", WQ_UNBOUND | WQ_MEM_RECLAIM, nw);
-	if (!wq) {
-		err = smoothfs_replay_instantiate_serial(sb, sbi, arr, n);
-		kfree(chunks);
-		goto out_arr;
-	}
-
-	per = (n + nw - 1) / nw;
-	idx = 0;
-	for (i = 0; i < nw && idx < n; i++) {
-		chunks[i].sb = sb;
-		chunks[i].sbi = sbi;
-		chunks[i].recs = &arr[idx];
-		chunks[i].n = min(per, n - idx);
-		chunks[i].err = 0;
-		INIT_WORK(&chunks[i].work, smoothfs_replay_chunk_fn);
-		queue_work(wq, &chunks[i].work);
-		idx += chunks[i].n;
-	}
-	nw = i;  /* actual number of chunks queued */
-
-	flush_workqueue(wq);
-	destroy_workqueue(wq);
-
-	for (i = 0; i < nw; i++) {
-		if (chunks[i].err) {
-			err = chunks[i].err;
-			break;
-		}
-	}
-	kfree(chunks);
-out_arr:
-	kvfree(arr);
-	return err;
+void smoothfs_recovery_destroy(struct smoothfs_sb_info *sbi)
+{
+	WRITE_ONCE(sbi->recovery_ready, false);
+	smoothfs_replay_free_records(&sbi->recovery_records);
+	kvfree(sbi->recovery_oid_index);
+	sbi->recovery_oid_index = NULL;
 }
 
 static int smoothfs_placement_ensure_dir(struct smoothfs_sb_info *sbi)
@@ -1181,7 +1115,7 @@ int smoothfs_placement_replay(struct super_block *sb,
 
 	err = smoothfs_replay_load_log(sbi, &records, index);
 	if (err)
-		goto out;
+		goto out_free;
 
 	idx_err = smoothfs_path_index_read(sbi, &records, index);
 	has_path_index = (idx_err == 0);
@@ -1192,14 +1126,19 @@ int smoothfs_placement_replay(struct super_block *sb,
 		pr_info("smoothfs: path index unavailable for pool '%s' (%d); mounting now and rebuilding it on the fastest tier\n",
 			sbi->pool_name, idx_err);
 
-	err = smoothfs_replay_instantiate(sb, sbi, &records);
-	if (err)
-		goto out;
+	/* Lazy: hand the records + OID index to sbi as the recovery index and
+	 * return immediately. Inodes are instantiated on first OID access
+	 * (NFS / movement) via smoothfs_recovery_resolve_oid, not eagerly here;
+	 * path lookups use smoothfs_lookup's across-tiers scan. This is what
+	 * makes the mount independent of the (HDD-dominated) file count. */
+	smoothfs_recovery_populate(sbi, &records, index);
 
 	if (!has_path_index)
 		smoothfs_path_index_async_schedule(sbi);
 
-out:
+	return 0;
+
+out_free:
 	smoothfs_replay_free_records(&records);
 	kvfree(index);
 	return err;

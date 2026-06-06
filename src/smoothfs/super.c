@@ -1888,6 +1888,12 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	INIT_LIST_HEAD(&sbi->inode_list);
 	atomic64_set(&sbi->oid_monotonic, 0);
 
+	/* Lazy mount-replay recovery index (see smoothfs.h). Initialized early
+	 * so the teardown paths can always run smoothfs_recovery_destroy. */
+	sbi->sb = sb;
+	INIT_LIST_HEAD(&sbi->recovery_records);
+	mutex_init(&sbi->recovery_resolve_lock);
+
 	/* Capture the mounter's (root) creds. All lower-fs namespace and open
 	 * operations run under these so backing ownership never blocks I/O —
 	 * see the creator_cred comment in smoothfs.h. */
@@ -2047,6 +2053,7 @@ out_tiers:
 	}
 out_sbi:
 	smoothfs_path_index_async_destroy(sbi);
+	smoothfs_recovery_destroy(sbi);
 	smoothfs_placement_wb_destroy(sbi);
 	smoothfs_oid_wb_destroy(sbi);
 	if (sbi->cutover_srcu_ready)
@@ -2109,6 +2116,7 @@ static void smoothfs_put_super(struct super_block *sb)
 	if (!sbi)
 		return;
 	smoothfs_path_index_async_destroy(sbi);
+	smoothfs_recovery_destroy(sbi);
 	smoothfs_heat_destroy(sbi);
 	smoothfs_sysfs_pool_remove(sbi);
 	smoothfs_sb_unregister(sbi);

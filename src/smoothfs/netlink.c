@@ -257,7 +257,7 @@ static int doit_inspect(struct sk_buff *skb, struct genl_info *info)
 		return -EINVAL;
 
 	oid = nla_data(info->attrs[SMOOTHFS_ATTR_OBJECT_ID]);
-	si = smoothfs_lookup_oid(sbi, oid);
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
 	if (!si)
 		return -ENOENT;
 
