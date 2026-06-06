@@ -35,3 +35,4 @@ src/smoothfs/samba-vfs/*.so
 **/debian/tmp/
 **/debian/smoothfs-dkms/
 **/debian/smoothfs-samba-vfs/
+.aimee/
