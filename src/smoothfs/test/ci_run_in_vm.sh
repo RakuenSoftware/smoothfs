@@ -11,6 +11,12 @@ exec 2>&1
 
 cd "${SMOOTHFS_CI_WORKDIR:-$PWD}" || { echo "guest: cd failed"; exit 1; }
 
+# Go toolchain for harnesses that `go run` a helper. Installed on the host
+# at /usr/local/go (shared via virtiofs) with caches warmed in this 9p dir.
+export PATH="/usr/local/go/bin:${PATH}"
+export GOCACHE="${PWD}/.gocache" GOMODCACHE="${PWD}/.gomodcache" \
+       GOFLAGS=-mod=mod GOTOOLCHAIN=local HOME="${HOME:-/tmp}"
+
 echo "== guest: loading smoothfs.ko =="
 insmod src/smoothfs/smoothfs.ko || { echo "guest: insmod failed"; exit 1; }
 lsmod | grep -q '^smoothfs' || { echo "guest: smoothfs not loaded"; exit 1; }

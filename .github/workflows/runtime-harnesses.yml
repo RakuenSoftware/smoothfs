@@ -150,6 +150,26 @@ jobs:
             CC="$cc" HOSTCC="$cc"
           ls -l src/smoothfs/smoothfs.ko
 
+      - name: Install Go + warm module cache (movement-test helpers)
+        run: |
+          set -euxo pipefail
+          # Several harnesses build a Go helper with `go run`. setup-go does
+          # not work in this worker, so install the go.mod toolchain directly
+          # and warm GOCACHE/GOMODCACHE inside the 9p-shared checkout so the
+          # guest (which shares this dir rw, but has no network/toolchain) can
+          # build offline.
+          go_ver="$(sed -nE 's/^go ([0-9.]+).*/\1/p' go.mod)"
+          curl -fsSL "https://go.dev/dl/go${go_ver}.linux-amd64.tar.gz" -o /tmp/go.tgz
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz
+          export PATH=/usr/local/go/bin:$PATH
+          export GOCACHE="$PWD/.gocache" GOMODCACHE="$PWD/.gomodcache" \
+                 GOFLAGS=-mod=mod GOTOOLCHAIN=local
+          go version
+          go mod download
+          # Pre-compile the std + module objects into GOCACHE so the guest's
+          # `go run` is a cache hit (no network).
+          go build ./... >/dev/null 2>&1 || true
+
       # The smb_vfs_module.sh harness is the only one that needs
       # /usr/lib/<multiarch>/samba/vfs/smoothfs.so. Build it on demand for
       # suites that include it. The samba source tree at /tmp/samba-<ver>
