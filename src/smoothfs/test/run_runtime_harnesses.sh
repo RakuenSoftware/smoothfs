@@ -64,6 +64,8 @@ manifest_exclusions=(
 	tier_spill_lib.sh
 	lower_fs_lib.sh
 	runner-setup.sh
+	ci_fetch_guest_kernel.sh
+	ci_run_in_vm.sh
 )
 
 tests_for_suite() {

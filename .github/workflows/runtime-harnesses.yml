@@ -87,7 +87,7 @@ jobs:
           if [ "$EVENT" = "workflow_dispatch" ]; then
             printf 'arches=["%s"]\n' "$DISPATCH_ARCH" >> "$GITHUB_OUTPUT"
           else
-            printf 'arches=["arm64","amd64"]\n' >> "$GITHUB_OUTPUT"
+            printf 'arches=["amd64"]\n' >> "$GITHUB_OUTPUT"
           fi
 
   runtime-harnesses:
@@ -106,46 +106,33 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      # gh-runner workers share the host kernel (where production smoothfs
+      # is already loaded) and run an older kernel than smoothfs's 6.18
+      # floor, so we cannot build/insmod against the host kernel. Instead
+      # boot a clean >=6.18 guest under virtme-ng/QEMU (KVM via the worker's
+      # /dev/kvm), build the module against that guest kernel, and load +
+      # test it inside the guest where no production smoothfs is loaded.
+      - name: Install QEMU, virtme-ng and build deps
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 virtme-ng \
+            build-essential bc flex bison libelf-dev libssl-dev kmod \
+            xfsprogs e2fsprogs python3 curl ca-certificates
 
-      - name: Check privileged runner prerequisites
+      - name: Fetch a >=6.18 guest kernel
         run: |
           set -euo pipefail
-          command -v sudo >/dev/null
-          sudo -n true
-          command -v bash >/dev/null
-          command -v go >/dev/null
-          command -v make >/dev/null
-          command -v mount >/dev/null
-          command -v mkfs.xfs >/dev/null
-          command -v insmod >/dev/null
-          command -v lsmod >/dev/null
-          command -v modinfo >/dev/null
-          command -v modprobe >/dev/null
-          test -e /dev/loop-control
+          bash src/smoothfs/test/ci_fetch_guest_kernel.sh | tee /tmp/kfetch.out
+          grep '^GUEST_KVER=' /tmp/kfetch.out >> "$GITHUB_ENV"
 
-      - name: Build and load smoothfs module
-        if: ${{ (inputs.module_mode || 'build-and-load') == 'build-and-load' }}
+      - name: Build smoothfs.ko against the guest kernel
         run: |
-          set -euo pipefail
-          test -d "/lib/modules/$(uname -r)/build"
-          make kernel-build
-          if lsmod | awk '{print $1}' | grep -qx smoothfs; then
-            echo "smoothfs module is already loaded"
-          else
-            sudo -n insmod src/smoothfs/smoothfs.ko
-          fi
-
-      - name: Verify preinstalled smoothfs module
-        if: ${{ (inputs.module_mode || 'build-and-load') == 'preinstalled' }}
-        run: |
-          set -euo pipefail
-          modinfo smoothfs >/dev/null
-          sudo -n modprobe smoothfs
+          set -euxo pipefail
+          make -C src/smoothfs KDIR="/lib/modules/${GUEST_KVER}/build"
+          ls -l src/smoothfs/smoothfs.ko
 
       # The smb_vfs_module.sh harness is the only one that needs
       # /usr/lib/<multiarch>/samba/vfs/smoothfs.so. Build it on demand for
@@ -167,25 +154,27 @@ jobs:
           FAIL_FAST: ${{ inputs.fail_fast || 'false' }}
           LOWER_FS: ${{ inputs.lower_fs || 'xfs' }}
         run: |
-          set -euo pipefail
-          log_dir="$RUNNER_TEMP/smoothfs-runtime"
-          mkdir -p "$log_dir" "$RUNNER_TEMP/go-cache" "$RUNNER_TEMP/go-mod"
-
+          set -euxo pipefail
           fail_fast=0
-          if [ "$FAIL_FAST" = "true" ]; then
-            fail_fast=1
-          fi
-
-          sudo -n env \
-            "PATH=$PATH" \
-            "HOME=$RUNNER_TEMP" \
-            "GOCACHE=$RUNNER_TEMP/go-cache" \
-            "GOMODCACHE=$RUNNER_TEMP/go-mod" \
-            "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
-            "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
-            "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
-            "SMOOTHFS_LOWER_FS=$LOWER_FS" \
-            bash src/smoothfs/test/run_runtime_harnesses.sh 2>&1 | tee "$log_dir/runtime-harnesses.log"
+          if [ "$FAIL_FAST" = "true" ]; then fail_fast=1; fi
+          log_dir="$RUNNER_TEMP/smoothfs-runtime"
+          mkdir -p "$log_dir"
+          rm -f vm_result.txt
+          # Boot the guest kernel under KVM, sharing this checkout (rw) so
+          # the freshly built .ko and the harness scripts are visible. The
+          # guest loads the module and runs the suite; ci_run_in_vm.sh writes
+          # the suite exit code to vm_result.txt in the shared dir.
+          sudo vng --run "/boot/vmlinuz-${GUEST_KVER}" \
+            --cpus 4 --memory 4G --rwdir "$PWD" --user root \
+            --env "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
+            --env "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
+            --env "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
+            --env "SMOOTHFS_LOWER_FS=$LOWER_FS" \
+            --env "SMOOTHFS_CI_WORKDIR=$PWD" \
+            -- bash src/smoothfs/test/ci_run_in_vm.sh 2>&1 | tee "$log_dir/runtime-harnesses.log"
+          rc="$(cat vm_result.txt 2>/dev/null || echo 1)"
+          echo "guest suite exit code: $rc"
+          test "$rc" = "0"
 
       - name: Upload runtime harness log
         if: always()
