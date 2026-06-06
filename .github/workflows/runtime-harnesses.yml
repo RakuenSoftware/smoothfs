@@ -118,7 +118,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 virtme-ng busybox-static \
+            qemu-system-x86 virtme-ng busybox-static zstd cpio \
             build-essential bc flex bison libelf-dev libssl-dev kmod \
             xfsprogs e2fsprogs python3 curl ca-certificates
           # Ubuntu mainline kernels are built with a specific gcc (e.g.
