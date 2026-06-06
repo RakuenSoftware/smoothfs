@@ -149,6 +149,12 @@ jobs:
           make -C src/smoothfs KDIR="/lib/modules/${GUEST_KVER}/build" \
             CC="$cc" HOSTCC="$cc"
           ls -l src/smoothfs/smoothfs.ko
+          # Install into the guest module tree so the crash-replay harnesses'
+          # `rmmod smoothfs; modprobe smoothfs` reload cycle works (the guest
+          # shares /lib/modules via virtiofs).
+          sudo install -D -m0644 src/smoothfs/smoothfs.ko \
+            "/lib/modules/${GUEST_KVER}/extra/smoothfs.ko"
+          sudo depmod "${GUEST_KVER}"
 
       - name: Install Go + warm module cache (movement-test helpers)
         run: |
