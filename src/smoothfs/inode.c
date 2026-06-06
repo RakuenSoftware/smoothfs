@@ -535,6 +535,38 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 		if (created) {
 			struct inode *inode;
 
+			/* The spill-tier dir was just created via vfs_mkdir in
+			 * this (kernel/root) context, so it is root-owned with
+			 * mode 0755. A non-root file create later placed on this
+			 * tier would then be denied (EACCES) — the cause of e.g.
+			 * Steam's runtime extraction failing to write any files
+			 * and re-extracting forever. Copy the canonical
+			 * (fastest-tier) dir's owner and mode so the spill copy
+			 * matches and writes succeed on any tier. Best-effort. */
+			if (tier != sbi->fastest_tier) {
+				struct path canon;
+
+				if (!smoothfs_resolve_rel_path_on_tier(sbi,
+						sbi->fastest_tier, built, &canon)) {
+					if (d_really_is_positive(canon.dentry)) {
+						struct inode *ci = d_inode(canon.dentry);
+						struct iattr ia = {
+							.ia_valid = ATTR_UID | ATTR_GID |
+								    ATTR_MODE,
+							.ia_uid   = ci->i_uid,
+							.ia_gid   = ci->i_gid,
+							.ia_mode  = ci->i_mode & 07777,
+						};
+
+						inode_lock(d_inode(child));
+						(void)notify_change(&nop_mnt_idmap,
+								    child, &ia, NULL);
+						inode_unlock(d_inode(child));
+					}
+					path_put(&canon);
+				}
+			}
+
 			inode = smoothfs_iget(sb, &child_path, false, true);
 			if (IS_ERR(inode)) {
 				path_put(&child_path);
