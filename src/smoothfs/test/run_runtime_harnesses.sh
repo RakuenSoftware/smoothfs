@@ -227,9 +227,29 @@ ensure_smoothfs_loaded() {
 	fi
 }
 
+# Harnesses named in SMOOTHFS_RUNTIME_SKIP (space-separated basenames) are
+# reported as SKIP and do not fail the suite. Used to quarantine harnesses
+# that are incompatible with a specific runner environment (e.g. the virtme
+# guest used by the gh-runner harness), tracked separately rather than
+# silently dropped.
+is_skipped() {
+	local name="$1" s
+	for s in ${SMOOTHFS_RUNTIME_SKIP:-}; do
+		[ "$s" = "$name" ] && return 0
+	done
+	return 1
+}
+
 rc=0
+skipped=0
 for test_name in "${tests[@]}"; do
 	test_path=$(resolve_test "$test_name")
+	if is_skipped "$(basename "$test_path")"; then
+		echo
+		echo "=== SKIP $(basename "$test_path") (SMOOTHFS_RUNTIME_SKIP) ==="
+		skipped=$((skipped + 1))
+		continue
+	fi
 	ensure_smoothfs_loaded
 	echo
 	echo "=== RUN $(basename "$test_path") ==="
@@ -246,6 +266,9 @@ for test_name in "${tests[@]}"; do
 done
 
 echo
+if [ "$skipped" -gt 0 ]; then
+	echo "runtime harnesses: ${skipped} skipped (SMOOTHFS_RUNTIME_SKIP)"
+fi
 if [ "$rc" -eq 0 ]; then
 	echo "runtime harnesses: PASS"
 else

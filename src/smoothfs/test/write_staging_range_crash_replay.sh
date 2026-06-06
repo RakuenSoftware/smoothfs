@@ -72,15 +72,10 @@ spill_assert grep -qx 'abcdefghij' "$SPILL_ROOT/slow/range.txt"
 spill_assert grep -qx 'abcXYZghij' "$SPILL_ROOT/server/range.txt"
 spill_assert test "$(cat "$SYSFS/range_staged_bytes")" = "3"
 
-echo "DEBUG-fast-after-stage:"; ls -laR "$SPILL_ROOT/fast" 2>&1 | head -20
-echo "DEBUG-range_staged_writes=$(cat "$SYSFS/range_staged_writes" 2>&1)"
-
 echo "=== crash before drain: unmount + rmmod + remount ==="
 remount_pool
 
 SYSFS="/sys/fs/smoothfs/$UUID"
-echo "DEBUG-after-remount: reason=$(cat "$SYSFS/last_recovery_reason" 2>&1) recovered_bytes=$(cat "$SYSFS/range_staging_recovered_bytes" 2>&1) mask=$(cat "$SYSFS/recovered_range_tier_mask" 2>&1)"
-echo "DEBUG-fast-smoothfs:"; ls -laR "$SPILL_ROOT/fast/.smoothfs" 2>&1 | head
 spill_assert test -d "$SYSFS"
 spill_assert test "$(cat "$SYSFS/range_staging_recovered_bytes")" = "3"
 spill_assert test "$(cat "$SYSFS/range_staging_recovered_writes")" = "1"
