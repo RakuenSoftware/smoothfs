@@ -121,6 +121,11 @@ jobs:
             qemu-system-x86 virtme-ng \
             build-essential bc flex bison libelf-dev libssl-dev kmod \
             xfsprogs e2fsprogs python3 curl ca-certificates
+          # Ubuntu mainline kernels are built with a specific gcc (e.g.
+          # gcc-15); install it best-effort so the module build can match,
+          # otherwise the build step falls back to the default gcc.
+          sudo apt-get install -y --no-install-recommends gcc-15 \
+            || echo "gcc-15 unavailable; module build will use default gcc"
 
       - name: Fetch a >=6.18 guest kernel
         run: |
@@ -131,7 +136,12 @@ jobs:
       - name: Build smoothfs.ko against the guest kernel
         run: |
           set -euxo pipefail
-          make -C src/smoothfs KDIR="/lib/modules/${GUEST_KVER}/build"
+          # The mainline kernel records the gcc it was built with; use a
+          # matching gcc-15 when present, else the default gcc. vermagic
+          # does not encode the gcc version, so the module still loads.
+          cc="$(command -v gcc-15 || command -v gcc)"
+          make -C src/smoothfs KDIR="/lib/modules/${GUEST_KVER}/build" \
+            CC="$cc" HOSTCC="$cc"
           ls -l src/smoothfs/smoothfs.ko
 
       # The smb_vfs_module.sh harness is the only one that needs
