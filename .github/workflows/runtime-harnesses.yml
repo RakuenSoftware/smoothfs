@@ -126,19 +126,9 @@ jobs:
           # otherwise the build step falls back to the default gcc.
           sudo apt-get install -y --no-install-recommends gcc-15 \
             || echo "gcc-15 unavailable; module build will use default gcc"
-          # virtme-ng 1.35 carries virtio_console only as a modalias
-          # ("virtio:d00000003v00001AF4") which does not resolve against a
-          # mainline modules.alias, so its initramfs omits virtio_console and
-          # the guest cannot create the virtio-serial script I/O ports that
-          # virtme-init needs. MODALIASES also accepts plain module names
-          # (it appends "overlay" that way), so add virtio_console by name.
-          vm=/usr/lib/python3/dist-packages/virtme/virtmods.py
-          sudo sed -i 's/^MODALIASES = \[/MODALIASES = [\n    "virtio_console",/' "$vm"
-          grep -n '"virtio_console"' "$vm"
-          # When virtio-serial script I/O ports are absent, virtme-init runs
-          # the script on the console then calls `poweroff` — which the
-          # minimal worker rootfs (shared into the guest) lacks, so the guest
-          # panics instead of shutting down. Provide poweroff via busybox.
+          # virtme-init powers the guest off via `poweroff`, absent from the
+          # minimal worker rootfs (shared into the guest); provide it via
+          # busybox so a clean shutdown propagates the script's exit code.
           bb="$(command -v busybox || echo /bin/busybox)"
           sudo ln -sf "$bb" /usr/sbin/poweroff
           sudo ln -sf "$bb" /sbin/poweroff 2>/dev/null || true
@@ -159,15 +149,6 @@ jobs:
           make -C src/smoothfs KDIR="/lib/modules/${GUEST_KVER}/build" \
             CC="$cc" HOSTCC="$cc"
           ls -l src/smoothfs/smoothfs.ko
-
-      - name: Diagnose virtio_console resolution
-        run: |
-          set -uxo pipefail
-          find "/lib/modules/${GUEST_KVER}" -name 'virtio_console*' -o -name 'virtio-console*' 2>/dev/null | head
-          grep -c 'virtio_console' "/lib/modules/${GUEST_KVER}/modules.dep" || echo "not in modules.dep"
-          echo "--- vng-style resolve ---"
-          modprobe --show-depends -C /var/empty -d / -S "${GUEST_KVER}" -- virtio_console 2>&1 \
-            || echo "resolve FAILED rc=$?"
 
       # The smb_vfs_module.sh harness is the only one that needs
       # /usr/lib/<multiarch>/samba/vfs/smoothfs.so. Build it on demand for
@@ -194,24 +175,16 @@ jobs:
           if [ "$FAIL_FAST" = "true" ]; then fail_fast=1; fi
           log_dir="$RUNNER_TEMP/smoothfs-runtime"
           mkdir -p "$log_dir"
-          rm -f vm_result.txt
-          # Boot the guest kernel under KVM, sharing this checkout (rw) so
-          # the freshly built .ko and the harness scripts are visible. The
-          # guest loads the module and runs the suite; ci_run_in_vm.sh writes
-          # the suite exit code to vm_result.txt in the shared dir.
-          # virtme-ng: command via --exec, guest env via trailing KEY=VAL.
-          sudo vng --verbose --run "/boot/vmlinuz-${GUEST_KVER}" \
+          # Boot the guest kernel under KVM, sharing this checkout (rw) so the
+          # freshly built .ko + harness scripts are visible. --script-sh runs
+          # the command in the guest, pipes its stdout to our stdout, and
+          # propagates its exit code (via the virtme.ret port) as vng's exit
+          # code — so `set -e` + pipefail make this step fail iff the suite
+          # fails. Env is inlined into the one-line command.
+          sudo vng --run "/boot/vmlinuz-${GUEST_KVER}" \
             --cpus 4 --memory 4G --rwdir "$PWD" --user root \
-            --exec "bash src/smoothfs/test/ci_run_in_vm.sh" \
-            "SMOOTHFS_RUNTIME_SUITE=$SUITE" \
-            "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
-            "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" \
-            "SMOOTHFS_LOWER_FS=$LOWER_FS" \
-            "SMOOTHFS_CI_WORKDIR=$PWD" \
+            --script-sh "SMOOTHFS_RUNTIME_SUITE=$SUITE SMOOTHFS_RUNTIME_TESTS='$TESTS' SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast SMOOTHFS_LOWER_FS=$LOWER_FS SMOOTHFS_CI_WORKDIR='$PWD' bash src/smoothfs/test/ci_run_in_vm.sh" \
             2>&1 | tee "$log_dir/runtime-harnesses.log"
-          rc="$(cat vm_result.txt 2>/dev/null || echo 1)"
-          echo "guest suite exit code: $rc"
-          test "$rc" = "0"
 
       - name: Upload runtime harness log
         if: always()
