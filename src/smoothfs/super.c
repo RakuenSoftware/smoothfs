@@ -791,6 +791,16 @@ static int smoothfs_rmdir_rel_path_on_tier(struct smoothfs_sb_info *sbi,
 		return (err == -ENOENT) ? 0 : err;
 	}
 
+	/* The parent path can resolve to a negative dentry (the parent dir
+	 * doesn't exist on this tier — common when purging a directory that
+	 * was only mirrored onto a subset of tiers). There's nothing to
+	 * remove, and dereferencing d_inode() here would oops in inode_lock. */
+	if (d_really_is_negative(parent_path.dentry)) {
+		path_put(&parent_path);
+		kfree(work);
+		return 0;
+	}
+
 	qname = (struct qstr)QSTR_INIT(name, strlen(name));
 	inode_lock(d_inode(parent_path.dentry));
 	lower = smoothfs_compat_lookup(&nop_mnt_idmap, &qname,
