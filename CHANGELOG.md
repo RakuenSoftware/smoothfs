@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.10...v0.2.11) (2026-06-06)
+
+
+### Bug Fixes
+
+* **rename:** complete same-directory cross-tier renames instead of EXDEV ([#153](https://github.com/RakuenSoftware/smoothfs/issues/153)) ([6dd2e1f](https://github.com/RakuenSoftware/smoothfs/commit/6dd2e1f9b09e5f4dad20dd79fc6c7e3420a558eb))
+
 ## [0.2.10](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.9...v0.2.10) (2026-06-06)
 
 
