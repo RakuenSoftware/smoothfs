@@ -160,6 +160,15 @@ jobs:
             CC="$cc" HOSTCC="$cc"
           ls -l src/smoothfs/smoothfs.ko
 
+      - name: Diagnose virtio_console resolution
+        run: |
+          set -uxo pipefail
+          find "/lib/modules/${GUEST_KVER}" -name 'virtio_console*' -o -name 'virtio-console*' 2>/dev/null | head
+          grep -c 'virtio_console' "/lib/modules/${GUEST_KVER}/modules.dep" || echo "not in modules.dep"
+          echo "--- vng-style resolve ---"
+          modprobe --show-depends -C /var/empty -d / -S "${GUEST_KVER}" -- virtio_console 2>&1 \
+            || echo "resolve FAILED rc=$?"
+
       # The smb_vfs_module.sh harness is the only one that needs
       # /usr/lib/<multiarch>/samba/vfs/smoothfs.so. Build it on demand for
       # suites that include it. The samba source tree at /tmp/samba-<ver>
