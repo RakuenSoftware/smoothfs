@@ -181,9 +181,12 @@ jobs:
           # propagates its exit code (via the virtme.ret port) as vng's exit
           # code — so `set -e` + pipefail make this step fail iff the suite
           # fails. Env is inlined into the one-line command.
+          vng --help 2>&1 | sed -n '1,8p' || true
           sudo vng --run "/boot/vmlinuz-${GUEST_KVER}" \
             --cpus 4 --memory 4G --rwdir "$PWD" --user root \
-            --script-sh "SMOOTHFS_RUNTIME_SUITE=$SUITE SMOOTHFS_RUNTIME_TESTS='$TESTS' SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast SMOOTHFS_LOWER_FS=$LOWER_FS SMOOTHFS_CI_WORKDIR='$PWD' bash src/smoothfs/test/ci_run_in_vm.sh" \
+            -- env "SMOOTHFS_RUNTIME_SUITE=$SUITE" "SMOOTHFS_RUNTIME_TESTS=$TESTS" \
+            "SMOOTHFS_RUNTIME_FAIL_FAST=$fail_fast" "SMOOTHFS_LOWER_FS=$LOWER_FS" \
+            "SMOOTHFS_CI_WORKDIR=$PWD" bash src/smoothfs/test/ci_run_in_vm.sh \
             2>&1 | tee "$log_dir/runtime-harnesses.log"
 
       - name: Upload runtime harness log
