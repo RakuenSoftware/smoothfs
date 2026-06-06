@@ -119,7 +119,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 virtme-ng virtiofsd busybox-static zstd cpio \
-            build-essential bc flex bison libelf-dev libssl-dev kmod \
+            build-essential bc flex bison libelf-dev libssl-dev kmod udev \
             xfsprogs e2fsprogs python3 curl ca-certificates iproute2
           # Ubuntu mainline kernels are built with a specific gcc (e.g.
           # gcc-15); install it best-effort so the module build can match,
