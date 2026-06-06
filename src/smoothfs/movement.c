@@ -40,6 +40,24 @@ struct smoothfs_inode_info *smoothfs_lookup_oid(struct smoothfs_sb_info *sbi,
 				      smoothfs_oid_rht_params);
 }
 
+/*
+ * Sleepable OID lookup: the fast oid_map hit, else lazily instantiate the
+ * placement-logged inode from the recovery index. MUST NOT be called under
+ * RCU/spinlock (the resolve sleeps in kern_path + iget). RCU callers (NFS
+ * fh_to_dentry) do the fast lookup under RCU and call smoothfs_recovery_
+ * resolve_oid directly outside the RCU section on a miss.
+ */
+struct smoothfs_inode_info *
+smoothfs_lookup_oid_resolve(struct smoothfs_sb_info *sbi,
+			    const u8 oid[SMOOTHFS_OID_LEN])
+{
+	struct smoothfs_inode_info *si = smoothfs_lookup_oid(sbi, oid);
+
+	if (si)
+		return si;
+	return smoothfs_recovery_resolve_oid(sbi, oid);
+}
+
 static bool smoothfs_can_move(struct smoothfs_inode_info *si, bool force)
 {
 	struct inode *inode = &si->vfs_inode;
@@ -200,7 +218,7 @@ int smoothfs_movement_plan(struct smoothfs_sb_info *sbi,
 	if (dest_tier >= sbi->ntiers)
 		return -EINVAL;
 
-	si = smoothfs_lookup_oid(sbi, oid);
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
 	if (!si)
 		return -ENOENT;
 
@@ -323,7 +341,7 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	if (sbi->quiesced)
 		return -EAGAIN;
 
-	si = smoothfs_lookup_oid(sbi, oid);
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
 	if (!si)
 		return -ENOENT;
 	if (si->intended_tier >= sbi->ntiers)
@@ -522,7 +540,7 @@ int smoothfs_revoke_mappings(struct smoothfs_sb_info *sbi,
 	struct inode *lower_inode;
 	struct inode *inode;
 
-	si = smoothfs_lookup_oid(sbi, oid);
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
 	if (!si)
 		return -ENOENT;
 	inode = &si->vfs_inode;
@@ -554,7 +572,7 @@ int smoothfs_movement_abort(struct smoothfs_sb_info *sbi,
 
 	(void)reason;
 
-	si = smoothfs_lookup_oid(sbi, oid);
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
 	if (!si)
 		return -ENOENT;
 

@@ -102,6 +102,13 @@ static struct dentry *smoothfs_resolve_oid(struct super_block *sb,
 	inode = si ? igrab(&si->vfs_inode) : NULL;
 	rcu_read_unlock();
 
+	if (!inode) {
+		/* Not instantiated yet (lazy mount replay). Resolve the OID
+		 * from the recovery index — sleepable (kern_path + iget), so it
+		 * must run outside the RCU section above. */
+		si = smoothfs_recovery_resolve_oid(sbi, oid);
+		inode = si ? igrab(&si->vfs_inode) : NULL;
+	}
 	if (!inode)
 		return ERR_PTR(-ESTALE);
 
