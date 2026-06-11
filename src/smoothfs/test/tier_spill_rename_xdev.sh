@@ -1,6 +1,9 @@
 #!/bin/bash
-# Cross-tier rename should fail with EXDEV: spilled file on tier 1,
-# destination parent on canonical tier 0.
+# Cross-directory cross-tier rename must COMPLETE on the source's own tier,
+# never EXDEV: a spilled file on tier 1 moved into a directory whose canonical
+# backing is on tier 0 lands on tier 1 under that directory and stays visible.
+# (SMB/NFS servers and raw rename(2) callers do not fall back to copy+delete,
+# so leaking EXDEV here breaks an in-share move.)
 
 set -u
 
@@ -37,24 +40,30 @@ echo "=== create spilled source file on tier 1 ==="
 echo spill > "$SPILL_ROOT/server/spilled.txt"
 spill_assert test -f "$SPILL_ROOT/slow/spilled.txt"
 
-echo "=== raw rename syscall should fail with EXDEV ==="
+echo "=== cross-directory cross-tier rename must complete (no EXDEV) ==="
 python3 - <<'PY' "$SPILL_ROOT/server/spilled.txt" "$SPILL_ROOT/server/fastdir/moved.txt"
-import errno, os, sys
+import os, sys
 src, dst = sys.argv[1], sys.argv[2]
 try:
     os.rename(src, dst)
 except OSError as e:
-    if e.errno == errno.EXDEV:
-        print("  ok    rename rejected with EXDEV")
-        sys.exit(0)
-    print(f"  FAIL  rename returned unexpected errno {e.errno}: {e}", file=sys.stderr)
+    print(f"  FAIL  cross-dir cross-tier rename failed: errno {e.errno}: {e}",
+          file=sys.stderr)
     sys.exit(1)
-print("  FAIL  cross-tier rename unexpectedly succeeded", file=sys.stderr)
-sys.exit(1)
+print("  ok    rename completed")
+sys.exit(0)
 PY
 spill_rc=$(( spill_rc + $? ))
 
-spill_assert test -f "$SPILL_ROOT/server/spilled.txt"
-spill_assert test ! -f "$SPILL_ROOT/server/fastdir/moved.txt"
+# Source name is gone; the moved name is visible under the destination dir.
+spill_assert test ! -e "$SPILL_ROOT/server/spilled.txt"
+spill_assert test -f "$SPILL_ROOT/server/fastdir/moved.txt"
+# No byte copied: the file stays on its source tier (slow), now under fastdir;
+# it did NOT materialize on the fast tier where fastdir is canonical.
+spill_assert test -f "$SPILL_ROOT/slow/fastdir/moved.txt"
+spill_assert test ! -f "$SPILL_ROOT/fast/fastdir/moved.txt"
+# Content preserved, and the pre-existing fast-tier sibling is untouched.
+spill_assert test "$(cat "$SPILL_ROOT/server/fastdir/moved.txt")" = spill
+spill_assert test "$(cat "$SPILL_ROOT/server/fastdir/anchor.txt")" = fast
 
 spill_finish "tier_spill_rename_xdev"

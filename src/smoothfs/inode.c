@@ -1560,6 +1560,7 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	bool spill_is_dir = lower_old && d_is_dir(lower_old);
 	struct dentry *stale_lower = NULL;
 	struct inode *stale_inode = NULL;
+	struct path mat_new_parent = {};
 	int err;
 
 	/*
@@ -1580,8 +1581,8 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	 * rename (smoothfs_drop_stale_rename_target). Cross-tier rename of a
 	 * directory over an existing directory keeps returning EXDEV — that
 	 * has merge/rmdir semantics this no-copy path does not implement — as
-	 * do RENAME_EXCHANGE/WHITEOUT. Cross-DIRECTORY renames still return
-	 * EXDEV below so callers fall back to copy+delete.
+	 * do RENAME_EXCHANGE/WHITEOUT. Cross-DIRECTORY renames are completed
+	 * the same no-copy way by the block further down.
 	 */
 	if (old_dentry->d_parent == new_dentry->d_parent) {
 		if (lower_new && lower_new->d_sb != actual_old_parent->d_sb) {
@@ -1600,21 +1601,96 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 		actual_new_parent = actual_old_parent;
 	}
 
-	if (actual_old_parent->d_sb != actual_new_parent->d_sb)
+	/* Cross-DIRECTORY cross-tier rename: the destination parent resolved
+	 * onto a different tier than the source (e.g. source on fast, dest dir
+	 * is a tier-fallthrough hit on slow). vfs_rename across lower
+	 * superblocks is invalid, and SMB/NFS servers and raw rename(2) callers
+	 * do NOT fall back to copy+delete the way Windows Explorer does — they
+	 * surface EXDEV/NT_STATUS_NOT_SAME_DEVICE and the move fails, even
+	 * though both paths live in one smoothfs mount. Complete it on the
+	 * source's own tier exactly as the same-directory block above does:
+	 * materialize the destination parent's directory chain on the source's
+	 * tier, then rename within that tier. No byte is copied — the source
+	 * already holds its data there — and the moved name then resolves via
+	 * smoothfs_lookup's across-tiers rel_path scan, like any spilled file.
+	 * RENAME_EXCHANGE/WHITEOUT and renaming a directory over an existing
+	 * one need merge semantics this no-copy path does not implement, so
+	 * those keep returning EXDEV. */
+	if (actual_old_parent->d_sb != actual_new_parent->d_sb) {
+		struct smoothfs_sb_info *sbi = SMOOTHFS_SB(old_dir->i_sb);
+		char *new_parent_rel;
+		u8 src_tier;
+
+		if (flags & (RENAME_EXCHANGE | RENAME_WHITEOUT))
+			return -EXDEV;
+
+		for (src_tier = 0; src_tier < sbi->ntiers; src_tier++)
+			if (sbi->tiers[src_tier].lower_path.dentry->d_sb ==
+			    actual_old_parent->d_sb)
+				break;
+		if (src_tier >= sbi->ntiers)
+			return -EXDEV;
+
+		/* An existing target on a different tier becomes stale once the
+		 * source is renamed into place on its own tier — stash it for
+		 * smoothfs_drop_stale_rename_target, mirroring the same-dir
+		 * path. A target directory needs merge semantics: bail. */
+		if (lower_new && d_really_is_positive(lower_new)) {
+			if (d_is_dir(lower_new))
+				return -EXDEV;
+			if (flags & RENAME_NOREPLACE)
+				return -EEXIST;
+			stale_lower = dget(lower_new);
+			stale_inode = d_inode(new_dentry);
+		}
+
+		new_parent_rel = smoothfs_rel_path_from_dentry(new_dentry->d_parent);
+		if (!new_parent_rel) {
+			dput(stale_lower);
+			return -ENOMEM;
+		}
+		err = smoothfs_materialize_parent_on_tier(idmap, old_dir->i_sb,
+							  sbi, src_tier,
+							  new_parent_rel,
+							  &mat_new_parent);
+		/* A directory carries spill-tier copies that the post-rename
+		 * smoothfs_rename_spill_tiers relocates to match; that helper
+		 * skips any tier whose destination parent is absent, so
+		 * pre-create the parent on every other active tier too. */
+		if (!err && spill_is_dir) {
+			u8 t;
+
+			for (t = 0; t < sbi->ntiers; t++) {
+				struct path tmp;
+
+				if (t == src_tier ||
+				    !smoothfs_metadata_tier_active(sbi, t))
+					continue;
+				if (!smoothfs_materialize_parent_on_tier(idmap,
+						old_dir->i_sb, sbi, t,
+						new_parent_rel, &tmp))
+					path_put(&tmp);
+			}
+		}
+		kfree(new_parent_rel);
+		if (err) {
+			dput(stale_lower);
+			return err;
+		}
+
+		/* Rename now happens entirely within the source's tier; the
+		 * destination resolves under the just-materialized parent. */
+		actual_new_parent = mat_new_parent.dentry;
+		smoothfs_set_lower_dentry(new_dentry, NULL);
+		lower_new = NULL;
+	} else if (lower_old && lower_new &&
+		   lower_old->d_sb != lower_new->d_sb) {
+		/* Parents share a tier but an existing target name resolved to
+		 * a third tier — the no-copy path cannot express renaming the
+		 * source onto a lower on a different superblock. Rare; fall
+		 * back to EXDEV as before. */
 		return -EXDEV;
-	/* Cross-DIRECTORY cross-tier rename: source and destination resolve
-	 * to lower dentries on different lower filesystems (e.g. source on
-	 * fast, destination is a tier-fallthrough hit on slow). vfs_rename
-	 * across superblocks is invalid; return -EXDEV so the caller
-	 * (typically coreutils mv / Python shutil.move) falls back to
-	 * copy+delete instead of crashing into the d_parent identity
-	 * check below with EINVAL — which userspace then mis-interprets
-	 * as "cannot move to a subdirectory of itself" and bails out.
-	 * (Same-directory cross-tier renames were handled above and never
-	 * reach here with mismatched lower superblocks.) */
-	if (lower_old && lower_new &&
-	    lower_old->d_sb != lower_new->d_sb)
-		return -EXDEV;
+	}
 	if (lower_new)
 		dget(lower_new);
 
@@ -1622,6 +1698,7 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	if (IS_ERR(trap)) {
 		if (lower_new)
 			dput(lower_new);
+		path_put(&mat_new_parent);
 		return PTR_ERR(trap);
 	}
 	if (!lower_new) {
@@ -1630,33 +1707,39 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 						   actual_new_parent);
 		if (IS_ERR(lower_new)) {
 			unlock_rename(actual_old_parent, actual_new_parent);
+			path_put(&mat_new_parent);
 			return PTR_ERR(lower_new);
 		}
 	}
 	if (d_unhashed(lower_old) || actual_old_parent != lower_old->d_parent) {
 		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
+		path_put(&mat_new_parent);
 		return -EINVAL;
 	}
 	if (d_unhashed(lower_new) || actual_new_parent != lower_new->d_parent) {
 		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
+		path_put(&mat_new_parent);
 		return -EINVAL;
 	}
 	if (trap == lower_old) {
 		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
+		path_put(&mat_new_parent);
 		return -EINVAL;
 	}
 	if (trap == lower_new) {
 		err = (flags & RENAME_EXCHANGE) ? -EINVAL : -ENOTEMPTY;
 		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
+		path_put(&mat_new_parent);
 		return err;
 	}
 	if (d_really_is_positive(lower_new) && (flags & RENAME_NOREPLACE)) {
 		unlock_rename(actual_old_parent, actual_new_parent);
 		dput(lower_new);
+		path_put(&mat_new_parent);
 		return -EEXIST;
 	}
 
@@ -1683,6 +1766,7 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 		kfree(spill_old_rel);
 		dput(lower_new);
 		dput(stale_lower);
+		path_put(&mat_new_parent);
 		return err;
 	}
 
@@ -1765,6 +1849,7 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 		}
 	}
 	kfree(spill_old_rel);
+	path_put(&mat_new_parent);
 	return 0;
 }
 
