@@ -408,6 +408,15 @@ static ssize_t metadata_tier_skips_show(struct kobject *kobj,
 		(long long)atomic64_read(&pool->sbi->metadata_tier_skips));
 }
 
+static ssize_t parent_tier_lookup_recoveries_show(struct kobject *kobj,
+						  struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+
+	return sysfs_emit(buf, "%lld\n",
+		(long long)atomic64_read(&pool->sbi->parent_tier_lookup_recoveries));
+}
+
 /* Phase 6O — range-staging recovery status (read-only). */
 static ssize_t range_staging_recovery_supported_show(struct kobject *kobj,
 						     struct kobj_attribute *attr,
@@ -533,6 +542,8 @@ static struct kobj_attribute write_staging_drain_active_tier_mask_attr =
 	__ATTR_RW(write_staging_drain_active_tier_mask);
 static struct kobj_attribute metadata_tier_skips_attr =
 	__ATTR_RO(metadata_tier_skips);
+static struct kobj_attribute parent_tier_lookup_recoveries_attr =
+	__ATTR_RO(parent_tier_lookup_recoveries);
 static struct kobj_attribute range_staging_recovery_supported_attr =
 	__ATTR_RO(range_staging_recovery_supported);
 static struct kobj_attribute range_staging_recovered_bytes_attr =
@@ -572,6 +583,7 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&metadata_active_tier_mask_attr.attr,
 	&write_staging_drain_active_tier_mask_attr.attr,
 	&metadata_tier_skips_attr.attr,
+	&parent_tier_lookup_recoveries_attr.attr,
 	&range_staging_recovery_supported_attr.attr,
 	&range_staging_recovered_bytes_attr.attr,
 	&range_staging_recovered_writes_attr.attr,
@@ -1951,6 +1963,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	atomic64_set(&sbi->oldest_staged_write_ns, 0);
 	atomic64_set(&sbi->last_drain_ns, 0);
 	atomic64_set(&sbi->metadata_tier_skips, 0);
+	atomic64_set(&sbi->parent_tier_lookup_recoveries, 0);
 	atomic64_set(&sbi->range_staging_recovered_bytes, 0);
 	atomic64_set(&sbi->range_staging_recovered_writes, 0);
 	atomic64_set(&sbi->range_staging_recovery_pending, 0);
