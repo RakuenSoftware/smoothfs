@@ -287,6 +287,12 @@ struct smoothfs_sb_info {
 	atomic64_t          oldest_staged_write_ns;
 	atomic64_t          last_drain_ns;
 	atomic64_t          metadata_tier_skips;
+	/* Lookups that resolved a name only via fresh rel_path resolution on
+	 * the parent's own tier -- the case smoothfs_lookup's across-tiers
+	 * scan used to exclude. A non-zero value means readdir/lookup tier
+	 * coverage had desynced and would have surfaced a phantom (listed but
+	 * unresolvable) entry; see smoothfs_lookup_inner. */
+	atomic64_t          parent_tier_lookup_recoveries;
 	/* Range-staging crash/remount recovery (Phase 6O). Counters are
 	 * snapshot-once at mount-time replay; recovery_pending decrements
 	 * as recovered ranges drain. recovered_range_tier_mask is a

@@ -731,10 +731,31 @@ static struct dentry *smoothfs_lookup_inner(struct inode *dir,
 				u8 found_tier;
 				int err;
 
-				err = smoothfs_lookup_rel_across_tiers(sbi, parent_tier,
+				/*
+				 * Scan EVERY tier via fresh per-tier rel_path
+				 * resolution, parent_tier included (SMOOTHFS_MAX_TIERS
+				 * excludes nothing). Step 1 only consulted the parent's
+				 * cached lower dentry; readdir (smoothfs_build_dir_cache)
+				 * unions entries across ALL tiers by the same fresh
+				 * resolution. When the parent's current_tier and the tier
+				 * of its cached lower_path desync -- which cross-tier
+				 * directory materialization, a remount that rebuilt the
+				 * path index empty, or a concurrent cross-tier rename can
+				 * cause -- excluding parent_tier here made lookup cover
+				 * fewer tiers than readdir, surfacing a name as listed by
+				 * `ls` yet unresolvable (-ENOENT) on stat/open/rename: a
+				 * "phantom" entry. Covering all tiers makes lookup's
+				 * coverage a provable superset of readdir's, so a listed
+				 * entry can never be unresolvable for tier-coverage
+				 * reasons. A hit on parent_tier (counted below) is exactly
+				 * the case the old exclusion would have missed.
+				 */
+				err = smoothfs_lookup_rel_across_tiers(sbi, SMOOTHFS_MAX_TIERS,
 								       rel_path,
 								       &lower_path,
 								       &found_tier);
+				if (!err && found_tier == parent_tier)
+					atomic64_inc(&sbi->parent_tier_lookup_recoveries);
 				if (!err) {
 					inode = smoothfs_iget(dir->i_sb, &lower_path, false, false);
 					path_put(&lower_path);
