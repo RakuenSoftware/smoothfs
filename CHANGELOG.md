@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.13](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.12...v0.2.13) (2026-06-12)
+
+
+### Bug Fixes
+
+* **lookup:** scan all tiers in the across-tiers fallback (readdir/lookup coverage parity) ([#159](https://github.com/RakuenSoftware/smoothfs/issues/159)) ([6def505](https://github.com/RakuenSoftware/smoothfs/commit/6def505306a3fdbed3065d9f0d938e5624529a80))
+
 ## [0.2.12](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.11...v0.2.12) (2026-06-11)
 
 
