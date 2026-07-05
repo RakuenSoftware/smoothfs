@@ -168,15 +168,11 @@ echo "=== forget_lower must drop the pin and free the blocks ==="
 echo "$FAST_TIER $LINO" > "$SYSFS"
 sync
 sleep 1
+# No drop_caches here on purpose: forget_lower must free the blocks by itself
+# (tierd no longer issues drop_caches), i.e. it must force eviction, not merely
+# make the inode reclaimable.
 freed_kb=$(back_used_kb "$SPILL_ROOT/fast")
-echo "  after forget_lower (no drop_caches): ${freed_kb}KB"
-# DIAGNOSTIC: does a subsequent drop_caches free it? (tells us whether the fix
-# merely makes the inode reclaimable vs actually evicts it)
-echo 2 > /proc/sys/vm/drop_caches
-sync
-sleep 1
-freed2_kb=$(back_used_kb "$SPILL_ROOT/fast")
-echo "  after forget_lower + drop_caches: ${freed2_kb}KB"
+echo "  after forget_lower: ${freed_kb}KB"
 spill_assert test "$((base_kb - freed_kb))" -ge 12288
 
 rm -f "$SRC"

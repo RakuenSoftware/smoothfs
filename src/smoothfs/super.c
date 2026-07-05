@@ -763,10 +763,20 @@ static void smoothfs_forget_tier_copy(struct smoothfs_sb_info *sbi, u8 tier,
 	if (!inode)
 		return;
 	/*
-	 * Drop the pin's reference; the ilookup reference taken above then
-	 * evicts the now-unreferenced shadow inode. atomic_xchg makes this a
-	 * no-op if the pin was already dropped (e.g. smoothfs_forget_placement
-	 * racing on the canonical tier), so we never over-put.
+	 * The caller removed the lower copy out-of-band, so this shadow inode is
+	 * dead. Clear its (now-stale) nlink so the final iput below actually
+	 * evicts it instead of parking it on the inode LRU. Eviction is what runs
+	 * ->evict_inode -> path_put(&si->lower_path), dropping the last reference
+	 * on the unlinked lower so the backing frees the blocks. Without this the
+	 * blocks are reclaimed only on the next memory-pressure / drop_caches,
+	 * which on a big-RAM NAS never comes — i.e. the leak persists.
+	 */
+	clear_nlink(inode);
+	/*
+	 * Drop the pin's reference, then the ilookup reference; once the count
+	 * hits zero the nlink-0 inode evicts immediately. atomic_xchg makes the
+	 * pin drop a no-op if it was already dropped (e.g. smoothfs_forget_
+	 * placement racing on the canonical tier), so we never over-put.
 	 */
 	if (atomic_xchg(&SMOOTHFS_I(inode)->replay_pinned, 0))
 		iput(inode);
