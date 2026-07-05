@@ -48,6 +48,8 @@ static void smoothfs_write_staging_set_reason(struct smoothfs_sb_info *sbi,
 					      const char *reason);
 static int smoothfs_write_staging_drain_rehomes(struct smoothfs_sb_info *sbi);
 static int smoothfs_write_staging_drain_ranges(struct smoothfs_sb_info *sbi);
+static void smoothfs_forget_tier_copy(struct smoothfs_sb_info *sbi, u8 tier,
+				      unsigned long lower_ino);
 
 static ssize_t spill_creates_total_show(struct kobject *kobj,
 					struct kobj_attribute *attr, char *buf)
@@ -75,6 +77,33 @@ static ssize_t any_spill_since_mount_show(struct kobject *kobj,
 
 	return sysfs_emit(buf, "%d\n",
 			  atomic_read(&pool->sbi->any_spill_since_mount) ? 1 : 0);
+}
+
+/*
+ * Write "<tier> <lower_ino>" to release the replay pin smoothfs holds on the
+ * shadow inode for a lower copy that tierd removed out-of-band (its placement
+ * mover copies a file to another tier and unlinks the source directly on the
+ * backing, bypassing smoothfs). Without this the pinned inode keeps si->lower_
+ * path alive, so the backing fs never runs ->evict_inode and the freed blocks
+ * are reclaimed only at unmount — a df >> du space leak on the busiest tier.
+ * tierd's old drop_caches=2 workaround cannot reclaim these because the replay
+ * pin holds a reference (the inode is not cache-idle). This is the precise
+ * replacement: drop exactly the moved inode's pin so its blocks free at once.
+ */
+static ssize_t forget_lower_store(struct kobject *kobj,
+				  struct kobj_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct smoothfs_sysfs_pool *pool = to_smoothfs_sysfs_pool(kobj);
+	unsigned int tier;
+	unsigned long lower_ino;
+
+	if (sscanf(buf, "%u %lu", &tier, &lower_ino) != 2)
+		return -EINVAL;
+	if (tier >= pool->sbi->ntiers)
+		return -EINVAL;
+	smoothfs_forget_tier_copy(pool->sbi, (u8)tier, lower_ino);
+	return count;
 }
 
 static ssize_t write_staging_supported_show(struct kobject *kobj,
@@ -506,6 +535,8 @@ static struct kobj_attribute spill_creates_failed_all_tiers_attr =
 	__ATTR_RO(spill_creates_failed_all_tiers);
 static struct kobj_attribute any_spill_since_mount_attr =
 	__ATTR_RO(any_spill_since_mount);
+static struct kobj_attribute forget_lower_attr =
+	__ATTR_WO(forget_lower);
 static struct kobj_attribute write_staging_supported_attr =
 	__ATTR_RO(write_staging_supported);
 static struct kobj_attribute write_staging_enabled_attr =
@@ -565,6 +596,7 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&spill_creates_total_attr.attr,
 	&spill_creates_failed_all_tiers_attr.attr,
 	&any_spill_since_mount_attr.attr,
+	&forget_lower_attr.attr,
 	&write_staging_supported_attr.attr,
 	&write_staging_enabled_attr.attr,
 	&write_staging_full_pct_attr.attr,
@@ -694,6 +726,51 @@ static int smoothfs_resolve_rel_path_on_tier(struct smoothfs_sb_info *sbi,
 	err = kern_path(full, LOOKUP_FOLLOW, out);
 	kfree(full);
 	return err;
+}
+
+/*
+ * Drop the replay pin on the separately-tracked smoothfs inode that shadows a
+ * spill/replica copy we just removed from `tier`.
+ *
+ * smoothfs_materialize_parent_on_tier() (spill-tier dir replicas) and the
+ * spill-create path smoothfs_iget() the fresh lower object they create on a
+ * non-canonical tier — a fresh lower has no OID xattr, so it mints a *new* OID
+ * and thus a *distinct* smoothfs inode — and pin it via si->replay_pinned so
+ * OID lookups need no rescan. That shadow inode holds a reference to the lower
+ * object through si->lower_path. When the tiering machinery later removes the
+ * copy (empty spill-dir rmdir via smoothfs_forget_placement, relocated/staged
+ * file unlink) the lower name goes away but the shadow inode keeps the backing
+ * inode referenced, so the lower fs never runs ->evict_inode and the blocks are
+ * reclaimed only at unmount (smoothfs_kill_sb drops every replay pin). On a pool
+ * with heavy spill churn — the fastest tier — this is an unbounded backing-space
+ * leak: df grows with no file in the tree to attribute it to.
+ *
+ * Resolve the shadow inode for this (tier, lower_ino) via the lower_ino_map and
+ * drop its pin so it can be evicted and the backing blocks freed immediately.
+ * Must be called with no lower inode_lock held, so the eviction that
+ * path_put(&si->lower_path) may trigger cannot recurse on a held lock.
+ */
+static void smoothfs_forget_tier_copy(struct smoothfs_sb_info *sbi, u8 tier,
+				      unsigned long lower_ino)
+{
+	struct inode *inode;
+	u64 ino_no;
+
+	ino_no = smoothfs_lower_ino_map_get(sbi, tier, lower_ino);
+	if (!ino_no)
+		return;
+	inode = ilookup(sbi->sb, ino_no);
+	if (!inode)
+		return;
+	/*
+	 * Drop the pin's reference; the ilookup reference taken above then
+	 * evicts the now-unreferenced shadow inode. atomic_xchg makes this a
+	 * no-op if the pin was already dropped (e.g. smoothfs_forget_placement
+	 * racing on the canonical tier), so we never over-put.
+	 */
+	if (atomic_xchg(&SMOOTHFS_I(inode)->replay_pinned, 0))
+		iput(inode);
+	iput(inode);
 }
 
 static int smoothfs_unlink_rel_path_on_tier(struct smoothfs_sb_info *sbi,
