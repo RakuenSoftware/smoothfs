@@ -50,12 +50,31 @@ sync
 FASTF="$SPILL_ROOT/fast/obj.bin"
 spill_assert test -f "$FASTF"
 LINO=$(stat -c %i "$FASTF")
-OID=$(python3 - "$SPILL_ROOT/server/obj.bin" <<'PY'
-import os, sys
-print(os.getxattr(sys.argv[1], b"trusted.smoothfs.oid").hex())
+# Read the OID from the BACKING xattr, NOT the merged view: smoothfs serves
+# trusted.smoothfs.oid from the in-memory si->oid (xattr.c), which may not yet
+# be persisted to the lower. The mount-time recovery scan reads the *backing*
+# xattr and mints a fresh OID if it is absent, so we must Inspect the OID that
+# is actually on disk. Poll until the async oid writeback has landed it.
+OID=$(python3 - "$FASTF" <<'PY'
+import os, sys, time
+p = sys.argv[1]
+deadline = time.time() + 15
+while True:
+    try:
+        print(os.getxattr(p, b"trusted.smoothfs.oid").hex())
+        break
+    except OSError:
+        if time.time() > deadline:
+            sys.stderr.write("oid xattr never persisted to backing\n")
+            sys.exit(1)
+        time.sleep(0.2)
 PY
 )
-echo "  fast lower inode=$LINO"
+if [ -z "$OID" ]; then
+	spill_assert false "oid not persisted to backing"
+	spill_finish "tier_spill_forget_lower_reclaim"
+fi
+echo "  fast lower inode=$LINO oid=${OID:0:12}..."
 
 echo "=== unmount, reload module, remount (object now recovery-only) ==="
 umount "$SPILL_ROOT/server"
