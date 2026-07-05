@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.14](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.13...v0.2.14) (2026-07-05)
+
+
+### Bug Fixes
+
+* **placement:** add forget_lower sysfs to reclaim out-of-band-removed tier copies ([#161](https://github.com/RakuenSoftware/smoothfs/issues/161)) ([3f19356](https://github.com/RakuenSoftware/smoothfs/commit/3f19356ed5c726882bdaae211f649b1a70781c1c))
+
 ## [0.2.13](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.12...v0.2.13) (2026-06-12)
 
 
