@@ -219,8 +219,14 @@ else
 	spill_assert false "move helper failed"
 	spill_finish "tier_spill_forget_lower_reclaim"
 fi
-sync
 spill_assert test -f "$SLOWF"
+# The SWITCHED placement record is written by a ~1s-interval writeback worker;
+# sync only kicks it. Wait for it to land on .smoothfs/placement.log so the
+# post-remount recovery index (which is log-backed) can resolve the OID.
+sync
+sleep 2
+sync
+echo "  placement.log: $(ls -l "$SPILL_ROOT/fast/.smoothfs/placement.log" 2>&1 | awk '{print $5, $9}')"
 # tierd would os.Remove the stale source; do the same so only the slow copy is live.
 rm -f "$FASTF"
 SLINO=$(stat -c %i "$SLOWF")
