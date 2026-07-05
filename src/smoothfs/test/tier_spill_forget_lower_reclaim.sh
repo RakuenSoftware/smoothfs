@@ -227,6 +227,23 @@ sync
 sleep 2
 sync
 echo "  placement.log: $(ls -l "$SPILL_ROOT/fast/.smoothfs/placement.log" 2>&1 | awk '{print $5, $9}')"
+echo "  captured OID:  $OID"
+python3 - "$SPILL_ROOT/fast/.smoothfs/placement.log" <<'PY'
+import sys, struct
+MAGIC = 0x534D46504C4F470A
+data = open(sys.argv[1], "rb").read()
+# scan for records: magic(8 le) + seq(8) + oid(16 at +16) + state(+32)
+i = 0
+seen = []
+while i + 33 <= len(data):
+    if struct.unpack_from("<Q", data, i)[0] == MAGIC:
+        oid = data[i+16:i+32].hex(); state = data[i+32]
+        seen.append((oid, state)); i += 48  # assume 48-byte rec; realign on next magic if wrong
+    else:
+        i += 1
+for oid, state in seen:
+    print(f"  log record: oid={oid} state={state}")
+PY
 # tierd would os.Remove the stale source; do the same so only the slow copy is live.
 rm -f "$FASTF"
 SLINO=$(stat -c %i "$SLOWF")
