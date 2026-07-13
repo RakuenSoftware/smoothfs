@@ -1640,6 +1640,31 @@ void smoothfs_oid_wb_drain(struct smoothfs_sb_info *sbi)
 	flush_delayed_work(&sbi->oid_wb_work);
 }
 
+/* Copy the OID of a still-pending writeback entry for @lower's inode into
+ * @oid without touching the workqueue. Entries are FIFO and the flush uses
+ * XATTR_CREATE, so on (theoretical) duplicates the oldest entry is the one
+ * that will win on disk — return that one. */
+bool smoothfs_oid_wb_peek(struct smoothfs_sb_info *sbi, struct dentry *lower,
+			  u8 oid[SMOOTHFS_OID_LEN])
+{
+	struct smoothfs_oid_wb_entry *e;
+	bool found = false;
+
+	if (!READ_ONCE(sbi->oid_wb_ready) || d_really_is_negative(lower))
+		return false;
+
+	spin_lock(&sbi->oid_wb_lock);
+	list_for_each_entry(e, &sbi->oid_wb_pending, link) {
+		if (d_inode(e->lower_path.dentry) == d_inode(lower)) {
+			memcpy(oid, e->oid, SMOOTHFS_OID_LEN);
+			found = true;
+			break;
+		}
+	}
+	spin_unlock(&sbi->oid_wb_lock);
+	return found;
+}
+
 void smoothfs_oid_wb_destroy(struct smoothfs_sb_info *sbi)
 {
 	if (!sbi->oid_wb_ready)
@@ -2348,13 +2373,29 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 				 * the in-memory pin_state (e.g. an SMB lease pin),
 				 * so a file's identity is unstable across a
 				 * create→evict→re-lookup window (readily hit on
-				 * slow/emulated guests). Force the writeback out
-				 * and retry so the already-minted OID wins and the
-				 * file keeps a stable identity; only genuinely new
-				 * files fall through to the mint path after this.
+				 * slow/emulated guests).
+				 *
+				 * Take the already-minted OID straight from the
+				 * pending queue. Do NOT drain the queue here:
+				 * ->lookup runs under the parent directory's
+				 * i_rwsem, and a synchronous flush of the whole
+				 * backlog from this path convoys every other
+				 * operation on that directory behind lower-fs
+				 * xattr I/O (a create→unlink→re-lookup loop like
+				 * cthon04 nfsidem re-arms the race on nearly every
+				 * iteration and can wedge the directory in D-state
+				 * for minutes). The peek is one spinlock-guarded
+				 * list walk. Only if the entry was already spliced
+				 * out for an in-flight flush (peek misses) do we
+				 * wait for that one execution and re-read; genuinely
+				 * new files still fall through to the mint path.
 				 */
-				smoothfs_oid_wb_drain(sbi);
-				err = smoothfs_read_oid_xattr(lower->dentry, oid);
+				if (smoothfs_oid_wb_peek(sbi, lower->dentry, oid)) {
+					err = 0;
+				} else {
+					smoothfs_oid_wb_drain(sbi);
+					err = smoothfs_read_oid_xattr(lower->dentry, oid);
+				}
 			}
 		}
 		if (err == -ENODATA) {
