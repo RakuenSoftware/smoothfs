@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.16](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.15...v0.2.16) (2026-07-13)
+
+
+### Bug Fixes
+
+* **inode:** take the pending OID from the writeback queue instead of draining it ([#166](https://github.com/RakuenSoftware/smoothfs/issues/166)) ([53262e0](https://github.com/RakuenSoftware/smoothfs/commit/53262e0b975b3cb2a8b5483c2e242ce98fe1049a))
+
 ## [0.2.15](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.14...v0.2.15) (2026-07-13)
 
 
