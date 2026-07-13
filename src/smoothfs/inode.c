@@ -1575,7 +1575,6 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	struct dentry *lower_new = smoothfs_lower_dentry(new_dentry);
 	struct dentry *actual_old_parent = lower_old ? lower_old->d_parent : lower_old_parent;
 	struct dentry *actual_new_parent = lower_new_parent;
-	struct dentry *trap;
 	struct renamedata rd = {};
 	char *spill_old_rel = NULL;
 	bool spill_is_dir = lower_old && d_is_dir(lower_old);
@@ -1715,53 +1714,26 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	if (lower_new)
 		dget(lower_new);
 
-	trap = lock_rename_child(lower_old, actual_new_parent);
-	if (IS_ERR(trap)) {
+	/*
+	 * Lock the parents (looking up the target by name when it isn't already
+	 * resolved), then rename. smoothfs_compat_start_rename absorbs the 6.19
+	 * VFS directory-locking rework that made lock_rename_child()/
+	 * unlock_rename() module-internal, and does the trap/unhashed/NOREPLACE
+	 * validation this used to open-code. lower_new keeps its own ref (dget
+	 * above) for the post-rename fixups; rd gets its own refs, released by
+	 * smoothfs_compat_finish_rename.
+	 */
+	rd.mnt_idmap  = idmap;
+	rd.old_parent = actual_old_parent;
+	rd.new_parent = actual_new_parent;
+	rd.flags      = flags;
+	err = smoothfs_compat_start_rename(&rd, lower_old, lower_new,
+					   &new_dentry->d_name);
+	if (err) {
 		if (lower_new)
 			dput(lower_new);
 		path_put(&mat_new_parent);
-		return PTR_ERR(trap);
-	}
-	if (!lower_new) {
-		lower_new = smoothfs_compat_lookup(&nop_mnt_idmap,
-						   &new_dentry->d_name,
-						   actual_new_parent);
-		if (IS_ERR(lower_new)) {
-			unlock_rename(actual_old_parent, actual_new_parent);
-			path_put(&mat_new_parent);
-			return PTR_ERR(lower_new);
-		}
-	}
-	if (d_unhashed(lower_old) || actual_old_parent != lower_old->d_parent) {
-		unlock_rename(actual_old_parent, actual_new_parent);
-		dput(lower_new);
-		path_put(&mat_new_parent);
-		return -EINVAL;
-	}
-	if (d_unhashed(lower_new) || actual_new_parent != lower_new->d_parent) {
-		unlock_rename(actual_old_parent, actual_new_parent);
-		dput(lower_new);
-		path_put(&mat_new_parent);
-		return -EINVAL;
-	}
-	if (trap == lower_old) {
-		unlock_rename(actual_old_parent, actual_new_parent);
-		dput(lower_new);
-		path_put(&mat_new_parent);
-		return -EINVAL;
-	}
-	if (trap == lower_new) {
-		err = (flags & RENAME_EXCHANGE) ? -EINVAL : -ENOTEMPTY;
-		unlock_rename(actual_old_parent, actual_new_parent);
-		dput(lower_new);
-		path_put(&mat_new_parent);
 		return err;
-	}
-	if (d_really_is_positive(lower_new) && (flags & RENAME_NOREPLACE)) {
-		unlock_rename(actual_old_parent, actual_new_parent);
-		dput(lower_new);
-		path_put(&mat_new_parent);
-		return -EEXIST;
 	}
 
 	/* Capture the source path before vfs_rename d_moves old_dentry, so the
@@ -1770,19 +1742,8 @@ static int smoothfs_rename_inner(struct mnt_idmap *idmap,
 	if (spill_is_dir)
 		spill_old_rel = smoothfs_rel_path_from_dentry(old_dentry);
 
-	memset(&rd, 0, sizeof(rd));
-	rd.mnt_idmap = idmap;
-	rd.old_parent = dget(actual_old_parent);
-	rd.old_dentry = dget(lower_old);
-	rd.new_parent = actual_new_parent;
-	rd.new_dentry = dget(lower_new);
-	rd.flags = flags;
-
 	err = vfs_rename(&rd);
-	unlock_rename(rd.old_parent, rd.new_parent);
-	dput(rd.old_dentry);
-	dput(rd.new_dentry);
-	dput(rd.old_parent);
+	smoothfs_compat_finish_rename(&rd);
 	if (err) {
 		kfree(spill_old_rel);
 		dput(lower_new);

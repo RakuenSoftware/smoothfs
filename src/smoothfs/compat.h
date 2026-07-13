@@ -268,6 +268,188 @@ smoothfs_compat_init_renamedata(struct renamedata *rd,
 	rd->flags      = flags;
 }
 
+/* ---------- rename: lock + lookup + vfs_rename + unlock ----------
+ * 6.19 (directory-locking rework, the same series that changed vfs_create/
+ * vfs_mkdir above): lock_rename()/unlock_rename() became module-internal
+ * (static in fs/namei.c), and callers move to start_renaming()/end_renaming(),
+ * which lock the parents, look up the two child names, validate the trap
+ * (ancestor) relationship and fill @rd; the caller then runs vfs_rename() and
+ * end_renaming() to unlock + drop refs.
+ * pre-6.19 (down to our 6.18 floor): the classic lock_rename() + lookup_one()
+ * + vfs_rename() + unlock_rename() dance.
+ *
+ * Renames @o_name under @old_parent to @n_name under @new_parent as a plain
+ * replace-if-exists (flags = 0), matching smoothfs's per-tier movement rename.
+ * A missing source is a no-op success (the file already moved/vanished on this
+ * tier), preserving the pre-rework behaviour. Returns 0 or a negative errno.
+ */
+static inline int
+smoothfs_compat_rename(struct mnt_idmap *idmap,
+		       struct dentry *old_parent, const char *o_name,
+		       struct dentry *new_parent, const char *n_name)
+{
+	struct qstr oq = (struct qstr)QSTR_INIT(o_name, strlen(o_name));
+	struct qstr nq = (struct qstr)QSTR_INIT(n_name, strlen(n_name));
+	struct renamedata rd;
+	int err;
+
+	memset(&rd, 0, sizeof(rd));
+	rd.mnt_idmap  = idmap;
+	rd.old_parent = old_parent;
+	rd.new_parent = new_parent;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
+	/* start_renaming() locks the parents, looks up both names and fills
+	 * rd.old_dentry/new_dentry (+ takes an old_parent ref). It reports a
+	 * missing source as -ENOENT or as a negative rd.old_dentry depending on
+	 * the lookup; treat both as the no-op success the old path returned. */
+	err = start_renaming(&rd, 0, &oq, &nq);
+	if (err == -ENOENT)
+		return 0;
+	if (err)
+		return err;
+	if (d_really_is_negative(rd.old_dentry)) {
+		end_renaming(&rd);
+		return 0;
+	}
+	err = vfs_rename(&rd);
+	end_renaming(&rd);
+	return err;
+#else
+	{
+		struct dentry *trap, *old_d = NULL, *new_d = NULL;
+
+		trap = lock_rename(old_parent, new_parent);
+		if (IS_ERR(trap))
+			return PTR_ERR(trap);
+
+		old_d = smoothfs_compat_lookup(idmap, &oq, old_parent);
+		if (IS_ERR(old_d)) {
+			err = PTR_ERR(old_d);
+			old_d = NULL;
+			goto unlock;
+		}
+		if (d_really_is_negative(old_d)) {
+			err = 0;
+			goto unlock;
+		}
+		new_d = smoothfs_compat_lookup(idmap, &nq, new_parent);
+		if (IS_ERR(new_d)) {
+			err = PTR_ERR(new_d);
+			new_d = NULL;
+			goto unlock;
+		}
+		if (trap == old_d || trap == new_d) {
+			err = -EINVAL;
+			goto unlock;
+		}
+
+		rd.old_parent = dget(old_parent);
+		rd.old_dentry = dget(old_d);
+		rd.new_parent = new_parent;
+		rd.new_dentry = dget(new_d);
+		err = vfs_rename(&rd);
+		dput(rd.old_dentry);
+		dput(rd.new_dentry);
+		dput(rd.old_parent);
+unlock:
+		unlock_rename(old_parent, new_parent);
+		if (old_d)
+			dput(old_d);
+		if (new_d)
+			dput(new_d);
+		return err;
+	}
+#endif
+}
+
+/* ---------- rename when the old child dentry is already held ----------
+ * The ->rename inode op already has the source's lower dentry, so it locks
+ * with lock_rename_child(old_dentry, new_parent) rather than by parent pair.
+ * 6.19 folded that (plus the target lookup and the trap/unhashed/NOREPLACE
+ * validation) into start_renaming_two_dentries() (target already resolved) /
+ * start_renaming_dentry() (target looked up by name), paired with
+ * end_renaming(); pre-6.19 open-codes the same sequence.
+ *
+ * smoothfs_compat_start_rename: caller pre-sets rd->mnt_idmap, rd->new_parent,
+ * rd->old_parent (for the "source moved" recheck) and rd->flags. Pass a
+ * non-NULL @new_dentry when the target is already resolved, else @new_name is
+ * looked up under rd->new_parent. On success returns 0 with the parents locked
+ * and rd->old_dentry / rd->new_dentry / rd->old_parent populated as owned refs
+ * (release with smoothfs_compat_finish_rename after vfs_rename); on error
+ * returns a negative errno with nothing left locked.
+ */
+static inline int
+smoothfs_compat_start_rename(struct renamedata *rd, struct dentry *old_dentry,
+			     struct dentry *new_dentry, struct qstr *new_name)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
+	if (new_dentry)
+		return start_renaming_two_dentries(rd, old_dentry, new_dentry);
+	return start_renaming_dentry(rd, 0, old_dentry, new_name);
+#else
+	struct dentry *trap, *new_d;
+	int err;
+
+	trap = lock_rename_child(old_dentry, rd->new_parent);
+	if (IS_ERR(trap))
+		return PTR_ERR(trap);
+
+	if (new_dentry) {
+		new_d = new_dentry;
+	} else {
+		new_d = smoothfs_compat_lookup(rd->mnt_idmap, new_name,
+					       rd->new_parent);
+		if (IS_ERR(new_d)) {
+			err = PTR_ERR(new_d);
+			goto unlock;
+		}
+	}
+
+	err = -EINVAL;
+	if (d_unhashed(old_dentry) ||
+	    (rd->old_parent && rd->old_parent != old_dentry->d_parent))
+		goto put_new;
+	if (d_unhashed(new_d) || rd->new_parent != new_d->d_parent)
+		goto put_new;
+	if (old_dentry == trap)
+		goto put_new;
+	if (new_d == trap) {
+		err = (rd->flags & RENAME_EXCHANGE) ? -EINVAL : -ENOTEMPTY;
+		goto put_new;
+	}
+	err = -EEXIST;
+	if (d_is_positive(new_d) && (rd->flags & RENAME_NOREPLACE))
+		goto put_new;
+
+	rd->old_dentry = dget(old_dentry);
+	rd->new_dentry = dget(new_d);
+	rd->old_parent = dget(old_dentry->d_parent);
+	if (!new_dentry)
+		dput(new_d);	/* our lookup ref; rd took its own dget above */
+	return 0;
+
+put_new:
+	if (!new_dentry)
+		dput(new_d);
+unlock:
+	unlock_rename(old_dentry->d_parent, rd->new_parent);
+	return err;
+#endif
+}
+
+static inline void smoothfs_compat_finish_rename(struct renamedata *rd)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
+	end_renaming(rd);
+#else
+	unlock_rename(rd->old_parent, rd->new_parent);
+	dput(rd->old_dentry);
+	dput(rd->new_dentry);
+	dput(rd->old_parent);
+#endif
+}
+
 /* ---------- inode state access ----------
  * 6.19 wraps inode->i_state in struct inode_state_flags and expects
  * filesystem code to use inode_state_read_once().
