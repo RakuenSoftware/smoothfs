@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.15](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.14...v0.2.15) (2026-07-13)
+
+
+### Bug Fixes
+
+* **compat:** adapt rename to the 6.19 VFS directory-locking rework (build 6.19/7.x) ([4b61ce6](https://github.com/RakuenSoftware/smoothfs/commit/4b61ce684fe19a4e83243beab1c9428ead9965ae))
+* **inode:** drain OID writeback before re-minting so file identity is stable ([3031244](https://github.com/RakuenSoftware/smoothfs/commit/303124469a9099f7c4476d61aa148aaec037b3f5))
+
 ## [0.2.14](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.13...v0.2.14) (2026-07-05)
 
 
