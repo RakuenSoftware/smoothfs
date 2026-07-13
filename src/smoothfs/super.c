@@ -2364,6 +2364,27 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 			err = -ENODATA;
 		} else {
 			err = smoothfs_read_oid_xattr(lower->dentry, oid);
+			if (err == -ENODATA) {
+				/*
+				 * A non-fresh lookup that finds no OID xattr may
+				 * be racing the async OID writeback: an earlier
+				 * iget minted the OID in memory and only *queued*
+				 * the lower xattr write (smoothfs_oid_wb_queue,
+				 * SMOOTHFS_OID_WB_INTERVAL_MS delay). If that inode
+				 * was evicted before the flush, re-reading here
+				 * would miss the pending OID and mint a *second*
+				 * one below — churning i_ino/fileid and dropping
+				 * the in-memory pin_state (e.g. an SMB lease pin),
+				 * so a file's identity is unstable across a
+				 * create→evict→re-lookup window (readily hit on
+				 * slow/emulated guests). Force the writeback out
+				 * and retry so the already-minted OID wins and the
+				 * file keeps a stable identity; only genuinely new
+				 * files fall through to the mint path after this.
+				 */
+				smoothfs_oid_wb_drain(sbi);
+				err = smoothfs_read_oid_xattr(lower->dentry, oid);
+			}
 		}
 		if (err == -ENODATA) {
 			/* Fresh file. Mint an OID in memory and queue the
