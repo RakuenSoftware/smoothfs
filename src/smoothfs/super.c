@@ -941,9 +941,6 @@ static int smoothfs_rename_rel_path_on_tier(struct smoothfs_sb_info *sbi, u8 tie
 					    const char *old_rel, const char *new_rel)
 {
 	struct path op = {}, np = {};
-	struct dentry *old_d = NULL, *new_d = NULL, *trap;
-	struct renamedata rd;
-	struct qstr oq, nq;
 	char *ow = NULL, *nw = NULL, *s, *o_name, *n_name, *o_parent, *n_parent;
 	int err;
 
@@ -975,37 +972,11 @@ static int smoothfs_rename_rel_path_on_tier(struct smoothfs_sb_info *sbi, u8 tie
 	if (err) { err = (err == -ENOENT) ? 0 : err; np.dentry = NULL; goto out_putold; }
 	if (d_really_is_negative(np.dentry)) { err = 0; goto out_putnew; }
 
-	trap = lock_rename(op.dentry, np.dentry);
-	if (IS_ERR(trap)) { err = PTR_ERR(trap); goto out_putnew; }
-
-	oq = (struct qstr)QSTR_INIT(o_name, strlen(o_name));
-	old_d = smoothfs_compat_lookup(&nop_mnt_idmap, &oq, op.dentry);
-	if (IS_ERR(old_d)) { err = PTR_ERR(old_d); old_d = NULL; goto out_unlock; }
-	if (d_really_is_negative(old_d)) { err = 0; goto out_unlock; }
-
-	nq = (struct qstr)QSTR_INIT(n_name, strlen(n_name));
-	new_d = smoothfs_compat_lookup(&nop_mnt_idmap, &nq, np.dentry);
-	if (IS_ERR(new_d)) { err = PTR_ERR(new_d); new_d = NULL; goto out_unlock; }
-
-	if (trap == old_d || trap == new_d) { err = -EINVAL; goto out_unlock; }
-
-	memset(&rd, 0, sizeof(rd));
-	rd.mnt_idmap = &nop_mnt_idmap;
-	rd.old_parent = dget(op.dentry);
-	rd.old_dentry = dget(old_d);
-	rd.new_parent = np.dentry;
-	rd.new_dentry = dget(new_d);
-	err = vfs_rename(&rd);
-	dput(rd.old_dentry);
-	dput(rd.new_dentry);
-	dput(rd.old_parent);
-
-out_unlock:
-	unlock_rename(op.dentry, np.dentry);
-	if (old_d && !IS_ERR(old_d))
-		dput(old_d);
-	if (new_d && !IS_ERR(new_d))
-		dput(new_d);
+	/* lock_rename + lookup + vfs_rename + unlock, across the 6.19 VFS
+	 * directory-locking rework (see smoothfs_compat_rename). A missing
+	 * source on this tier is a no-op success. */
+	err = smoothfs_compat_rename(&nop_mnt_idmap, op.dentry, o_name,
+				     np.dentry, n_name);
 out_putnew:
 	if (np.dentry)
 		path_put(&np);
