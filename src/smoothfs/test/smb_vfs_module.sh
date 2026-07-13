@@ -175,6 +175,33 @@ $SMBC -c "rename hello.txt renamed.txt" >/dev/null 2>&1
 assert test -e "$ROOT/server/renamed.txt"
 assert test ! -e "$ROOT/server/hello.txt"
 FID_AFTER=$(getfattr -n trusted.smoothfs.fileid --only-values -h "$ROOT/server/renamed.txt" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+if [ -z "$FID_BEFORE" ] || [ -z "$FID_AFTER" ]; then
+    echo "  (DIAG: fileid xattr empty — localising the empty trusted.smoothfs.* read)"
+    F="$ROOT/server/renamed.txt"
+    echo "  --- getfattr trusted.smoothfs.fileid (stderr shown) ---"
+    getfattr -n trusted.smoothfs.fileid -h "$F" 2>&1 | sed 's/^/    /'
+    echo "  --- getfattr trusted.smoothfs.oid (sibling fast-path xattr) ---"
+    getfattr -n trusted.smoothfs.oid -h "$F" 2>&1 | sed 's/^/    /'
+    echo "  --- getfattr trusted.smoothfs.gen ---"
+    getfattr -n trusted.smoothfs.gen -h "$F" 2>&1 | sed 's/^/    /'
+    echo "  --- all xattrs: getfattr -d -m - ---"
+    getfattr -d -m - -h "$F" 2>&1 | sed 's/^/    /'
+    echo "  --- stat + mount + fstype ---"
+    stat "$F" 2>&1 | sed 's/^/    /'
+    stat -f -c 'fstype=%T magic-ish? mount=%n' "$ROOT/server" 2>&1 | sed 's/^/    /'
+    grep -w "$ROOT/server" /proc/mounts 2>&1 | sed 's/^/    /'
+    echo "  --- caps of this shell (trusted.* read needs CAP_SYS_ADMIN) ---"
+    id 2>&1 | sed 's/^/    /'; grep -E 'Cap(Eff|Prm)' /proc/self/status 2>&1 | sed 's/^/    /'
+    echo "  --- lower file direct (does the OID xattr exist on the tier?) ---"
+    LOWER=$(getfattr -n trusted.smoothfs.fileid -h "$F" 2>&1 | head -1)
+    for t in "$ROOT/fast" "$ROOT/slow"; do
+        find "$t" -name renamed.txt 2>/dev/null | while read -r lf; do
+            echo "    lower=$lf"; getfattr -d -m - -h "$lf" 2>&1 | sed 's/^/      /'
+        done
+    done
+    echo "  --- dmesg smoothfs tail ---"
+    dmesg 2>/dev/null | grep -i smoothfs | tail -6 | sed 's/^/    /'
+fi
 assert test -n "$FID_BEFORE" -a "$FID_BEFORE" = "$FID_AFTER"
 
 echo "=== Phase 5.8.4: file_id_create_fn hits the per-conn gen cache ==="
