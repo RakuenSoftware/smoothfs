@@ -857,6 +857,24 @@ static int smoothfs_setattr_inner(struct mnt_idmap *idmap, struct dentry *dentry
 	int err;
 	int srcu_idx;
 
+	/*
+	 * Unlinked-but-open: smoothfs_unlink clears the dentry's d_fsdata,
+	 * but the inode (and si->lower_path, which unlink deliberately
+	 * keeps — see smoothfs_unlink_inner) stays live while anyone holds
+	 * the file open. nfsd reaches ->setattr on exactly such a dentry:
+	 * NFSv4.2 delegated timestamps make DELEGRETURN processing call
+	 * nfsd4_finalize_deleg_timestamps -> notify_change on the held-open
+	 * file after its last name was REMOVEd. Dereferencing the NULL
+	 * d_fsdata here oopsed that nfsd thread WHILE IT HELD the inode's
+	 * i_rwsem, orphaning the lock — every later op on the inode then
+	 * D-state wedged (cthon04 nfsidem's second unlink; the mixed soak's
+	 * mount). Fall back to si->lower_path exactly as ->getattr does.
+	 */
+	if (!lower)
+		lower = smoothfs_lower_path(inode)->dentry;
+	if (!lower)
+		return -ESTALE;
+
 	err = setattr_prepare(idmap, dentry, attr);
 	if (err)
 		return err;

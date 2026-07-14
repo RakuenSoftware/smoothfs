@@ -33,6 +33,12 @@ int smoothfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 	struct dentry *lower = smoothfs_lower_dentry(dentry);
 	int err;
 
+	/* Unlinked-but-open fallback; see smoothfs_setattr_inner. */
+	if (!lower)
+		lower = smoothfs_lower_path(d_inode(dentry))->dentry;
+	if (!lower)
+		return -ESTALE;
+
 	/* vfs_set_acl already takes inode_lock(d_inode(dentry)) on its
 	 * argument internally; an explicit inode_lock(d_inode(lower))
 	 * here meant we'd recursively try to take the same lower-inode
