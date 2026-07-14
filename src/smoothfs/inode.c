@@ -525,12 +525,14 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 				err = PTR_ERR(new_child);
 				/*
 				 * vfs_mkdir() (6.15+) already dput()s the
-				 * passed-in dentry AND unlocks the parent when
-				 * it returns an error pointer. Repeating either
-				 * corrupts the dcache (double dput -> dput()
-				 * WARN at fs/dcache.c) and the parent inode
-				 * lock.
+				 * passed-in dentry when it returns an error
+				 * pointer — a second dput here corrupts the
+				 * dcache (dput() WARN at fs/dcache.c). It does
+				 * NOT unlock the parent: that stays with us
+				 * (see do_mkdirat, where end_creating_path()
+				 * unlocks even on vfs_mkdir error).
 				 */
+				inode_unlock(d_inode(cur.dentry));
 				goto out_err;
 			}
 			if (new_child != child) {
@@ -854,6 +856,24 @@ static int smoothfs_setattr_inner(struct mnt_idmap *idmap, struct dentry *dentry
 	struct inode *inode = d_inode(dentry);
 	int err;
 	int srcu_idx;
+
+	/*
+	 * Unlinked-but-open: smoothfs_unlink clears the dentry's d_fsdata,
+	 * but the inode (and si->lower_path, which unlink deliberately
+	 * keeps — see smoothfs_unlink_inner) stays live while anyone holds
+	 * the file open. nfsd reaches ->setattr on exactly such a dentry:
+	 * NFSv4.2 delegated timestamps make DELEGRETURN processing call
+	 * nfsd4_finalize_deleg_timestamps -> notify_change on the held-open
+	 * file after its last name was REMOVEd. Dereferencing the NULL
+	 * d_fsdata here oopsed that nfsd thread WHILE IT HELD the inode's
+	 * i_rwsem, orphaning the lock — every later op on the inode then
+	 * D-state wedged (cthon04 nfsidem's second unlink; the mixed soak's
+	 * mount). Fall back to si->lower_path exactly as ->getattr does.
+	 */
+	if (!lower)
+		lower = smoothfs_lower_path(inode)->dentry;
+	if (!lower)
+		return -ESTALE;
 
 	err = setattr_prepare(idmap, dentry, attr);
 	if (err)

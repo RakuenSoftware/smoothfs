@@ -28,7 +28,14 @@
 
 static struct dentry *xattr_lower(struct dentry *dentry)
 {
-	return smoothfs_lower_dentry(dentry);
+	struct dentry *lower = smoothfs_lower_dentry(dentry);
+
+	/* Unlinked-but-open: unlink clears d_fsdata but si->lower_path
+	 * stays until evict (see smoothfs_setattr_inner). NFSv4.2 xattr
+	 * ops arrive on such dentries via open file handles. */
+	if (!lower && d_inode(dentry))
+		lower = smoothfs_lower_path(d_inode(dentry))->dentry;
+	return lower;
 }
 
 static int generic_xattr_get(const struct xattr_handler *handler,
@@ -273,7 +280,7 @@ const struct xattr_handler * const smoothfs_xattr_handlers[] = {
  */
 ssize_t smoothfs_listxattr(struct dentry *dentry, char *list, size_t size)
 {
-	struct dentry *lower = smoothfs_lower_dentry(dentry);
+	struct dentry *lower = xattr_lower(dentry);
 
 	if (!lower)
 		return -EINVAL;
