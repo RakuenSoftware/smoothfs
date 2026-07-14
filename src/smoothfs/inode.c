@@ -525,12 +525,14 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 				err = PTR_ERR(new_child);
 				/*
 				 * vfs_mkdir() (6.15+) already dput()s the
-				 * passed-in dentry AND unlocks the parent when
-				 * it returns an error pointer. Repeating either
-				 * corrupts the dcache (double dput -> dput()
-				 * WARN at fs/dcache.c) and the parent inode
-				 * lock.
+				 * passed-in dentry when it returns an error
+				 * pointer — a second dput here corrupts the
+				 * dcache (dput() WARN at fs/dcache.c). It does
+				 * NOT unlock the parent: that stays with us
+				 * (see do_mkdirat, where end_creating_path()
+				 * unlocks even on vfs_mkdir error).
 				 */
+				inode_unlock(d_inode(cur.dentry));
 				goto out_err;
 			}
 			if (new_child != child) {

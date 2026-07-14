@@ -610,9 +610,11 @@ static int smoothfs_placement_ensure_dir(struct smoothfs_sb_info *sbi)
 						dir, 0700);
 		if (IS_ERR(new_dir)) {
 			/*
-			 * vfs_mkdir() already dput()'d dir and unlocked the
-			 * parent on error.
+			 * vfs_mkdir() already dput()'d dir on error, but the
+			 * parent lock is still ours to release (vfs_mkdir
+			 * never unlocks; see do_mkdirat/end_creating_path).
 			 */
+			inode_unlock(d_inode(parent.dentry));
 			return PTR_ERR(new_dir);
 		}
 		/* vfs_mkdir() consumed the original on replacement */
