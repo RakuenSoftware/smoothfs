@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.17](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.16...v0.2.17) (2026-07-14)
+
+
+### Bug Fixes
+
+* survive setattr/xattr/acl on unlinked-but-open files + vfs_mkdir error-path lock leaks ([#168](https://github.com/RakuenSoftware/smoothfs/issues/168)) ([4d8b44a](https://github.com/RakuenSoftware/smoothfs/commit/4d8b44a7b371d36d138a552ea92e37bf5ad517c3))
+
 ## [0.2.16](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.15...v0.2.16) (2026-07-13)
 
 
