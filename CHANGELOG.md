@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.18](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.17...v0.2.18) (2026-07-17)
+
+
+### Bug Fixes
+
+* **movement:** refuse cutover to an incomplete destination copy ([#170](https://github.com/RakuenSoftware/smoothfs/issues/170)) ([9f763da](https://github.com/RakuenSoftware/smoothfs/commit/9f763da3d09e3ff04831839df59da07a067a5967))
+
 ## [0.2.17](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.16...v0.2.17) (2026-07-14)
 
 
