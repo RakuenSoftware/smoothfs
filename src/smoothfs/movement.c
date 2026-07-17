@@ -443,6 +443,29 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	if (err)
 		goto out_fail;
 
+	/*
+	 * Never cut over to an incomplete copy. tierd copies the file to the
+	 * destination tier before the cutover switches the authoritative lower
+	 * to it; if that copy did not finish -- e.g. a tier hit ENOSPC and left
+	 * a truncated or 0-byte destination -- switching to it and then
+	 * reclaiming the source in cleanup destroys the file's data. (Writers
+	 * were already drained above, so the source size is stable here.)
+	 * Refuse the cutover: the source stays authoritative and tierd
+	 * re-copies. This is a fail-safe on top of the movement state machine,
+	 * not a substitute for tierd's own copy verification.
+	 */
+	if (i_size_read(d_inode(dest_path.dentry)) <
+	    i_size_read(d_inode(src_dentry))) {
+		pr_warn_ratelimited(
+			"smoothfs: cutover refused, destination incomplete (%lld < %lld bytes); keeping source on tier %u\n",
+			(long long)i_size_read(d_inode(dest_path.dentry)),
+			(long long)i_size_read(d_inode(src_dentry)),
+			si->current_tier);
+		path_put(&dest_path);
+		err = -EAGAIN;
+		goto out_fail;
+	}
+
 	/* Swap lower_path: keep refs balanced. The smoothfs dentry's
 	 * d_fsdata also points at the OLD lower dentry — update it too,
 	 * otherwise smoothfs_d_release dputs a freed pointer at umount. */
