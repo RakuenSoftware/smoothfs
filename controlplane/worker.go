@@ -554,7 +554,7 @@ func (w *Worker) copyWithChecksum(srcPath, dstPath string) ([32]byte, error) {
 	}
 	defer src.Close()
 
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+	if err := mkdirAllSync(filepath.Dir(dstPath), 0o755); err != nil {
 		return zero, err
 	}
 	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
@@ -570,8 +570,49 @@ func (w *Worker) copyWithChecksum(srcPath, dstPath string) ([32]byte, error) {
 	if err := dst.Sync(); err != nil {
 		return zero, err
 	}
+	// The destination file's data is now durable, but the directory
+	// entry that names it is not until the parent directory is fsynced.
+	// The caller cuts over resolution to this path and removes the
+	// source; without this fsync a crash in that window loses the new
+	// name entirely, destroying the object's only remaining copy.
+	if err := syncDir(filepath.Dir(dstPath)); err != nil {
+		return zero, err
+	}
 	copy(zero[:], h.Sum(nil))
 	return zero, nil
+}
+
+// syncDir fsyncs a directory so a just-created child entry (a new
+// subdirectory or file) is durable, not merely its data.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// mkdirAllSync is os.MkdirAll that fsyncs the parent of every
+// directory it creates, so the new directory entries survive a crash
+// before the destination is cut over and the source is removed.
+func mkdirAllSync(path string, perm os.FileMode) error {
+	if fi, err := os.Stat(path); err == nil {
+		if fi.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("mkdirAllSync: %s exists and is not a directory", path)
+	}
+	parent := filepath.Dir(path)
+	if parent != path {
+		if err := mkdirAllSync(parent, perm); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(path, perm); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return syncDir(parent)
 }
 
 func fileSHA256(path string) ([32]byte, error) {
