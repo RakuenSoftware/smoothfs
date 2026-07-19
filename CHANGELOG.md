@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.19](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.18...v0.2.19) (2026-07-19)
+
+
+### Bug Fixes
+
+* fsync destination dir chain + file entry before move cutover ([#172](https://github.com/RakuenSoftware/smoothfs/issues/172)) ([7949e3c](https://github.com/RakuenSoftware/smoothfs/commit/7949e3c4c54445315aae30a8bcbf9ab07fdce85f))
+
+
 ## [0.2.18](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.17...v0.2.18) (2026-07-17)
 
 
