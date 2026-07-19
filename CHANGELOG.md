@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.21](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.20...v0.2.21) (2026-07-19)
+
+
+### Bug Fixes
+
+* **worker:** O_NOFOLLOW opens, short-write guard, fail-safe dir fsync ([#177](https://github.com/RakuenSoftware/smoothfs/issues/177)) ([81d9eeb](https://github.com/RakuenSoftware/smoothfs/commit/81d9eeb8ba9366d64f8ad27f4bd07d2e2170623b))
+
 ## [0.2.20](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.19...v0.2.20) (2026-07-19)
 
 
