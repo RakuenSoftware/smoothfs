@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.20](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.19...v0.2.20) (2026-07-19)
+
+
+### Bug Fixes
+
+* **worker:** harden durable move against crash/corruption edge cases (#174) ([1871983](https://github.com/RakuenSoftware/smoothfs/commit/1871983b9e6dac4b2d9485ce24f57631d7cbcce1))
+
+
 ## [0.2.19](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.18...v0.2.19) (2026-07-19)
 
 
