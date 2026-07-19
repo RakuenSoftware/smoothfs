@@ -51,3 +51,31 @@ func TestMkdirAllSync_RejectsFileInPath(t *testing.T) {
 		t.Fatal("expected error creating dir under a file, got nil")
 	}
 }
+
+// TestCopyWithChecksum_RejectsSymlinkDest ensures the move never writes through
+// a pre-existing symlink at the destination path (which would truncate the
+// symlink target and durably record the wrong inode as the canonical copy).
+func TestCopyWithChecksum_RejectsSymlinkDest(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.bin")
+	if err := os.WriteFile(srcPath, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(dir, "victim.bin")
+	if err := os.WriteFile(victim, []byte("do-not-touch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dstPath := filepath.Join(dir, "dst.bin")
+	if err := os.Symlink(victim, dstPath); err != nil {
+		t.Fatal(err)
+	}
+	w := &Worker{}
+	if _, err := w.copyWithChecksum(srcPath, dstPath); err == nil {
+		t.Fatal("expected error writing through a symlink destination, got nil")
+	}
+	// The symlink target must be untouched.
+	got, _ := os.ReadFile(victim)
+	if string(got) != "do-not-touch" {
+		t.Fatalf("symlink target was modified: %q", got)
+	}
+}

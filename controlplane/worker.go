@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/google/uuid"
 )
@@ -557,24 +558,36 @@ func (w *Worker) copyWithChecksum(srcPath, dstPath string) ([32]byte, error) {
 	if err := mkdirAllSync(filepath.Dir(dstPath), 0o755); err != nil {
 		return zero, err
 	}
+	// Refuse to write through a pre-existing symlink at dstPath: O_CREATE|O_TRUNC
+	// would truncate the symlink's target, and the parent-dir fsync below would
+	// then durably record the wrong inode as the canonical destination — silent
+	// corruption once the caller cuts over and removes the source.
+	if fi, lerr := os.Lstat(dstPath); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return zero, fmt.Errorf("copyWithChecksum: destination %s is a symlink; refusing", dstPath)
+	}
 	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
 		return zero, err
 	}
-	defer dst.Close()
 
 	h := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(dst, h), src); err != nil {
+		dst.Close()
 		return zero, err
 	}
 	if err := dst.Sync(); err != nil {
+		dst.Close()
 		return zero, err
 	}
-	// The destination file's data is now durable, but the directory
-	// entry that names it is not until the parent directory is fsynced.
-	// The caller cuts over resolution to this path and removes the
-	// source; without this fsync a crash in that window loses the new
-	// name entirely, destroying the object's only remaining copy.
+	// Close the file BEFORE fsyncing the parent directory. The destination data
+	// is durable (dst.Sync); closing first commits the directory-entry -> inode
+	// linkage in the canonical crash-safe create order. Without the parent-dir
+	// fsync the new name lives only in the page cache, and since the caller cuts
+	// over and removes the source, a crash in that window would lose the
+	// object's only remaining copy.
+	if err := dst.Close(); err != nil {
+		return zero, err
+	}
 	if err := syncDir(filepath.Dir(dstPath)); err != nil {
 		return zero, err
 	}
@@ -585,19 +598,30 @@ func (w *Worker) copyWithChecksum(srcPath, dstPath string) ([32]byte, error) {
 // syncDir fsyncs a directory so a just-created child entry (a new
 // subdirectory or file) is durable, not merely its data.
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
+	// O_DIRECTORY guarantees we fsync the directory inode itself, never a
+	// symlink target or a regular file that happens to share the path.
+	d, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY, 0)
 	if err != nil {
 		return err
 	}
 	defer d.Close()
-	return d.Sync()
+	if err := d.Sync(); err != nil {
+		// Some backing filesystems (overlayfs, certain network mounts) do not
+		// support directory fsync. Failing every move on such a store is worse
+		// than the residual crash window, so treat "not supported" as soft.
+		if errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EINVAL) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // mkdirAllSync is os.MkdirAll that fsyncs the parent of every
 // directory it creates, so the new directory entries survive a crash
 // before the destination is cut over and the source is removed.
 func mkdirAllSync(path string, perm os.FileMode) error {
-	if fi, err := os.Stat(path); err == nil {
+	if fi, err := os.Lstat(path); err == nil {
 		if fi.IsDir() {
 			return nil
 		}
@@ -609,9 +633,24 @@ func mkdirAllSync(path string, perm os.FileMode) error {
 			return err
 		}
 	}
-	if err := os.Mkdir(path, perm); err != nil && !os.IsExist(err) {
-		return err
+	if err := os.Mkdir(path, perm); err != nil {
+		if !os.IsExist(err) {
+			return err
+		}
+		// EEXIST: a concurrent writer (or a stale entry) may have created it.
+		// Verify it is actually a directory before accepting it.
+		fi, statErr := os.Lstat(path)
+		if statErr != nil {
+			return statErr
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("mkdirAllSync: %s exists and is not a directory", path)
+		}
+		return nil
 	}
+	// Newly created: make its directory entry durable in the parent. The
+	// deepest new directory's own contents (the destination file) are made
+	// durable by copyWithChecksum's syncDir after the file is written.
 	return syncDir(parent)
 }
 
