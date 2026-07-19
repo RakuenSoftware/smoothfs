@@ -554,26 +554,33 @@ func (w *Worker) copyWithChecksum(srcPath, dstPath string) ([32]byte, error) {
 		return zero, err
 	}
 	defer src.Close()
-
-	if err := mkdirAllSync(filepath.Dir(dstPath), 0o755); err != nil {
-		return zero, err
-	}
-	// Refuse to write through a pre-existing symlink at dstPath: O_CREATE|O_TRUNC
-	// would truncate the symlink's target, and the parent-dir fsync below would
-	// then durably record the wrong inode as the canonical destination — silent
-	// corruption once the caller cuts over and removes the source.
-	if fi, lerr := os.Lstat(dstPath); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return zero, fmt.Errorf("copyWithChecksum: destination %s is a symlink; refusing", dstPath)
-	}
-	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	srcInfo, err := src.Stat()
 	if err != nil {
 		return zero, err
 	}
 
+	if err := mkdirAllSync(filepath.Dir(dstPath), 0o755); err != nil {
+		return zero, err
+	}
+	// O_NOFOLLOW makes the open atomically refuse a symlink at dstPath — no
+	// check-then-use race. A symlink here would otherwise let O_TRUNC clobber
+	// the target and durably record the wrong inode as the destination.
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return zero, fmt.Errorf("open destination %s (nofollow): %w", dstPath, err)
+	}
+
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(dst, h), src); err != nil {
+	n, err := io.Copy(io.MultiWriter(dst, h), src)
+	if err != nil {
 		dst.Close()
 		return zero, err
+	}
+	// A silently short destination write must not be treated as authoritative:
+	// the full source must have landed before the copy (and its hash) is trusted.
+	if n != srcInfo.Size() {
+		dst.Close()
+		return zero, fmt.Errorf("short copy to %s: wrote %d of %d bytes", dstPath, n, srcInfo.Size())
 	}
 	if err := dst.Sync(); err != nil {
 		dst.Close()
@@ -598,23 +605,20 @@ func (w *Worker) copyWithChecksum(srcPath, dstPath string) ([32]byte, error) {
 // syncDir fsyncs a directory so a just-created child entry (a new
 // subdirectory or file) is durable, not merely its data.
 func syncDir(dir string) error {
-	// O_DIRECTORY guarantees we fsync the directory inode itself, never a
-	// symlink target or a regular file that happens to share the path.
-	d, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY, 0)
+	// O_DIRECTORY guarantees we fsync the directory inode itself; O_NOFOLLOW
+	// refuses a symlink at the final component so we never fsync the wrong
+	// inode. Any error is PROPAGATED (never swallowed): the caller must treat a
+	// directory-fsync failure as a move failure and NOT cut over / remove the
+	// source, because the destination name may not survive a crash. This is
+	// fail-safe — on a backing store that cannot fsync directories the move is
+	// refused and the object stays on its current tier, rather than risking the
+	// loss this function exists to prevent.
+	d, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
 	defer d.Close()
-	if err := d.Sync(); err != nil {
-		// Some backing filesystems (overlayfs, certain network mounts) do not
-		// support directory fsync. Failing every move on such a store is worse
-		// than the residual crash window, so treat "not supported" as soft.
-		if errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EINVAL) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return d.Sync()
 }
 
 // mkdirAllSync is os.MkdirAll that fsyncs the parent of every
