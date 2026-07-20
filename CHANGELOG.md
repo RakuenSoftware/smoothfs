@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.22](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.21...v0.2.22) (2026-07-20)
+
+
+### Bug Fixes
+
+* **forget_lower:** re-point warm dentries stranded by an out-of-band tier move ([#180](https://github.com/RakuenSoftware/smoothfs/issues/180)) ([43e7e27](https://github.com/RakuenSoftware/smoothfs/commit/43e7e273af39331890434d4c5c1c73a8ae3f96a1))
+
 ## [0.2.21](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.20...v0.2.21) (2026-07-19)
 
 
