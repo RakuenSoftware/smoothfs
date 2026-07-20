@@ -27,6 +27,7 @@ core_tests=(
 	tier_spill_basic_create.sh
 	tier_spill_nested_parent.sh
 	tier_spill_union_readdir.sh
+	tier_spill_negative_dentry_revalidate.sh
 	tier_spill_unlink_finds_right_tier.sh
 	tier_spill_rmdir_placement.sh
 	tier_spill_forget_lower_reclaim.sh

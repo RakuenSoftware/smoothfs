@@ -1899,6 +1899,22 @@ static int smoothfs_d_revalidate(struct inode *dir, const struct qstr *name,
 	struct dentry *lower;
 	struct dentry *lower_parent;
 
+	/*
+	 * A negative result is only a snapshot of the union at lookup time.
+	 * Backing files can appear later without going through this superblock:
+	 * tierd moves/copies objects between lowers out-of-band, and an inactive
+	 * metadata tier can become visible again.  None of those operations
+	 * invalidates the smoothfs dcache entry.  Trusting the negative forever
+	 * therefore leaves a file readable on a lower but permanently ENOENT in
+	 * the merged mount until drop_caches or remount.
+	 *
+	 * Force negative dentries back through ->lookup, which performs the fresh
+	 * all-active-tiers scan.  The test is RCU-walk safe and avoids penalising
+	 * positive dentries, which retain the lower-revalidation fast path below.
+	 */
+	if (d_really_is_negative(dentry))
+		return 0;
+
 	/* Fast path for the Phase 3 compat set (xfs, ext4, btrfs, zfs):
 	 * none of those lowers installs d_revalidate, so the probe marks
 	 * any_lower_revalidates = false and every path-walk step returns
