@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.23](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.22...v0.2.23) (2026-07-20)
+
+
+### Bug Fixes
+
+* **lookup:** revalidate negative union dentries ([#182](https://github.com/RakuenSoftware/smoothfs/issues/182)) ([2d086ca](https://github.com/RakuenSoftware/smoothfs/commit/2d086cabe23bf4c7dfe49cbe38dd3a9817e0586a))
+
 ## [0.2.22](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.21...v0.2.22) (2026-07-20)
 
 
