@@ -30,6 +30,7 @@ core_tests=(
 	tier_spill_unlink_finds_right_tier.sh
 	tier_spill_rmdir_placement.sh
 	tier_spill_forget_lower_reclaim.sh
+	tier_spill_warm_dentry_survives_move.sh
 	tier_spill_rename_xdev.sh
 	tier_spill_rename_same_dir.sh
 	tier_spill_rename_cross_dir.sh

@@ -763,6 +763,19 @@ static void smoothfs_forget_tier_copy(struct smoothfs_sb_info *sbi, u8 tier,
 	if (!inode)
 		return;
 	/*
+	 * The out-of-band operation may have been a MOVE (copy to another tier +
+	 * unlink the source) rather than a removal. In that case this is the live,
+	 * OID-identified inode and its warm dentry still points at the now-unlinked
+	 * old-tier lower — stat/open would ENOENT. Re-point it to the surviving
+	 * tier (which also drops the last ref on the old lower, freeing its blocks
+	 * just like the evict path below). Only when nothing survives on another
+	 * tier is this a genuine removal, so fall through to evict-for-reclaim.
+	 */
+	if (smoothfs_relower_after_forget(sbi, inode, tier, lower_ino)) {
+		iput(inode);
+		return;
+	}
+	/*
 	 * The caller removed the lower copy out-of-band, so this shadow inode is
 	 * dead. Clear its (now-stale) nlink so the final iput below actually
 	 * evicts it instead of parking it on the inode LRU. Eviction is what runs

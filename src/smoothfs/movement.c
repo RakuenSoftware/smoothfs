@@ -124,6 +124,93 @@ out:
 	return rel;
 }
 
+/*
+ * Re-point a warm inode after tierd moved its file to another tier out-of-band.
+ *
+ * tierd's placement mover copies a file to the destination tier and unlinks the
+ * source directly on the backing fs, bypassing the in-kernel cutover (see
+ * smoothfs_movement_cutover), then pokes forget_lower on the old (tier,
+ * lower_ino). The OID-identified smoothfs inode is unchanged, but its warm
+ * dentry / si->lower_path still point at the now-unlinked old-tier lower:
+ * ->getattr and open_lower_now keep dereferencing it and return ENOENT, while
+ * readdir re-lists the name and d_revalidate never re-checks (the lowers install
+ * no ->d_revalidate). A cold lookup would recover via smoothfs_lookup_rel_
+ * across_tiers, but nothing forces the warm dentry cold.
+ *
+ * Resolve the object on any other tier and, if found, relower the inode and its
+ * warm dentry exactly as the cutover does. Returns true if it re-pointed the
+ * inode (caller must NOT evict it); false if the object is genuinely gone, so
+ * the caller falls back to the reclaim/evict path.
+ *
+ * Called from the forget_lower sysfs store holding no lock. Takes the smoothfs
+ * inode_lock (never a lower inode_lock, so the path_put-triggered lower eviction
+ * cannot recurse), matching smoothfs_movement_cutover.
+ */
+bool smoothfs_relower_after_forget(struct smoothfs_sb_info *sbi,
+				   struct inode *inode, u8 old_tier,
+				   unsigned long old_lower_ino)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct dentry *alias;
+	struct path new_path, old_path;
+	char *rel;
+	u8 found_tier;
+
+	rel = smoothfs_current_rel_path(inode);
+	if (!rel)
+		return false;
+	if (smoothfs_lookup_rel_across_tiers(sbi, old_tier, rel, &new_path,
+					     &found_tier)) {
+		kfree(rel);
+		return false;   /* genuinely removed -> caller evicts */
+	}
+	kfree(rel);
+
+	inode_lock(inode);
+
+	/*
+	 * The out-of-band unlink already made (old_tier, old_lower_ino)
+	 * dangling; purge its stale fast-path cache entry unconditionally so a
+	 * later iget cannot resolve a reused lower ino back to this inode.
+	 */
+	smoothfs_lower_ino_map_remove(sbi, old_tier, old_lower_ino);
+
+	/*
+	 * A racing cutover/relower may have re-pointed us off old_tier already;
+	 * if so the inode is live and correct — leave it and don't evict.
+	 */
+	if (smoothfs_tier_of(sbi, si->lower_path.mnt) != old_tier) {
+		inode_unlock(inode);
+		path_put(&new_path);
+		return true;
+	}
+
+	old_path = si->lower_path;
+	si->lower_path = new_path;   /* transfers the resolver's refs */
+	(void)smoothfs_lower_ino_map_insert(sbi, found_tier,
+					    d_inode(new_path.dentry)->i_ino,
+					    inode->i_ino);
+
+	alias = d_find_alias(inode);
+	if (alias) {
+		smoothfs_set_lower_dentry(alias, new_path.dentry);
+		dput(alias);
+	}
+
+	si->current_tier = found_tier;
+	si->cutover_gen++;   /* force open fds to reissue against the new tier */
+	smoothfs_copy_attrs(inode, d_inode(new_path.dentry));
+	inode_unlock(inode);
+
+	/*
+	 * Drop the last ref on the unlinked old lower after unlock: its backing
+	 * ->evict_inode runs here and frees the blocks — the reclaim forget_lower
+	 * originally existed for.
+	 */
+	path_put(&old_path);
+	return true;
+}
+
 static int smoothfs_resolve_cutover_dest(struct smoothfs_sb_info *sbi,
 					 u8 dest_tier,
 					 struct dentry *src_dentry,
