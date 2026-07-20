@@ -426,11 +426,11 @@ out:
 	return err;
 }
 
-static int smoothfs_lookup_rel_across_tiers(struct smoothfs_sb_info *sbi,
-					    u8 exclude_tier,
-					    const char *rel_path,
-					    struct path *out,
-					    u8 *found_tier)
+int smoothfs_lookup_rel_across_tiers(struct smoothfs_sb_info *sbi,
+				     u8 exclude_tier,
+				     const char *rel_path,
+				     struct path *out,
+				     u8 *found_tier)
 {
 	u8 tier;
 

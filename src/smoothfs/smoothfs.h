@@ -603,6 +603,9 @@ void smoothfs_forget_placement(struct super_block *sb, struct inode *inode,
 			       bool purge_dir_tiers);
 void smoothfs_rename_spill_tiers(struct smoothfs_sb_info *sbi,
 				 const char *old_rel, const char *new_rel);
+int smoothfs_lookup_rel_across_tiers(struct smoothfs_sb_info *sbi,
+				     u8 exclude_tier, const char *rel_path,
+				     struct path *out, u8 *found_tier);
 
 /* file.c */
 extern const struct file_operations          smoothfs_file_ops;
@@ -726,6 +729,9 @@ int  smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 int  smoothfs_movement_abort(struct smoothfs_sb_info *sbi,
 			     const u8 oid[SMOOTHFS_OID_LEN],
 			     u64 transaction_seq, const char *reason);
+bool smoothfs_relower_after_forget(struct smoothfs_sb_info *sbi,
+				   struct inode *inode, u8 old_tier,
+				   unsigned long old_lower_ino);
 int  smoothfs_revoke_mappings(struct smoothfs_sb_info *sbi,
 			      const u8 oid[SMOOTHFS_OID_LEN]);
 void smoothfs_clear_pool_mapping_quiesce(struct smoothfs_sb_info *sbi);
