@@ -313,6 +313,32 @@ struct smoothfs_sb_info {
 	void               *sysfs_pool;
 };
 
+/*
+ * Resolve a pool-relative path from the lower mount that smoothfs pinned at
+ * mount time. Never render that path and feed it back to kern_path():
+ * kern_path() starts in the calling task's mount namespace, where containers
+ * need not expose the backing-tier mountpoints at all.
+ */
+static inline int
+smoothfs_resolve_rel_path_on_tier(struct smoothfs_sb_info *sbi, u8 tier,
+				  const char *rel_path, struct path *out)
+{
+	struct path root;
+
+	if (tier >= sbi->ntiers)
+		return -EINVAL;
+
+	root = sbi->tiers[tier].lower_path;
+	if (!rel_path || !*rel_path) {
+		*out = root;
+		path_get(out);
+		return 0;
+	}
+
+	return vfs_path_lookup(root.dentry, root.mnt, rel_path,
+			       LOOKUP_FOLLOW, out);
+}
+
 static inline u8 smoothfs_tier_of(struct smoothfs_sb_info *sbi,
 				  struct vfsmount *mnt)
 {
