@@ -697,37 +697,6 @@ static void smoothfs_write_staging_set_reason(struct smoothfs_sb_info *sbi,
 	spin_unlock(&sbi->write_staging_lock);
 }
 
-static int smoothfs_resolve_rel_path_on_tier(struct smoothfs_sb_info *sbi,
-					     u8 tier, const char *rel_path,
-					     struct path *out)
-{
-	char *buf, *rendered, *full = NULL;
-	int err;
-
-	if (tier >= sbi->ntiers)
-		return -EINVAL;
-
-	buf = kmalloc(PATH_MAX, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-	rendered = d_path(&sbi->tiers[tier].lower_path, buf, PATH_MAX);
-	if (IS_ERR(rendered)) {
-		err = PTR_ERR(rendered);
-		kfree(buf);
-		return err;
-	}
-	if (rel_path && *rel_path)
-		full = kasprintf(GFP_KERNEL, "%s/%s", rendered, rel_path);
-	else
-		full = kstrdup(rendered, GFP_KERNEL);
-	kfree(buf);
-	if (!full)
-		return -ENOMEM;
-	err = kern_path(full, LOOKUP_FOLLOW, out);
-	kfree(full);
-	return err;
-}
-
 /*
  * Drop the replay pin on the separately-tracked smoothfs inode that shadows a
  * spill/replica copy we just removed from `tier`.

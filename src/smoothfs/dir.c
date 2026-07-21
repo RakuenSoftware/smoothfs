@@ -130,34 +130,6 @@ static char *smoothfs_rel_path_from_dentry(struct dentry *dentry)
 	return rel;
 }
 
-static int smoothfs_resolve_rel_path_on_tier(struct smoothfs_sb_info *sbi,
-					     u8 tier, const char *rel_path,
-					     struct path *out)
-{
-	char *buf, *rendered, *full = NULL;
-	int err;
-
-	buf = kmalloc(PATH_MAX, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-	rendered = d_path(&sbi->tiers[tier].lower_path, buf, PATH_MAX);
-	if (IS_ERR(rendered)) {
-		err = PTR_ERR(rendered);
-		kfree(buf);
-		return err;
-	}
-	if (rel_path && *rel_path)
-		full = kasprintf(GFP_KERNEL, "%s/%s", rendered, rel_path);
-	else
-		full = kstrdup(rendered, GFP_KERNEL);
-	kfree(buf);
-	if (!full)
-		return -ENOMEM;
-	err = kern_path(full, LOOKUP_FOLLOW, out);
-	kfree(full);
-	return err;
-}
-
 static int smoothfs_collect_one_dir(struct smoothfs_dir_cache *cache,
 				    struct path *dir_path,
 				    const struct cred *cred)
