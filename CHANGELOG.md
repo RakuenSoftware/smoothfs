@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.24](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.23...v0.2.24) (2026-07-21)
+
+
+### Bug Fixes
+
+* **lookup:** resolve lower tiers outside caller namespace ([9be4f02](https://github.com/RakuenSoftware/smoothfs/commit/9be4f026827f6b65fb3993c238855c60d6237fe0))
+* **lookup:** resolve lower tiers outside caller namespace ([7a1bf78](https://github.com/RakuenSoftware/smoothfs/commit/7a1bf788f1f61096fefe2541532218d80b091302))
+
 ## [0.2.23](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.22...v0.2.23) (2026-07-20)
 
 
