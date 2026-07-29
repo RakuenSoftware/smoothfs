@@ -771,7 +771,7 @@ static int smoothfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 	struct inode *inode = d_inode(path->dentry);
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
-	struct path lower_path = *smoothfs_lower_path(inode);
+	struct path lower_path;
 	int err;
 
 	if (!smoothfs_metadata_tier_active(sbi, READ_ONCE(si->current_tier))) {
@@ -781,6 +781,21 @@ static int smoothfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 		smoothfs_note_metadata_tier_skip(sbi);
 		return 0;
 	}
+
+	/* Snapshot the lower path under the inode lock and hold a reference
+	 * across the getattr, as open_lower_now does. A placement cutover
+	 * replaces si->lower_path and then, after dropping inode_lock, dputs
+	 * the old lower dentry and mntputs its vfsmount; tierd removes the
+	 * source-tier copy behind it. An unreferenced snapshot taken here
+	 * therefore races a migration two ways: vfs_getattr_nosec runs against
+	 * an unlinked lower and returns -ESTALE for a file that plainly exists,
+	 * or the cutover frees the dentry while it is still being dereferenced.
+	 * The lock is a shared rwsem acquisition on the stat fastpath; it
+	 * excludes only the exclusive cutover writer. */
+	inode_lock_shared(inode);
+	lower_path = si->lower_path;
+	path_get(&lower_path);
+	inode_unlock_shared(inode);
 
 	/* Direct passthrough to the lower. vfs_getattr_nosec skips the
 	 * security_inode_getattr hook because the VFS already ran it on
@@ -792,6 +807,7 @@ static int smoothfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 	 * were the other major contributor; smoothfs_copy_attrs now runs
 	 * only on create/rename/cutover/setattr. */
 	err = vfs_getattr_nosec(&lower_path, stat, request_mask, flags);
+	path_put(&lower_path);
 	if (err)
 		return err;
 
