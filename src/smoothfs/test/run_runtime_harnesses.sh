@@ -45,6 +45,7 @@ core_tests=(
 	write_staging_drain_mask.sh
 	movement_nested_cutover.sh
 	movement_open_fd_cutover.sh
+	movement_getattr_cutover.sh
 	write_staging_direct_cutover.sh
 	odirect.sh
 )
