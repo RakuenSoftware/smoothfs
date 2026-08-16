@@ -431,6 +431,12 @@ static int smoothfs_range_open_stage(struct smoothfs_sb_info *sbi,
 	return err;
 }
 
+/* smoothfs_range_replay_one() return values: negative is a hard error that
+ * aborts the whole replay, 0 means the record was recovered, and SKIPPED means
+ * it was left on disk unrecovered. The caller must not count a skip as a
+ * recovered write. */
+#define SMOOTHFS_RANGE_REPLAY_SKIPPED 1
+
 static int smoothfs_range_replay_one(struct super_block *sb,
 				     struct smoothfs_sb_info *sbi,
 				     struct file *f, const char *name,
@@ -480,14 +486,16 @@ static int smoothfs_range_replay_one(struct super_block *sb,
 		 * delete recoverable data. */
 		pr_warn_ratelimited("smoothfs: range-staging meta %s has no matching inode; skipping\n",
 				    name);
-		return 0;
+		return SMOOTHFS_RANGE_REPLAY_SKIPPED;
 	}
 
 	err = smoothfs_range_open_stage(sbi, oid, &stage_path);
 	if (err) {
 		pr_warn_ratelimited("smoothfs: range-staging stage open for %s failed: %d\n",
 				    name, err);
-		return 0;  /* skip, do not abort the whole replay */
+		/* Skip this record, do not abort the whole replay -- but do
+		 * not let it be counted as a recovered write either. */
+		return SMOOTHFS_RANGE_REPLAY_SKIPPED;
 	}
 
 	mutex_lock(&si->range_staging_lock);
@@ -570,6 +578,7 @@ int smoothfs_range_staging_replay(struct super_block *sb,
 	};
 	struct smoothfs_range_replay_name *entry, *tmp;
 	u64 recovered_bytes = 0;
+	u64 skipped_files = 0;
 	u64 oldest_ns = 0;
 	u32 tier_mask = 0;
 	u32 recovered_files = 0;
@@ -631,9 +640,13 @@ int smoothfs_range_staging_replay(struct super_block *sb,
 						&recovered_bytes,
 						&oldest_ns, &tier_mask);
 		fput(f);
-		if (err)
+		if (err < 0)
 			break;
-		recovered_files++;
+		if (err == SMOOTHFS_RANGE_REPLAY_SKIPPED)
+			skipped_files++;
+		else
+			recovered_files++;
+		err = 0;
 	}
 
 	atomic64_add((s64)recovered_bytes,
@@ -660,6 +673,19 @@ int smoothfs_range_staging_replay(struct super_block *sb,
 		scnprintf(sbi->last_recovery_reason,
 			  sizeof(sbi->last_recovery_reason),
 			  "remount-replay-error:%d", err);
+	else if (skipped_files && recovered_files == 0)
+		/* Records were found and none could be replayed: the staged
+		 * data is still on disk but unreachable. Do not call that
+		 * "empty" or plain "remount-replay" -- both read as success. */
+		scnprintf(sbi->last_recovery_reason,
+			  sizeof(sbi->last_recovery_reason),
+			  "remount-replay-unresolved:%llu",
+			  (unsigned long long)skipped_files);
+	else if (skipped_files)
+		scnprintf(sbi->last_recovery_reason,
+			  sizeof(sbi->last_recovery_reason),
+			  "remount-replay-partial:%llu-unresolved",
+			  (unsigned long long)skipped_files);
 	else if (recovered_files == 0)
 		strscpy(sbi->last_recovery_reason, "remount-replay-empty",
 			sizeof(sbi->last_recovery_reason));
