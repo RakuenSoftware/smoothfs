@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.26](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.25...v0.2.26) (2026-08-16)
+
+
+### Bug Fixes
+
+* **movement:** update every alias's lower dentry after a tier move ([#190](https://github.com/RakuenSoftware/smoothfs/issues/190)) ([e3838a3](https://github.com/RakuenSoftware/smoothfs/commit/e3838a327b8788dd0218dfede9cbac368493002b))
+
 ## [0.2.25](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.24...v0.2.25) (2026-08-16)
 
 
