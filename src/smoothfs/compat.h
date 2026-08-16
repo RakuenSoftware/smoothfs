@@ -193,11 +193,31 @@ smoothfs_compat_rmdir(struct mnt_idmap *idmap, struct inode *dir,
 #endif
 }
 
+/*
+ * Return the dentry to hand to vfs_unlink/vfs_rmdir, with the parent locked.
+ *
+ * The caller's `child` comes from a smoothfs dentry's d_fsdata and may be
+ * stale: unhashed, or naming an entry that is no longer in this directory.
+ * Handing such a dentry to vfs_unlink is not a recoverable error. XFS starts
+ * a transaction, xfs_dir_remove_child() fails once the transaction is already
+ * dirty, and xfs_trans_cancel() responds by force-shutting down the whole
+ * filesystem (SHUTDOWN_CORRUPT_INCORE). Every mount on that device then
+ * returns EIO until it is unmounted. Observed 2026-08-16 via smoothfs_unlink.
+ *
+ * So re-look-up the name under the lock we now hold and unlink *that* dentry,
+ * the way overlayfs does. A caller that passes child->d_parent as `parent`
+ * makes the identity check below trivially true, which is why the lookup is
+ * the load-bearing part and the check is not.
+ *
+ * Returns -ENOENT when the entry is already gone or now refers to a different
+ * inode: there is nothing of ours left to remove.
+ */
 static inline struct dentry *
 smoothfs_compat_start_removing(struct dentry *parent, struct dentry *child,
 			       struct inode **locked_dir)
 {
 	struct inode *dir = d_inode(parent);
+	struct dentry *fresh;
 
 	*locked_dir = dir;
 	inode_lock(dir);
@@ -206,8 +226,20 @@ smoothfs_compat_start_removing(struct dentry *parent, struct dentry *child,
 		*locked_dir = NULL;
 		return ERR_PTR(-EINVAL);
 	}
-	dget(child);
-	return child;
+
+	fresh = smoothfs_compat_lookup(&nop_mnt_idmap, &child->d_name, parent);
+	if (IS_ERR(fresh)) {
+		inode_unlock(dir);
+		*locked_dir = NULL;
+		return fresh;
+	}
+	if (d_really_is_negative(fresh) || d_inode(fresh) != d_inode(child)) {
+		dput(fresh);
+		inode_unlock(dir);
+		*locked_dir = NULL;
+		return ERR_PTR(-ENOENT);
+	}
+	return fresh;
 }
 
 static inline void

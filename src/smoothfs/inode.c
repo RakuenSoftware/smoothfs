@@ -1189,6 +1189,15 @@ static int smoothfs_link_inner(struct dentry *old_dentry, struct inode *dir,
 	struct dentry *lower;
 	int err;
 
+	/* smoothfs_unlink_inner clears d_fsdata on success, so a cached
+	 * dentry for a just-unlinked name returns NULL here. Dereferencing
+	 * it oopsed the kernel from an unprivileged link(2):
+	 *   BUG: kernel NULL pointer dereference, address: 0x68
+	 *   RIP: smoothfs_link+0x75  (lower_old->d_sb)
+	 * The source name is gone, which is exactly ENOENT. */
+	if (!lower_old || !lower_parent)
+		return -ENOENT;
+
 	if (lower_old->d_sb != lower_parent->d_sb)
 		return -EXDEV;
 
@@ -1244,6 +1253,10 @@ static int smoothfs_unlink_inner(struct inode *dir, struct dentry *dentry)
 	struct inode *lower_inode;
 	int err;
 
+	/* Already unlinked: d_fsdata was cleared below on a previous pass. */
+	if (!lower)
+		return -ENOENT;
+
 	/* When a file is spilled onto a non-canonical tier, lower lives on
 	 * that tier's lower fs while smoothfs_lower_dentry(dentry->d_parent)
 	 * still points at the canonical-tier parent. They are dentries from
@@ -1254,14 +1267,24 @@ static int smoothfs_unlink_inner(struct inode *dir, struct dentry *dentry)
 	 * parent whose mtime/ctime the unlink updates — so the post-unlink
 	 * smoothfs_copy_attrs reads from the same dentry. */
 	removing = smoothfs_compat_start_removing(lower->d_parent, lower, &lower_dir);
-	if (IS_ERR(removing))
-		return PTR_ERR(removing);
-	lower_inode = d_inode(removing);
-	if (lower_inode && lower_inode->i_nlink == 0)
+	if (IS_ERR(removing)) {
+		/* -ENOENT means start_removing revalidated the name under the
+		 * parent lock and found the lower entry already gone. Our upper
+		 * dentry is stale rather than wrong, so fall through to the same
+		 * bookkeeping the i_nlink == 0 case below uses: the caller asked
+		 * for this name to be gone and it is. */
+		if (PTR_ERR(removing) != -ENOENT)
+			return PTR_ERR(removing);
 		err = 0;
-	else
-		err = vfs_unlink(&nop_mnt_idmap, lower_dir, removing, NULL);
-	smoothfs_compat_end_removing(removing, lower_dir);
+	} else {
+		lower_inode = d_inode(removing);
+		if (lower_inode && lower_inode->i_nlink == 0)
+			err = 0;
+		else
+			err = vfs_unlink(&nop_mnt_idmap, lower_dir, removing,
+					 NULL);
+		smoothfs_compat_end_removing(removing, lower_dir);
+	}
 
 	if (!err) {
 		atomic_dec(&si->nlink_observed);
@@ -1460,16 +1483,27 @@ static int smoothfs_rmdir_inner(struct inode *dir, struct dentry *dentry)
 	struct inode *lower_dir = NULL;
 	int err;
 
+	/* See smoothfs_link_inner: d_fsdata is cleared on a successful
+	 * removal, so a cached dentry can reach us with no lower. */
+	if (!lower)
+		return -ENOENT;
+
 	/* See smoothfs_unlink for the reason we use lower->d_parent rather
 	 * than smoothfs_lower_dentry(dentry->d_parent): the latter is the
 	 * canonical-tier parent and may live on a different lower fs from
 	 * the directory we are removing, which trips the dentry-parent
 	 * identity check inside smoothfs_compat_start_removing. */
 	removing = smoothfs_compat_start_removing(lower->d_parent, lower, &lower_dir);
-	if (IS_ERR(removing))
-		return PTR_ERR(removing);
-	err = smoothfs_compat_rmdir(&nop_mnt_idmap, lower_dir, removing);
-	smoothfs_compat_end_removing(removing, lower_dir);
+	if (IS_ERR(removing)) {
+		/* See smoothfs_unlink_inner: -ENOENT is a stale upper dentry
+		 * over a lower directory that is already gone, not a failure. */
+		if (PTR_ERR(removing) != -ENOENT)
+			return PTR_ERR(removing);
+		err = 0;
+	} else {
+		err = smoothfs_compat_rmdir(&nop_mnt_idmap, lower_dir, removing);
+		smoothfs_compat_end_removing(removing, lower_dir);
+	}
 
 	if (!err) {
 		/* Drop d_fsdata so this dentry releases its pin on the
@@ -1542,11 +1576,21 @@ static void smoothfs_drop_stale_rename_target(struct super_block *sb,
 						  stale_lower, &lower_dir);
 	if (!IS_ERR(removing)) {
 		struct inode *lower_inode = d_inode(removing);
+		int uerr = 0;
 
 		if (!(lower_inode && lower_inode->i_nlink == 0))
-			(void)vfs_unlink(&nop_mnt_idmap, lower_dir, removing,
-					 NULL);
+			uerr = vfs_unlink(&nop_mnt_idmap, lower_dir, removing,
+					  NULL);
 		smoothfs_compat_end_removing(removing, lower_dir);
+		/* This is best-effort cleanup, so we still do not fail the
+		 * rename on it. But swallowing the result silently hid a
+		 * filesystem shutdown once; a failure here is worth a line. */
+		if (uerr && uerr != -ENOENT)
+			pr_warn("smoothfs: stale rename target unlink failed: %d\n",
+				uerr);
+	} else if (PTR_ERR(removing) != -ENOENT) {
+		pr_warn("smoothfs: stale rename target not removable: %ld\n",
+			PTR_ERR(removing));
 	}
 
 	if (stale_inode)
