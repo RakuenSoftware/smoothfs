@@ -93,6 +93,51 @@ static bool smoothfs_can_move(struct smoothfs_inode_info *si, bool force)
 	return true;
 }
 
+/*
+ * Point every alias of @inode at @lower.
+ *
+ * d_find_alias() returns one alias and stops. An inode can have several: one
+ * dentry per name for a hardlinked file, plus the anonymous alias nfsd obtains
+ * from d_obtain_alias() (smoothfs_oid_to_dentry in export.c populates its
+ * d_fsdata). Updating only the first leaves the others pointing at the tier we
+ * just moved away from.
+ *
+ * That is not cosmetic. A stale lower dentry reaching vfs_unlink is not a
+ * recoverable error on XFS: xfs_dir_remove_child() fails once the transaction
+ * is already dirty, so xfs_trans_cancel() force-shuts the filesystem down and
+ * every mount on the device returns EIO until it is unmounted.
+ *
+ * smoothfs_set_lower_dentry() dputs the value it replaces, and dput() can
+ * sleep, so take one alias at a time under i_lock and update it outside. The
+ * scan skips aliases already pointing at @lower, so this terminates. The
+ * i_lock -> d_lock order and dget_dlock() mirror d_find_alias().
+ */
+static void smoothfs_set_lower_dentry_all(struct inode *inode,
+					  struct dentry *lower)
+{
+	for (;;) {
+		struct dentry *alias = NULL;
+		struct dentry *pos;
+
+		spin_lock(&inode->i_lock);
+		smoothfs_for_each_alias(pos, inode) {
+			if (pos->d_fsdata == lower)
+				continue;
+			spin_lock(&pos->d_lock);
+			alias = dget_dlock(pos);
+			spin_unlock(&pos->d_lock);
+			break;
+		}
+		spin_unlock(&inode->i_lock);
+
+		if (!alias)
+			return;
+
+		smoothfs_set_lower_dentry(alias, lower);
+		dput(alias);
+	}
+}
+
 static char *smoothfs_current_rel_path(struct inode *inode)
 {
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
@@ -151,7 +196,6 @@ bool smoothfs_relower_after_forget(struct smoothfs_sb_info *sbi,
 				   unsigned long old_lower_ino)
 {
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
-	struct dentry *alias;
 	struct path new_path, old_path;
 	char *rel;
 	u8 found_tier;
@@ -191,11 +235,7 @@ bool smoothfs_relower_after_forget(struct smoothfs_sb_info *sbi,
 					    d_inode(new_path.dentry)->i_ino,
 					    inode->i_ino);
 
-	alias = d_find_alias(inode);
-	if (alias) {
-		smoothfs_set_lower_dentry(alias, new_path.dentry);
-		dput(alias);
-	}
+	smoothfs_set_lower_dentry_all(inode, new_path.dentry);
 
 	si->current_tier = found_tier;
 	si->cutover_gen++;   /* force open fds to reissue against the new tier */
@@ -568,15 +608,7 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 		smoothfs_path_map_add(sbi, si);
 	}
 
-	{
-		struct dentry *smoothfs_dentry = d_find_alias(inode);
-
-		if (smoothfs_dentry) {
-			smoothfs_set_lower_dentry(smoothfs_dentry,
-						  si->lower_path.dentry);
-			dput(smoothfs_dentry);
-		}
-	}
+	smoothfs_set_lower_dentry_all(inode, si->lower_path.dentry);
 
 	si->current_tier   = si->intended_tier;
 	si->cutover_gen++;
