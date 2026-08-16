@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.25](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.24...v0.2.25) (2026-08-16)
+
+
+### Bug Fixes
+
+* **inode:** reference the lower path across getattr ([#186](https://github.com/RakuenSoftware/smoothfs/issues/186)) ([6188c3b](https://github.com/RakuenSoftware/smoothfs/commit/6188c3bdec55e45b5d8df5b5c892778629d86c11))
+* revalidate the lower dentry before unlinking, and NULL-check it ([#188](https://github.com/RakuenSoftware/smoothfs/issues/188)) ([3e59d33](https://github.com/RakuenSoftware/smoothfs/commit/3e59d333030c0aacc2b76cf12a81d91a44e08856))
+
 ## [0.2.24](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.23...v0.2.24) (2026-07-21)
 
 
