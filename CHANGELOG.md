@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.27](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.26...v0.2.27) (2026-08-16)
+
+
+### Bug Fixes
+
+* **range-staging:** stop reporting skipped replay records as recovered ([#192](https://github.com/RakuenSoftware/smoothfs/issues/192)) ([83fee42](https://github.com/RakuenSoftware/smoothfs/commit/83fee4289a7b73e714c6b62129059ef861a6dc90))
+
 ## [0.2.26](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.25...v0.2.26) (2026-08-16)
 
 
