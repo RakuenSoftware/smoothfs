@@ -120,7 +120,7 @@ static void smoothfs_set_lower_dentry_all(struct inode *inode,
 		struct dentry *pos;
 
 		spin_lock(&inode->i_lock);
-		hlist_for_each_entry(pos, &inode->i_dentry, d_u.d_alias) {
+		smoothfs_for_each_alias(pos, inode) {
 			if (pos->d_fsdata == lower)
 				continue;
 			spin_lock(&pos->d_lock);

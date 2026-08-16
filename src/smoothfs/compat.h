@@ -251,6 +251,23 @@ smoothfs_compat_end_removing(struct dentry *child, struct inode *locked_dir)
 		inode_unlock(locked_dir);
 }
 
+/* ---------- inode alias list ----------
+ * The union in struct dentry that holds d_alias was named `d_u` up to 7.0 and
+ * is anonymous from 7.1, so `dentry->d_u.d_alias` stops compiling there with
+ * "struct dentry has no member named 'd_u'". 7.1 also added a for_each_alias()
+ * macro to dcache.h for exactly this reason, so key off the macro rather than a
+ * version number: a kernel that hides the member provides the accessor.
+ *
+ * inode->i_lock must be held across the walk, which is what upstream's own
+ * comment on for_each_alias() says.
+ */
+#ifdef for_each_alias
+#define smoothfs_for_each_alias(pos, inode) for_each_alias(pos, inode)
+#else
+#define smoothfs_for_each_alias(pos, inode) \
+	hlist_for_each_entry(pos, &(inode)->i_dentry, d_u.d_alias)
+#endif
+
 /* ---------- d_revalidate signature ----------
  * 6.18: int (*d_revalidate)(struct inode *parent_dir,
  *                            const struct qstr *name,
