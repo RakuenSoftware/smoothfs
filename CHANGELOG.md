@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.27...v0.3.0) (2026-10-11)
+
+
+### Features
+
+* separate cache base authority from tier placement ([#196](https://github.com/RakuenSoftware/smoothfs/issues/196)) ([f05305b](https://github.com/RakuenSoftware/smoothfs/commit/f05305bffedc3257c2ce4eb7505a807e5ef0443e))
+
 ## [0.2.27](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.26...v0.2.27) (2026-08-16)
 
 
