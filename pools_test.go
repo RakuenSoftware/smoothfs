@@ -253,3 +253,46 @@ func TestCreateManagedPoolPreservesExistingMountpointOnRollback(t *testing.T) {
 		t.Fatalf("unit dir entries after rollback = %d, want 0", len(entries))
 	}
 }
+
+func TestCacheModeMountContract(t *testing.T) {
+	pool := ManagedPool{Name: "media", UUID: uuid.New(), Tiers: []string{t.TempDir(), t.TempDir()}, Mountpoint: "/mnt/media"}
+	legacy, err := RenderMountUnit(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(legacy, "mode=cache") {
+		t.Fatal("default unexpectedly enables cache")
+	}
+	pool.Mode = ModeCache
+	cached, err := RenderMountUnit(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cached, ",mode=cache\n") {
+		t.Fatal("cache mode absent from mount options")
+	}
+	pool.Tiers = pool.Tiers[:1]
+	if _, err := RenderMountUnit(pool); err == nil {
+		t.Fatal("single-tier cache accepted")
+	}
+	pool.Mode = "cache,mode=tier"
+	if _, err := RenderMountUnit(pool); err == nil {
+		t.Fatal("invalid mode accepted")
+	}
+}
+
+func TestCacheCreationRefusesUniqueUpperTierData(t *testing.T) {
+	fast, base := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(fast, "episode.mkv"), []byte("unique"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCacheBackings([]string{fast, base}); err == nil {
+		t.Fatal("unique upper-tier data stranded")
+	}
+	if err := os.WriteFile(filepath.Join(base, "episode.mkv"), []byte("authoritative"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCacheBackings([]string{fast, base}); err != nil {
+		t.Fatal(err)
+	}
+}

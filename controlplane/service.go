@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/mdlayher/genetlink"
@@ -314,7 +317,13 @@ func (s *Service) discoverPool(ctx context.Context, ev *Event) (*Pool, error) {
 		return nil, fmt.Errorf("no tier_targets found for placement_domain %s", ns.PlacementDomain)
 	}
 
+	// Discover mode from the kernel rather than assuming appliance DB schema.
+	mode, err := os.ReadFile(filepath.Join("/sys/fs/smoothfs", ev.PoolUUID.String(), "storage_mode"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read storage mode: %w", err)
+	}
 	return &Pool{
+		CacheMode:          strings.TrimSpace(string(mode)) == "cache",
 		UUID:               ev.PoolUUID,
 		Name:               ev.PoolName,
 		NamespaceID:        ns.ID,

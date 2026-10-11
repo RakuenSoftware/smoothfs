@@ -34,6 +34,7 @@
 
 #include "uapi_smoothfs.h"
 #include "compat.h"
+#include <linux/xarray.h>
 
 #define SMOOTHFS_NAME           "smoothfs"
 #define SMOOTHFS_MAGIC          0x534D4F46  /* 'SMOF' */
@@ -128,6 +129,7 @@ struct smoothfs_sb_info {
 	char                pool_name[64];
 	u32                 fsid;            /* xxhash32(pool_uuid), per §0.7 */
 	u8                  ntiers;
+	bool                cache_mode; /* final tier owns every regular file */
 	u8                  fastest_tier;    /* rank 0 always; recorded for clarity */
 	u8                  create_policy;
 	struct smoothfs_tier tiers[SMOOTHFS_MAX_TIERS];
@@ -404,6 +406,12 @@ struct smoothfs_inode_info {
 	/* The lower path this inode currently maps to. Re-resolved on
 	 * cutover. */
 	struct path     lower_path;
+	struct mutex    cache_mutation_lock;
+	struct mutex    read_cache_lock;
+	struct file    *read_cache_file; /* anonymous disposable fast-tier copy */
+	struct xarray   read_cache_chunks;
+	u64             read_cache_seq;
+	u32             read_cache_gen;
 
 	/* Heat counters drained periodically (Phase 2 §0.5). */
 	atomic_t        open_count;
@@ -427,6 +435,8 @@ struct smoothfs_inode_info {
 	bool            write_staged;
 	u8              write_staged_drain_tier;
 	bool            range_staged;
+	atomic_t        range_staging_pinned;
+	int             unmount_pins;
 	bool            range_staged_recovered;  /* set on remount replay; drain decrements recovery_pending */
 	u8              range_staged_source_tier;
 	struct path     range_staged_path;
@@ -460,12 +470,18 @@ static __always_inline struct smoothfs_sb_info *SMOOTHFS_SB(struct super_block *
 	return sb->s_fs_info;
 }
 
+int smoothfs_write_staging_drain_inode(struct inode *inode);
+int smoothfs_cache_drain(struct smoothfs_sb_info *sbi);
+void smoothfs_read_cache_clear(struct smoothfs_inode_info *si);
+
 static inline int smoothfs_begin_data_change(struct inode *inode)
 {
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
 	int srcu_idx;
 
+	if (sbi->cache_mode)
+		mutex_lock(&si->cache_mutation_lock);
 again:
 	srcu_idx = srcu_read_lock(&sbi->cutover_srcu);
 	if (unlikely(READ_ONCE(si->movement_state) ==
@@ -476,9 +492,19 @@ again:
 		err = wait_event_interruptible(si->cutover_wq,
 			READ_ONCE(si->movement_state) !=
 			SMOOTHFS_MS_CUTOVER_IN_PROGRESS);
-		if (err)
+		if (err) {
+			if (sbi->cache_mode) mutex_unlock(&si->cache_mutation_lock);
 			return err;
+		}
 		goto again;
+	}
+	if (sbi->cache_mode && READ_ONCE(si->range_staged)) {
+		int err = smoothfs_write_staging_drain_inode(inode);
+		if (err) {
+			srcu_read_unlock(&sbi->cutover_srcu, srcu_idx);
+			mutex_unlock(&si->cache_mutation_lock);
+			return err;
+		}
 	}
 	return srcu_idx;
 }
@@ -486,6 +512,8 @@ again:
 static inline void smoothfs_end_data_change(struct inode *inode, int srcu_idx)
 {
 	srcu_read_unlock(&SMOOTHFS_SB(inode->i_sb)->cutover_srcu, srcu_idx);
+	if (SMOOTHFS_SB(inode->i_sb)->cache_mode)
+		mutex_unlock(&SMOOTHFS_I(inode)->cache_mutation_lock);
 }
 
 static inline void smoothfs_note_data_change(struct inode *inode)

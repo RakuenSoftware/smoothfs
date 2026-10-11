@@ -188,7 +188,7 @@ static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
 		return ERR_PTR(err);
 	}
 
-	for (tier = 0; tier < sbi->ntiers; tier++) {
+	for (tier = 0; !sbi->cache_mode && tier < sbi->ntiers; tier++) {
 		struct path tier_path;
 
 		if (tier == canonical_tier)

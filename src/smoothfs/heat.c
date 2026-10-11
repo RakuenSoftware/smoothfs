@@ -96,6 +96,9 @@ static void smoothfs_heat_drain_work_fn(struct work_struct *work)
 	if (!sbi->heat_drain_active)
 		return;
 
+	if (smoothfs_cache_drain(sbi))
+		pr_warn_ratelimited("smoothfs: cache drain failed; pending writes retained\n");
+
 	batch = kmalloc_array(SMOOTHFS_HEAT_BATCH_MAX, sizeof(*batch),
 			      GFP_KERNEL);
 	if (!batch)

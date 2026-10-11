@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,10 +18,31 @@ import (
 const DefaultMountBase = "/mnt/smoothfs"
 const SystemdUnitDir = "/etc/systemd/system"
 
+type StorageMode string
+
+const (
+	ModeTier  StorageMode = "tier"
+	ModeCache StorageMode = "cache"
+)
+
+func NormalizeStorageMode(mode StorageMode, tierCount int) (StorageMode, error) {
+	if mode == "" {
+		mode = ModeTier
+	}
+	if mode != ModeTier && mode != ModeCache {
+		return "", fmt.Errorf("invalid storage mode %q: expected tier or cache", mode)
+	}
+	if mode == ModeCache && tierCount < 2 {
+		return "", errors.New("cache mode requires a cache and a base tier")
+	}
+	return mode, nil
+}
+
 var poolNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 var systemdUnitDir = SystemdUnitDir
 
 type CreateManagedPoolRequest struct {
+	Mode      StorageMode
 	Name      string
 	UUID      uuid.UUID
 	Tiers     []string
@@ -28,11 +50,12 @@ type CreateManagedPoolRequest struct {
 }
 
 type ManagedPool struct {
-	Name       string    `json:"name"`
-	UUID       uuid.UUID `json:"uuid"`
-	Tiers      []string  `json:"tiers"`
-	Mountpoint string    `json:"mountpoint"`
-	UnitPath   string    `json:"unit_path"`
+	Mode       StorageMode `json:"mode"`
+	Name       string      `json:"name"`
+	UUID       uuid.UUID   `json:"uuid"`
+	Tiers      []string    `json:"tiers"`
+	Mountpoint string      `json:"mountpoint"`
+	UnitPath   string      `json:"unit_path"`
 }
 
 func ValidatePoolName(name string) error {
@@ -65,6 +88,48 @@ func ValidateTiers(tiers []string) error {
 			return fmt.Errorf("duplicate tier path %q", t)
 		}
 		seen[t] = struct{}{}
+	}
+	return nil
+}
+
+// Cache mode may reuse clean named replicas, but never strand unique tier data.
+// Call only when creating a pool, not on a runtime unit rewrite.
+func ValidateCacheBackings(tiers []string) error {
+	if len(tiers) < 2 {
+		return errors.New("cache mode requires a cache and a base tier")
+	}
+	base := tiers[len(tiers)-1]
+	for _, cache := range tiers[:len(tiers)-1] {
+		err := filepath.WalkDir(cache, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(cache, path)
+			if err != nil {
+				return err
+			}
+			if rel == "." {
+				return nil
+			}
+			if d.IsDir() && filepath.Dir(rel) == "." && (d.Name() == ".smoothfs" || d.Name() == ".tierd-meta" || d.Name() == "lost+found") {
+				return filepath.SkipDir
+			}
+			copyInfo, err := os.Lstat(filepath.Join(base, rel))
+			if err != nil {
+				return fmt.Errorf("cache backing contains %q without a base copy; migrate tier data before enabling cache mode: %w", rel, err)
+			}
+			cacheInfo, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if cacheInfo.Mode().Type() != copyInfo.Mode().Type() {
+				return fmt.Errorf("cache backing %q and its base copy have different file types", rel)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -122,7 +187,7 @@ After={{.}}
 What=none
 Where={{.Mountpoint}}
 Type=smoothfs
-Options=pool={{.Name}},uuid={{.UUID}},tiers={{.TierSpec}}
+Options=pool={{.Name}},uuid={{.UUID}},tiers={{.TierSpec}}{{if .CacheMode}},mode=cache{{end}}
 # Cold-cache smoothfs mount-time scans tier backings; runtime is
 # O(file-count) bounded by readdir IO, which on HDD-backed ZFS or a
 # very large XFS can take many minutes per million files. Any fixed
@@ -144,6 +209,7 @@ WantedBy=local-fs.target
 `
 
 type unitVars struct {
+	CacheMode      bool
 	Name           string
 	UUID           string
 	Mountpoint     string
@@ -152,6 +218,10 @@ type unitVars struct {
 }
 
 func RenderMountUnit(p ManagedPool) (string, error) {
+	mode, err := NormalizeStorageMode(p.Mode, len(p.Tiers))
+	if err != nil {
+		return "", err
+	}
 	if err := ValidatePoolName(p.Name); err != nil {
 		return "", err
 	}
@@ -163,6 +233,7 @@ func RenderMountUnit(p ManagedPool) (string, error) {
 		reqs = append(reqs, UnitFilenameFor(t))
 	}
 	v := unitVars{
+		CacheMode:      mode == ModeCache,
 		Name:           p.Name,
 		UUID:           p.UUID.String(),
 		Mountpoint:     p.Mountpoint,
@@ -181,11 +252,20 @@ func RenderMountUnit(p ManagedPool) (string, error) {
 }
 
 func CreateManagedPool(req CreateManagedPoolRequest) (*ManagedPool, error) {
+	mode, err := NormalizeStorageMode(req.Mode, len(req.Tiers))
+	if err != nil {
+		return nil, err
+	}
 	if err := ValidatePoolName(req.Name); err != nil {
 		return nil, err
 	}
 	if err := ValidateTiers(req.Tiers); err != nil {
 		return nil, err
+	}
+	if mode == ModeCache {
+		if err := ValidateCacheBackings(req.Tiers); err != nil {
+			return nil, err
+		}
 	}
 	poolUUID := req.UUID
 	if poolUUID == uuid.Nil {
@@ -197,6 +277,7 @@ func CreateManagedPool(req CreateManagedPoolRequest) (*ManagedPool, error) {
 	}
 	mp := MountpointForPool(base, req.Name)
 	pool := ManagedPool{
+		Mode:       mode,
 		Name:       req.Name,
 		UUID:       poolUUID,
 		Tiers:      req.Tiers,

@@ -71,3 +71,42 @@ prerequisites.
 - `docs`: operator and design documentation
 - `tierd` directory in SmoothNAS consumes these contracts
 
+
+### Storage modes
+
+`mode=tier` (the default) preserves normal placement: each file has one
+permanent tier, and promotion/demotion moves that authoritative copy.
+
+`mode=cache` treats the **last, slowest tier as permanent storage**. The first,
+fastest tier supplies temporary write staging and disposable read replicas:
+
+```sh
+mount -t smoothfs -o pool=media,mode=cache,tiers=/mnt/cache:/mnt/base none /mnt/media
+```
+
+New names and directories are created on base storage. Buffered writes use the
+existing range-staging machinery while the fast tier has room, then drain into
+the base inode. A full cache falls back to base writes; it does not add permanent
+capacity. Background drain runs on the heat-drain interval (currently 30 seconds).
+`fsync`, synchronous writes, `syncfs`, and clean unmount drain pending writes;
+a failed base write retains dirty staging and reports the error. Pending writes
+are required data until drained and must not be deleted as if they were clean
+read replicas.
+
+Buffered reads can populate anonymous fast-tier chunk replicas. Their validity
+is tracked in memory and invalidated by writes, truncation, placement changes,
+and writable mappings. Losing/evicting these replicas only causes another base
+read. Unsupported temporary-file caching falls back to reading base storage.
+Direct IO, splice, and mmap use base storage; dirty ranges are drained or the
+operation is refused rather than bypassed.
+
+`/sys/fs/smoothfs/<uuid>/storage_mode` reports the mounted mode. Writing `1` to
+`drop_read_cache` evicts all clean read replicas without touching base files or
+pending writes. Cache mode reCache mode reports permanent capacity from base storage only.
+
+Do not switch an existing tiered pool in place: consolidate and verify its
+contents on the base layer first. Managed creation rejects upper-layer names
+without a matching base entry. Cache mode exposes only the base namespace;
+stale named replicas above it do not resurrect deleted files. The fastest
+layer provides caching and the last layer provides permanent storage;
+intermediate configured layers are not used for cache admission.

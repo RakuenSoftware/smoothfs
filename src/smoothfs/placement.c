@@ -486,7 +486,7 @@ smoothfs_replay_instantiate_one(struct super_block *sb,
 	if (!rec->chosen_rel_path || rec->chosen_tier >= sbi->ntiers)
 		return NULL;
 
-	tier = rec->chosen_tier;
+	tier = sbi->cache_mode ? sbi->ntiers - 1 : rec->chosen_tier;
 	rel_path = rec->chosen_rel_path;
 	normalized = rec->normalized;
 
@@ -511,8 +511,8 @@ smoothfs_replay_instantiate_one(struct super_block *sb,
 	si->rel_path = dup;
 	smoothfs_path_map_add(sbi, si);
 	si->current_tier = tier;
-	si->intended_tier = normalized ? tier : rec->intended_tier;
-	si->movement_state = rec->normalized_state;
+	si->intended_tier = (normalized || sbi->cache_mode) ? tier : rec->intended_tier;
+	si->movement_state = sbi->cache_mode ? SMOOTHFS_MS_PLACED : rec->normalized_state;
 	si->pin_state = rec->pin_state;
 	si->gen = rec->chosen_gen;
 	if (normalized)

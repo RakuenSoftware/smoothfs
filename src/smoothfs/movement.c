@@ -344,6 +344,9 @@ int smoothfs_movement_plan(struct smoothfs_sb_info *sbi,
 		return -EAGAIN;
 	if (dest_tier >= sbi->ntiers)
 		return -EINVAL;
+	/* A cache is never the sole authoritative placement. */
+	if (sbi->cache_mode && dest_tier != sbi->ntiers - 1)
+		return -EINVAL;
 
 	si = smoothfs_lookup_oid_resolve(sbi, oid);
 	if (!si)

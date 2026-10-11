@@ -299,3 +299,30 @@ func TestPlannerRegisterPoolConcurrentWithTick(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestCachePlannerNeverPromotesBaseAndDrainsHotCache(t *testing.T) {
+	sqlDB := testDB(t)
+	ns, fast, base := seedPool(t, sqlDB)
+	pool := &Pool{UUID: uuid.New(), NamespaceID: ns, CacheMode: true, Tiers: []TierInfo{
+		{Rank: 0, TargetID: fast, LowerDir: t.TempDir(), FullPct: 95},
+		{Rank: 1, TargetID: base, LowerDir: t.TempDir(), FullPct: 100},
+	}}
+	for i, tier := range []string{base, fast} {
+		_, err := sqlDB.Exec(`INSERT INTO smoothfs_objects (object_id, namespace_id, current_tier_id, movement_state, ewma_value, pin_state, rel_path) VALUES (?, ?, ?, 'placed', 100000, 'none', ?)`, fmt.Sprintf("%032x", i+1), ns, tier, fmt.Sprintf("episode-%d.mkv", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	plans := make(chan MovementPlan, 4)
+	planner := NewPlanner(sqlDB, plans, PlannerConfig{MinResidencySec: 86400, CooldownSec: 86400, PromotePercentile: 80, DemotePercentile: 20})
+	if err := planner.planPool(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("got %d plans, want one cache drain", len(plans))
+	}
+	plan := <-plans
+	if plan.SourceTierID != fast || plan.DestTierID != base {
+		t.Fatalf("cache plan = %+v", plan)
+	}
+}

@@ -123,6 +123,10 @@ static u8 smoothfs_select_create_tier(struct smoothfs_sb_info *sbi)
 {
 	u8 tier;
 
+	/* Cache payloads stage separately; the namespace inode always belongs
+	 * to permanent storage, even while its newest ranges are buffered. */
+	if (sbi->cache_mode)
+		return sbi->ntiers - 1;
 	if (sbi->ntiers <= 1)
 		return sbi->fastest_tier;
 
@@ -273,7 +277,8 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 	u8 old_tier;
 	int err;
 
-	if (!smoothfs_should_stage_truncate(sbi, si, inode, attr))
+	/* Cache mode keeps the base inode; range staging handles payloads. */
+	if (sbi->cache_mode || !smoothfs_should_stage_truncate(sbi, si, inode, attr))
 		return -EOPNOTSUPP;
 
 	rel_path = smoothfs_rel_path_from_dentry(dentry);
@@ -406,7 +411,7 @@ int smoothfs_lookup_rel_across_tiers(struct smoothfs_sb_info *sbi,
 {
 	u8 tier;
 
-	for (tier = 0; tier < sbi->ntiers; tier++) {
+	for (tier = sbi->cache_mode ? sbi->ntiers - 1 : 0; tier < sbi->ntiers; tier++) {
 		if (tier == exclude_tier)
 			continue;
 		if (!rel_path || !*rel_path)
@@ -603,6 +608,37 @@ static struct dentry *smoothfs_lookup_inner(struct inode *dir,
 	struct dentry *lower;
 	struct path lower_path;
 	struct inode *inode = NULL;
+
+	/* Base wins even if an obsolete named replica remains on a faster tier.
+	 * Dirty range stages live outside the namespace and overlay this inode. */
+	if (sbi->cache_mode) {
+		char *rel = smoothfs_rel_path_from_dentry(dentry);
+		int err;
+		if (!rel)
+			return ERR_PTR(-ENOMEM);
+		err = smoothfs_resolve_rel_path_on_tier(sbi, sbi->ntiers - 1, rel, &lower_path);
+		if (!err && d_really_is_positive(lower_path.dentry)) {
+			lower = lower_path.dentry;
+			inode = smoothfs_iget(dir->i_sb, &lower_path, false, false);
+			if (!IS_ERR(inode)) {
+				err = smoothfs_track_placed(sbi, inode, rel, sbi->ntiers - 1,
+						    false, true);
+				if (err) { iput(inode); inode = ERR_PTR(err); }
+				else smoothfs_set_lower_dentry(dentry, lower);
+			}
+			path_put(&lower_path);
+			kfree(rel);
+			return IS_ERR(inode) ? ERR_CAST(inode) : d_splice_alias(inode, dentry);
+		}
+		if (!err)
+			path_put(&lower_path);
+		kfree(rel);
+		if (err && err != -ENOENT && err != -ENOTDIR)
+			return ERR_PTR(err);
+		/* Higher-tier named remnants are never authoritative cache data. */
+		d_add(dentry, NULL);
+		return NULL;
+	}
 
 	inode_lock_shared(d_inode(lower_parent));
 	lower = smoothfs_compat_lookup(&nop_mnt_idmap, &dentry->d_name, lower_parent);
@@ -807,6 +843,8 @@ static int smoothfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 	 * were the other major contributor; smoothfs_copy_attrs now runs
 	 * only on create/rename/cutover/setattr. */
 	err = vfs_getattr_nosec(&lower_path, stat, request_mask, flags);
+	if (!err && sbi->cache_mode && READ_ONCE(si->range_staged))
+		stat->size = i_size_read(inode);
 	path_put(&lower_path);
 	if (err)
 		return err;
@@ -956,7 +994,7 @@ static int smoothfs_create_inner(struct mnt_idmap *idmap, struct inode *dir,
 		goto out;
 	}
 
-	for (attempt = 0; attempt < sbi->ntiers; attempt++) {
+	for (attempt = 0; attempt < (sbi->cache_mode ? 1 : sbi->ntiers); attempt++) {
 		bool materialize_parent;
 
 		tier = (start_tier + attempt) % sbi->ntiers;
@@ -1370,7 +1408,7 @@ static struct dentry *smoothfs_mkdir_inner(struct mnt_idmap *idmap,
 		goto out_err;
 	}
 
-	for (tier = sbi->fastest_tier; tier < sbi->ntiers; tier++) {
+	for (tier = sbi->cache_mode ? sbi->ntiers - 1 : sbi->fastest_tier; tier < sbi->ntiers; tier++) {
 		bool materialize_parent = tier != parent_tier;
 		bool cold_placement = tier != sbi->fastest_tier;
 
