@@ -17,6 +17,7 @@ import (
 // Pool is a runtime registration of a smoothfs mount that the planner
 // considers for movement.
 type Pool struct {
+	CacheMode          bool
 	UUID               uuid.UUID
 	Name               string
 	NamespaceID        string
@@ -228,6 +229,12 @@ func (p *Planner) planPool(ctx context.Context, pool *Pool) error {
 		var dest *TierInfo
 		sourceOverfull := cur.FullPct > 0 && cur.FillPct >= cur.FullPct
 		switch {
+		case pool.CacheMode:
+			// Cache replicas are disposable; authoritative placement stays on base.
+			if cur.Rank != poolTiers[len(poolTiers)-1].Rank {
+				t := poolTiers[len(poolTiers)-1]
+				dest = &t
+			}
 		case c.ewma >= promoteGate && int(cur.Rank) > 0:
 			if movedRecently(now, c.lastMove, p.cfg.MinResidencySec, p.cfg.CooldownSec) {
 				continue

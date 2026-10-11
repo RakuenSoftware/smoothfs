@@ -62,17 +62,24 @@ static void smoothfs_kill_sb(struct super_block *sb)
 
 	if (sbi) {
 		smoothfs_path_index_async_destroy(sbi);
+		smoothfs_heat_destroy(sbi);
+		if (smoothfs_cache_drain(sbi))
+			pr_warn("smoothfs: pending cache writes retained for recovery at unmount\n");
 
 		down_write(&sbi->inode_lock);
 		list_for_each_entry_safe(si, tmp, &sbi->inode_list, sb_link) {
-			if (atomic_xchg(&si->replay_pinned, 0))
+			si->unmount_pins = atomic_xchg(&si->replay_pinned, 0) +
+				atomic_xchg(&si->range_staging_pinned, 0);
+			if (si->unmount_pins)
 				list_move_tail(&si->sb_link, &to_release);
 		}
 		up_write(&sbi->inode_lock);
 
 		list_for_each_entry_safe(si, tmp, &to_release, sb_link) {
+			int pins = si->unmount_pins;
 			list_del_init(&si->sb_link);
-			iput(&si->vfs_inode);
+			while (pins--)
+				iput(&si->vfs_inode);
 		}
 	}
 

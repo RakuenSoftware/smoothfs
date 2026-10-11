@@ -537,6 +537,10 @@ static int smoothfs_range_replay_one(struct super_block *sb,
 		recovered += (u64)(end - start);
 	}
 
+	if (sbi->cache_mode && !atomic_read(&si->range_staging_pinned)) {
+		ihold(&si->vfs_inode);
+		atomic_set(&si->range_staging_pinned, 1);
+	}
 	WRITE_ONCE(si->range_staged, true);
 	WRITE_ONCE(si->range_staged_recovered, true);
 	WRITE_ONCE(si->range_staged_source_tier, source_tier);

@@ -113,6 +113,33 @@ static ssize_t write_staging_supported_show(struct kobject *kobj,
 	return sysfs_emit(buf, "1\n");
 }
 
+static ssize_t drop_read_cache_store(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct smoothfs_sb_info *sbi = to_smoothfs_sysfs_pool(kobj)->sbi;
+	struct smoothfs_inode_info *si;
+	bool drop;
+	int err = kstrtobool(buf, &drop);
+
+	if (err || !drop) return err ? err : -EINVAL;
+	down_read(&sbi->inode_lock);
+	list_for_each_entry(si, &sbi->inode_list, sb_link) {
+		mutex_lock(&si->read_cache_lock);
+		smoothfs_read_cache_clear(si);
+		mutex_unlock(&si->read_cache_lock);
+	}
+	up_read(&sbi->inode_lock);
+	return count;
+}
+
+static ssize_t storage_mode_show(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	struct smoothfs_sysfs_pool *pool = container_of(kobj, struct smoothfs_sysfs_pool, kobj);
+	return sysfs_emit(buf, "%s\n", pool->sbi->cache_mode ? "cache" : "tier");
+}
+
 static ssize_t write_staging_enabled_show(struct kobject *kobj,
 					  struct kobj_attribute *attr,
 					  char *buf)
@@ -382,6 +409,8 @@ static ssize_t metadata_active_tier_mask_store(struct kobject *kobj,
 	valid_mask = BIT(sbi->ntiers) - 1;
 	mask &= valid_mask;
 	mask |= BIT(sbi->fastest_tier);
+	if (sbi->cache_mode)
+		mask = valid_mask;
 	WRITE_ONCE(sbi->metadata_active_tier_mask, mask);
 	return count;
 }
@@ -416,6 +445,8 @@ static ssize_t write_staging_drain_active_tier_mask_store(struct kobject *kobj,
 	valid_mask = BIT(sbi->ntiers) - 1;
 	mask &= valid_mask;
 	mask |= BIT(sbi->fastest_tier);
+	if (sbi->cache_mode)
+		mask |= BIT(sbi->ntiers - 1);
 	WRITE_ONCE(sbi->write_staging_drain_active_tier_mask, mask);
 	err = smoothfs_write_staging_drain_rehomes(sbi);
 	if (err)
@@ -539,6 +570,8 @@ static struct kobj_attribute forget_lower_attr =
 	__ATTR_WO(forget_lower);
 static struct kobj_attribute write_staging_supported_attr =
 	__ATTR_RO(write_staging_supported);
+static struct kobj_attribute drop_read_cache_attr = __ATTR_WO(drop_read_cache);
+static struct kobj_attribute storage_mode_attr = __ATTR_RO(storage_mode);
 static struct kobj_attribute write_staging_enabled_attr =
 	__ATTR_RW(write_staging_enabled);
 static struct kobj_attribute write_staging_full_pct_attr =
@@ -599,6 +632,8 @@ static struct attribute *smoothfs_pool_attrs[] = {
 	&forget_lower_attr.attr,
 	&write_staging_supported_attr.attr,
 	&write_staging_enabled_attr.attr,
+	&storage_mode_attr.attr,
+	&drop_read_cache_attr.attr,
 	&write_staging_full_pct_attr.attr,
 	&staged_bytes_attr.attr,
 	&staged_rehome_bytes_attr.attr,
@@ -1143,6 +1178,31 @@ static int smoothfs_write_full(struct file *file, char *buf, size_t len,
 	return 0;
 }
 
+/* Make the permanent name and every materialized ancestor durable before
+ * deleting the only dirty cache copy. File fsync alone does not ensure this. */
+static int smoothfs_sync_base_parents(struct smoothfs_sb_info *sbi,
+				      struct path *lower_path)
+{
+	struct dentry *dir = dget_parent(lower_path->dentry);
+	int err = 0;
+
+	for (;;) {
+		struct path path = { .mnt = lower_path->mnt, .dentry = dir };
+		struct file *file = dentry_open(&path, O_RDONLY | O_DIRECTORY, sbi->creator_cred);
+		struct dentry *parent;
+		if (IS_ERR(file)) { err = PTR_ERR(file); break; }
+		err = vfs_fsync(file, 0);
+		fput(file);
+		if (err || IS_ROOT(dir) || dir == sbi->tiers[sbi->ntiers - 1].lower_path.dentry)
+			break;
+		parent = dget_parent(dir);
+		dput(dir);
+		dir = parent;
+	}
+	dput(dir);
+	return err;
+}
+
 static int smoothfs_write_staging_drain_one_range(struct smoothfs_sb_info *sbi,
 						  struct inode *inode)
 {
@@ -1217,6 +1277,8 @@ static int smoothfs_write_staging_drain_one_range(struct smoothfs_sb_info *sbi,
 		}
 	}
 	err = vfs_fsync(dest, 0);
+	if (!err && sbi->cache_mode)
+		err = smoothfs_sync_base_parents(sbi, &lower_path);
 	if (err)
 		goto out_unlock;
 
@@ -1240,15 +1302,15 @@ out_unlock:
 		fput(stage);
 	if (lower_path.dentry)
 		path_put(&lower_path);
-	mutex_unlock(&si->range_staging_lock);
 
 	if (cleared) {
 		int unlink_err;
 
 		unlink_err = smoothfs_range_stage_unlink_path(&stage_path);
-		path_put(&stage_path);
+		path_put(&stage_path); /* snapshot reference */
+		path_put(&stage_path); /* former si->range_staged_path ownership */
 		if (unlink_err)
-			return unlink_err;
+			err = unlink_err;
 		/* Phase 6O: drop the per-inode recovery sidecar so a
 		 * future remount doesn't try to replay an already-drained
 		 * range. */
@@ -1268,8 +1330,29 @@ out_unlock:
 	} else if (stage_path.dentry) {
 		path_put(&stage_path);
 	}
+	/* Cleanup stays under the range lock: a new writer must not create a
+	 * stage/sidecar that this drain then unlinks. */
+	if (cleared) {
+		int pinned = atomic_xchg(&si->range_staging_pinned, 0);
+		mutex_unlock(&si->range_staging_lock);
+		if (pinned)
+			iput(inode);
+	} else {
+		mutex_unlock(&si->range_staging_lock);
+	}
 	return err;
 }
+
+int smoothfs_write_staging_drain_inode(struct inode *inode)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
+	const struct cred *old = override_creds(sbi->creator_cred);
+	int err = smoothfs_write_staging_drain_one_range(sbi, inode);
+
+	revert_creds(old);
+	return err;
+}
+
 
 static int smoothfs_write_staging_drain_ranges(struct smoothfs_sb_info *sbi)
 {
@@ -1283,6 +1366,19 @@ static int smoothfs_write_staging_drain_ranges(struct smoothfs_sb_info *sbi)
 			return err;
 	}
 	return 0;
+}
+
+int smoothfs_cache_drain(struct smoothfs_sb_info *sbi)
+{
+	const struct cred *old;
+	int err;
+
+	if (!sbi->cache_mode)
+		return 0;
+	old = override_creds(sbi->creator_cred);
+	err = smoothfs_write_staging_drain_ranges(sbi);
+	revert_creds(old);
+	return err;
 }
 
 void smoothfs_write_staging_note_rehome(struct smoothfs_sb_info *sbi)
@@ -1313,7 +1409,7 @@ void smoothfs_write_staging_note_range_write(struct smoothfs_sb_info *sbi,
 {
 	u64 now;
 
-	if (bytes <= 0)
+	if (bytes < 0)
 		return;
 	now = ktime_get_real_ns();
 	atomic64_add(bytes, &sbi->staged_bytes);
@@ -1717,6 +1813,12 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	si->cutover_gen = 0;
 	si->transaction_seq = 0;
 	atomic_set(&si->nlink_observed, 1);
+	mutex_init(&si->cache_mutation_lock);
+	mutex_init(&si->read_cache_lock);
+	si->read_cache_file = NULL;
+	xa_init(&si->read_cache_chunks);
+	si->read_cache_seq = 0;
+	si->read_cache_gen = 0;
 	si->lower_path.mnt = NULL;
 	si->lower_path.dentry = NULL;
 	atomic_set(&si->open_count, 0);
@@ -1730,6 +1832,8 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	si->write_staged = false;
 	si->write_staged_drain_tier = SMOOTHFS_MAX_TIERS;
 	si->range_staged = false;
+	atomic_set(&si->range_staging_pinned, 0);
+	si->unmount_pins = 0;
 	si->range_staged_recovered = false;
 	si->range_staged_source_tier = SMOOTHFS_MAX_TIERS;
 	si->range_staged_path.mnt = NULL;
@@ -1753,6 +1857,9 @@ static void smoothfs_evict_inode(struct inode *inode)
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
 
+	mutex_lock(&si->read_cache_lock);
+	smoothfs_read_cache_clear(si);
+	mutex_unlock(&si->read_cache_lock);
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 
@@ -1799,6 +1906,7 @@ enum smoothfs_param {
 	Opt_uuid,
 	Opt_tiers,
 	Opt_create_policy,
+	Opt_mode,
 };
 
 static const struct fs_parameter_spec smoothfs_fs_parameters[] = {
@@ -1806,6 +1914,7 @@ static const struct fs_parameter_spec smoothfs_fs_parameters[] = {
 	fsparam_string("uuid",          Opt_uuid),
 	fsparam_string("tiers",         Opt_tiers),
 	fsparam_string("create_policy", Opt_create_policy),
+	fsparam_string("mode",          Opt_mode),
 	{}
 };
 
@@ -1814,6 +1923,7 @@ struct smoothfs_fc_ctx {
 	char    *uuid_str;
 	char    *tiers;     /* colon-separated lower paths */
 	char    *create_policy;
+	bool     cache_mode;
 };
 
 static int smoothfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
@@ -1827,6 +1937,14 @@ static int smoothfs_parse_param(struct fs_context *fc, struct fs_parameter *para
 		return opt;
 
 	switch (opt) {
+	case Opt_mode:
+		if (!strcmp(param->string, "cache"))
+			ctx->cache_mode = true;
+		else if (!strcmp(param->string, "tier"))
+			ctx->cache_mode = false;
+		else
+			return -EINVAL;
+		break;
 	case Opt_pool:
 		kfree(ctx->pool);
 		ctx->pool = kstrdup(param->string, GFP_KERNEL);
@@ -2018,7 +2136,8 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	atomic64_set(&sbi->spill_creates_total, 0);
 	atomic64_set(&sbi->spill_creates_failed_all_tiers, 0);
 	atomic_set(&sbi->any_spill_since_mount, 0);
-	WRITE_ONCE(sbi->write_staging_enabled, false);
+	sbi->cache_mode = ctx->cache_mode;
+	WRITE_ONCE(sbi->write_staging_enabled, sbi->cache_mode);
 	WRITE_ONCE(sbi->write_staging_full_pct, 98);
 	atomic64_set(&sbi->staged_bytes, 0);
 	atomic64_set(&sbi->staged_rehome_bytes, 0);
@@ -2045,9 +2164,16 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	err = smoothfs_resolve_tiers(sbi, ctx->tiers);
 	if (err)
 		goto out_sbi;
+	if (sbi->cache_mode && sbi->ntiers < 2) {
+		err = -EINVAL;
+		goto out_sbi;
+	}
 	WRITE_ONCE(sbi->metadata_active_tier_mask, BIT(sbi->ntiers) - 1);
 	WRITE_ONCE(sbi->write_staging_drain_active_tier_mask,
 		   BIT(sbi->fastest_tier));
+
+	if (sbi->cache_mode)
+		WRITE_ONCE(sbi->write_staging_drain_active_tier_mask, BIT(sbi->ntiers) - 1);
 
 	sb->s_magic     = SMOOTHFS_MAGIC;
 	sb->s_op        = &smoothfs_super_ops;
@@ -2061,7 +2187,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_flags     |= SB_POSIXACL | SB_NOSEC;
 	sb->s_fs_info   = sbi;
 
-	root_lower = sbi->tiers[sbi->fastest_tier].lower_path;
+	root_lower = sbi->tiers[sbi->cache_mode ? sbi->ntiers - 1 : sbi->fastest_tier].lower_path;
 	/* iget consumes one path ref; mirror that to the root dentry's
 	 * d_fsdata via dget(). */
 	path_get(&root_lower);
@@ -2230,10 +2356,12 @@ static int smoothfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_namelen = NAME_MAX;
 	buf->f_frsize  = PAGE_SIZE;
 
-	for (i = 0; i < sbi->ntiers; i++) {
+	for (i = sbi->cache_mode ? sbi->ntiers - 1 : 0; i < sbi->ntiers; i++) {
 		err = vfs_statfs(&sbi->tiers[i].lower_path, &tmp);
 		if (err) {
 			smoothfs_netlink_emit_tier_fault(sbi, i);
+			if (sbi->cache_mode)
+				return err;
 			continue;
 		}
 		buf->f_blocks += (tmp.f_blocks * tmp.f_bsize) / PAGE_SIZE;
@@ -2250,7 +2378,8 @@ static int smoothfs_show_options(struct seq_file *m, struct dentry *root)
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(root->d_sb);
 	u8 i;
 
-	seq_printf(m, ",pool=%s", sbi->pool_name);
+	seq_printf(m, ",pool=%s,mode=%s", sbi->pool_name,
+		   sbi->cache_mode ? "cache" : "tier");
 	seq_printf(m, ",fsid=0x%08x", sbi->fsid);
 	for (i = 0; i < sbi->ntiers; i++)
 		seq_printf(m, ",tier%u=present", i);
@@ -2271,6 +2400,9 @@ static int smoothfs_sync_fs(struct super_block *sb, int wait)
 	if (!sbi)
 		return 0;
 	if (wait) {
+		int err = smoothfs_cache_drain(sbi);
+		if (err)
+			return err;
 		smoothfs_oid_wb_drain(sbi);
 		smoothfs_placement_wb_drain(sbi);
 		if (sbi->placement_log)

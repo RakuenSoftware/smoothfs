@@ -68,6 +68,8 @@ static bool smoothfs_should_range_stage_write(struct inode *inode,
 		return false;
 	if (!lower)
 		return false;
+	if (sbi->cache_mode && mapping_writably_mapped(file_inode(lower)->i_mapping))
+		return false;
 	tier = smoothfs_tier_of(sbi, lower->f_path.mnt);
 	if (tier >= sbi->ntiers || tier == sbi->fastest_tier)
 		return false;
@@ -90,8 +92,12 @@ static int smoothfs_range_stage_open_locked(struct inode *inode)
 			 SMOOTHFS_OID_LEN, si->oid);
 	if (!name)
 		return -ENOMEM;
-	stage = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
-			       name, O_RDWR | O_CREAT, 0600);
+	{
+		const struct cred *old = override_creds(sbi->creator_cred);
+		stage = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
+				       name, O_RDWR | O_CREAT, 0600);
+		revert_creds(old);
+	}
 	kfree(name);
 	if (IS_ERR(stage))
 		return PTR_ERR(stage);
@@ -150,12 +156,18 @@ static ssize_t smoothfs_range_stage_write(struct kiocb *iocb,
 	loff_t pos = iocb->ki_pos;
 	struct smoothfs_staged_range *new_range;
 	ssize_t ret;
+	u64 before = 0, after = 0;
+	struct smoothfs_staged_range *range;
 	u8 source_tier;
 	int err;
 
 	source_tier = smoothfs_tier_of(sbi, lower->f_path.mnt);
 
 	mutex_lock(&si->range_staging_lock);
+	if (iocb->ki_flags & IOCB_APPEND) {
+		iocb->ki_pos = i_size_read(inode);
+		pos = iocb->ki_pos;
+	}
 	err = smoothfs_range_stage_open_locked(inode);
 	if (err) {
 		mutex_unlock(&si->range_staging_lock);
@@ -174,22 +186,38 @@ static ssize_t smoothfs_range_stage_write(struct kiocb *iocb,
 		return -ENOMEM;
 	}
 
+	list_for_each_entry(range, &si->range_staged_ranges, link)
+		before += range->end - range->start;
 	ret = smoothfs_compat_write_iter(stage, &iocb->ki_pos, from);
 	if (ret > 0) {
 		loff_t end = pos + ret;
 
 		smoothfs_range_stage_record_locked(inode, pos, end, new_range);
 		new_range = NULL;
+		if (sbi->cache_mode && !atomic_read(&si->range_staging_pinned)) {
+			ihold(inode);
+			atomic_set(&si->range_staging_pinned, 1);
+		}
 		WRITE_ONCE(si->range_staged, true);
 		WRITE_ONCE(si->range_staged_source_tier, source_tier);
 		if (end > i_size_read(inode))
 			i_size_write(inode, end);
-		smoothfs_write_staging_note_range_write(sbi, ret);
+		list_for_each_entry(range, &si->range_staged_ranges, link)
+			after += range->end - range->start;
+		smoothfs_write_staging_note_range_write(sbi, after - before);
 		/* Persist the updated range list so a crash before drain
 		 * can be recovered on the next mount (Phase 6O). */
-		(void)smoothfs_range_staging_persist(sbi, si->oid, source_tier,
+		{
+			const struct cred *old = override_creds(sbi->creator_cred);
+			err = smoothfs_range_staging_persist(sbi, si->oid, source_tier,
 						     &si->range_staged_ranges,
 						     (u64)ktime_get_real_ns());
+			revert_creds(old);
+			if (err && sbi->cache_mode) {
+				smoothfs_note_data_change(inode);
+				ret = err; /* keep dirty ranges, report failed acknowledgement */
+			}
+		}
 	}
 	kfree(new_range);
 	fput(stage);
@@ -299,6 +327,92 @@ static ssize_t smoothfs_range_stage_read_iter(struct kiocb *iocb,
 	return done;
 }
 
+/* Validity is in memory only. Anonymous replicas cannot shadow named base
+ * files or survive reboot stale. Caller holds read_cache_lock. */
+void smoothfs_read_cache_clear(struct smoothfs_inode_info *si)
+{
+	if (si->read_cache_file) {
+		fput(si->read_cache_file);
+		si->read_cache_file = NULL;
+	}
+	xa_destroy(&si->read_cache_chunks);
+}
+
+static ssize_t smoothfs_cached_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(inode->i_sb);
+	struct file *lower = smoothfs_lower_file(iocb->ki_filp);
+	ssize_t done = 0;
+	char *buf;
+	int err = smoothfs_lower_file_error(lower);
+
+	if (err)
+		return err;
+	buf = kmalloc(SMOOTHFS_RANGE_READ_CHUNK, GFP_KERNEL);
+	if (!buf)
+		return smoothfs_compat_read_iter(lower, &iocb->ki_pos, to);
+	mutex_lock(&si->read_cache_lock);
+	while (iov_iter_count(to)) {
+		loff_t start = iocb->ki_pos;
+		unsigned long index = start / SMOOTHFS_RANGE_READ_CHUNK;
+		loff_t block = (loff_t)index * SMOOTHFS_RANGE_READ_CHUNK;
+		size_t offset = start - block;
+		loff_t pos = block;
+		u64 seq = atomic64_read(&si->write_seq);
+		u32 gen = READ_ONCE(si->cutover_gen);
+		void *entry;
+		ssize_t n = 0;
+		bool hit = false;
+		bool mapped = mapping_writably_mapped(file_inode(lower)->i_mapping);
+
+		if (mapped || si->read_cache_seq != seq || si->read_cache_gen != gen) {
+			smoothfs_read_cache_clear(si);
+			si->read_cache_seq = seq;
+			si->read_cache_gen = gen;
+		}
+		entry = xa_load(&si->read_cache_chunks, index);
+		if (si->read_cache_file && entry) {
+			size_t valid = xa_to_value(entry);
+			n = kernel_read(si->read_cache_file, buf, valid, &pos);
+			hit = n == valid;
+		}
+		if (!hit) {
+			pos = block;
+			n = kernel_read(lower, buf, SMOOTHFS_RANGE_READ_CHUNK, &pos);
+			if (n > 0 && !mapped && !smoothfs_tier_near_enospc(sbi, sbi->fastest_tier)) {
+				if (!si->read_cache_file) {
+					const struct cred *old = override_creds(sbi->creator_cred);
+					struct file *cache = file_open_root(
+						&sbi->tiers[sbi->fastest_tier].lower_path,
+						".smoothfs", O_TMPFILE | O_RDWR, 0600);
+					revert_creds(old);
+					if (!IS_ERR(cache)) si->read_cache_file = cache;
+				}
+				if (si->read_cache_file) {
+					pos = block;
+					xa_erase(&si->read_cache_chunks, index);
+					if (kernel_write(si->read_cache_file, buf, n, &pos) == n)
+						(void)xa_store(&si->read_cache_chunks, index, xa_mk_value(n), GFP_KERNEL);
+				}
+			}
+		}
+		if (n <= 0) {
+			if (!done) done = n;
+			break;
+		}
+		if (n <= offset) break;
+		n = copy_to_iter(buf + offset, min_t(size_t, n - offset, iov_iter_count(to)), to);
+		if (!n) break;
+		iocb->ki_pos += n;
+		done += n;
+	}
+	mutex_unlock(&si->read_cache_lock);
+	kfree(buf);
+	return done;
+}
+
 static int smoothfs_open(struct inode *inode, struct file *file)
 {
 	struct smoothfs_file_info *fi;
@@ -347,6 +461,10 @@ static ssize_t smoothfs_read_iter(struct kiocb *iocb, struct iov_iter *to)
 		return -EBUSY;
 	if (READ_ONCE(si->range_staged)) {
 		ret = smoothfs_range_stage_read_iter(iocb, to);
+	} else if (SMOOTHFS_SB(file_inode(iocb->ki_filp)->i_sb)->cache_mode &&
+		   !(iocb->ki_flags & IOCB_DIRECT) &&
+		   READ_ONCE(si->current_tier) == SMOOTHFS_SB(file_inode(iocb->ki_filp)->i_sb)->ntiers - 1) {
+		ret = smoothfs_cached_read_iter(iocb, to);
 	} else {
 		lower = smoothfs_lower_file(iocb->ki_filp);
 		err = smoothfs_lower_file_error(lower);
@@ -361,7 +479,7 @@ static ssize_t smoothfs_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	return ret;
 }
 
-static ssize_t smoothfs_write_iter(struct kiocb *iocb, struct iov_iter *from)
+static ssize_t smoothfs_write_iter_unlocked(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
@@ -413,10 +531,21 @@ again:
 	if (tier < sbi->ntiers)
 		atomic_inc(&sbi->tiers[tier].active_writes);
 	smoothfs_clear_write_reservation(sbi, si);
-	if (smoothfs_should_range_stage_write(inode, lower, iocb))
+	if (smoothfs_should_range_stage_write(inode, lower, iocb)) {
+		size_t count = iov_iter_count(from);
 		ret = smoothfs_range_stage_write(iocb, lower, from);
-	else
-		ret = smoothfs_compat_write_iter(lower, &iocb->ki_pos, from);
+		if (sbi->cache_mode && ret == -ENOSPC && iov_iter_count(from) == count) {
+			err = smoothfs_write_staging_drain_inode(inode);
+			ret = err ? err : smoothfs_compat_write_iter(lower, &iocb->ki_pos, from);
+		}
+	} else {
+		/* Drain older staged ranges before direct/full-cache writes so an
+		 * overlay can never replay older bytes over the newer base write. */
+		err = READ_ONCE(si->range_staged) ? smoothfs_write_staging_drain_inode(inode) : 0;
+		if (!err && READ_ONCE(si->range_staged))
+			err = -EBUSY;
+		ret = err ? err : smoothfs_compat_write_iter(lower, &iocb->ki_pos, from);
+	}
 	if (tier < sbi->ntiers)
 		atomic_dec(&sbi->tiers[tier].active_writes);
 	srcu_read_unlock(&sbi->cutover_srcu, srcu_idx);
@@ -442,6 +571,24 @@ again:
 		if (!READ_ONCE(si->range_staged))
 			i_size_write(upper, i_size_read(file_inode(lower)));
 	}
+	if (ret > 0 && sbi->cache_mode && (iocb->ki_flags & (IOCB_DSYNC | IOCB_SYNC))) {
+		err = smoothfs_write_staging_drain_inode(inode);
+		if (!err) err = vfs_fsync(lower, 0);
+		if (err) return err;
+	}
+	return ret;
+}
+
+/* Keep staged and direct base mutations ordered across file descriptors. */
+static ssize_t smoothfs_write_iter(struct kiocb *iocb, struct iov_iter *from)
+{
+	struct inode *inode = file_inode(iocb->ki_filp);
+	bool cache = SMOOTHFS_SB(inode->i_sb)->cache_mode;
+	ssize_t ret;
+
+	if (cache) mutex_lock(&SMOOTHFS_I(inode)->cache_mutation_lock);
+	ret = smoothfs_write_iter_unlocked(iocb, from);
+	if (cache) mutex_unlock(&SMOOTHFS_I(inode)->cache_mutation_lock);
 	return ret;
 }
 
@@ -455,6 +602,11 @@ static int smoothfs_fsync(struct file *file, loff_t start, loff_t end,
 	if (err)
 		return err;
 
+	if (SMOOTHFS_SB(file_inode(file)->i_sb)->cache_mode) {
+		err = smoothfs_write_staging_drain_inode(file_inode(file));
+		if (err)
+			return err;
+	}
 	return vfs_fsync_range(lower, start, end, datasync);
 }
 
@@ -472,12 +624,17 @@ static int smoothfs_fsync(struct file *file, loff_t start, loff_t end,
  * fork-safe without heavy per-VMA state. Delegating to the lower's
  * mapping avoids both problems.
  */
-static int smoothfs_mmap(struct file *file, struct vm_area_struct *vma)
+static int smoothfs_mmap_unlocked(struct file *file, struct vm_area_struct *vma)
 {
 	struct smoothfs_inode_info *si = SMOOTHFS_I(file_inode(file));
 	struct file *lower = smoothfs_lower_file(file);
 	int err;
 
+	if (SMOOTHFS_SB(file_inode(file)->i_sb)->cache_mode) {
+		err = smoothfs_write_staging_drain_inode(file_inode(file));
+		if (err)
+			return err;
+	}
 	err = smoothfs_lower_file_error(lower);
 	if (err)
 		return err;
@@ -489,8 +646,25 @@ static int smoothfs_mmap(struct file *file, struct vm_area_struct *vma)
 	if (READ_ONCE(si->range_staged))
 		return -EBUSY;
 
+	mutex_lock(&si->read_cache_lock);
+	if (vma_is_shared_maywrite(vma))
+		smoothfs_read_cache_clear(si);
 	vma_set_file(vma, lower);
-	return vfs_mmap(vma->vm_file, vma);
+	err = vfs_mmap(vma->vm_file, vma);
+	mutex_unlock(&si->read_cache_lock);
+	return err;
+}
+
+static int smoothfs_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct inode *inode = file_inode(file);
+	bool cache = SMOOTHFS_SB(inode->i_sb)->cache_mode;
+	int err;
+
+	if (cache) mutex_lock(&SMOOTHFS_I(inode)->cache_mutation_lock);
+	err = smoothfs_mmap_unlocked(file, vma);
+	if (cache) mutex_unlock(&SMOOTHFS_I(inode)->cache_mutation_lock);
+	return err;
 }
 
 static loff_t smoothfs_llseek(struct file *file, loff_t offset, int whence)
@@ -499,6 +673,11 @@ static loff_t smoothfs_llseek(struct file *file, loff_t offset, int whence)
 	loff_t ret;
 	int err;
 
+	if (SMOOTHFS_SB(file_inode(file)->i_sb)->cache_mode) {
+		err = smoothfs_write_staging_drain_inode(file_inode(file));
+		if (err)
+			return err;
+	}
 	err = smoothfs_lower_file_error(lower);
 	if (err)
 		return err;
@@ -535,6 +714,11 @@ static ssize_t smoothfs_splice_read(struct file *in, loff_t *ppos,
 	struct file *lower = smoothfs_lower_file(in);
 	int err;
 
+	if (SMOOTHFS_SB(file_inode(in)->i_sb)->cache_mode) {
+		err = smoothfs_write_staging_drain_inode(file_inode(in));
+		if (err)
+			return err;
+	}
 	err = smoothfs_lower_file_error(lower);
 	if (err)
 		return err;
@@ -600,8 +784,13 @@ static struct file *smoothfs_remap_source_file(struct file *src)
 {
 	if (!src)
 		return ERR_PTR(-EBADF);
-	if (file_inode(src)->i_sb->s_magic == SMOOTHFS_MAGIC)
+	if (file_inode(src)->i_sb->s_magic == SMOOTHFS_MAGIC) {
+		/* Lower reflink cannot see a pending range overlay. */
+		if (SMOOTHFS_SB(file_inode(src)->i_sb)->cache_mode &&
+		    READ_ONCE(SMOOTHFS_I(file_inode(src))->range_staged))
+			return ERR_PTR(-EBUSY);
 		return smoothfs_lower_file(src);
+	}
 	return src;
 }
 

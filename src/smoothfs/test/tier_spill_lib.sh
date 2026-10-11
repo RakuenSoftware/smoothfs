@@ -41,7 +41,7 @@ spill_setup_pool() {
 	mkfs_lower "$SPILL_ROOT/slow.img"
 	mount -o loop "$SPILL_ROOT/fast.img" "$SPILL_ROOT/fast"
 	mount -o loop "$SPILL_ROOT/slow.img" "$SPILL_ROOT/slow"
-	mount -t smoothfs -o "pool=${pool_name},uuid=${uuid},tiers=$SPILL_ROOT/fast:$SPILL_ROOT/slow" \
+	mount -t smoothfs -o "pool=${pool_name},uuid=${uuid},tiers=$SPILL_ROOT/fast:$SPILL_ROOT/slow${SPILL_MODE:+,mode=$SPILL_MODE}" \
 		none "$SPILL_ROOT/server"
 }
 
