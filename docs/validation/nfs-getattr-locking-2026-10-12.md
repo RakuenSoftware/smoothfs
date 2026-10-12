@@ -120,3 +120,16 @@ After a clean rebuild, the full protocol gate and cache harness passed, and a
 /home/debian/movement-owner-probe.log, smoothfs-owner-fixed.log,
 smoothfs-group-fixed.log, smoothfs-root-fixed.log,
 smoothfs-owner-protocol.log and smoothfs-owner-soak.log.
+
+## Kernel lease operation (2026-10-12)
+
+The native SMB VFS conformance test failed because Samba's kernel-oplock
+request returned EINVAL. Linux 7.2's kernel_setlease rejects files without
+an explicit file_operations.setlease hook. SmoothFS now uses generic_setlease
+on its stable upper inode, so lease state survives lower-tier cutovers.
+
+A clean rebuild on VM 9221 passed smb_vfs_module.sh without exclusions:
+passthrough, CIFS round trips, FileId cache, lease pin acquisition (01),
+foreign-modify lease break (00), and release (00). Before/after logs are
+/home/debian/smoothfs-deep-smb.log and smoothfs-deep-smb-fixed.log.
+Kernel reference: https://github.com/torvalds/linux/blob/v7.2/fs/locks.c.

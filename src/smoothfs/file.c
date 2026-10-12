@@ -18,6 +18,7 @@
 #include <linux/falloc.h>
 #include <linux/splice.h>
 #include <linux/file.h>
+#include <linux/filelock.h>
 #include <linux/fdtable.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
@@ -992,6 +993,8 @@ const struct file_operations smoothfs_file_ops = {
 	.compat_ioctl   = smoothfs_compat_ioctl,
 #endif
 	.flock          = NULL,  /* set in lock.c via override at mount */
+	/* Leases belong to the stable upper inode, including across cutovers. */
+	.setlease       = generic_setlease,
 };
 
 /* address_space ops: page cache lives at the lower; smoothfs does not
