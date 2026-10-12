@@ -126,10 +126,28 @@ smoothfs-owner-protocol.log and smoothfs-owner-soak.log.
 The native SMB VFS conformance test failed because Samba's kernel-oplock
 request returned EINVAL. Linux 7.2's kernel_setlease rejects files without
 an explicit file_operations.setlease hook. SmoothFS now uses generic_setlease
-on its stable upper inode, so lease state survives lower-tier cutovers.
+on its stable upper inode for ordinary file leases. Delegations and layouts
+remain rejected because their lower-IO coherency is not implemented.
 
 A clean rebuild on VM 9221 passed smb_vfs_module.sh without exclusions:
 passthrough, CIFS round trips, FileId cache, lease pin acquisition (01),
 foreign-modify lease break (00), and release (00). Before/after logs are
 /home/debian/smoothfs-deep-smb.log and smoothfs-deep-smb-fixed.log.
 Kernel reference: https://github.com/torvalds/linux/blob/v7.2/fs/locks.c.
+
+The mixed soak then exposed a fanotify self-lease deadlock: smbd waited in
+fanotify_read -> dentry_open_nonotify -> __break_lease while opening an event
+for its own leased file. Queued events retained deleted files, filling both
+2 GiB tiers. O_NONBLOCK on the fanotify descriptor did not protect the event
+opens. Set it on the event file flags as well so the event loop can service
+the lease break. Also honor the existing SmoothNAS "lease watcher" and
+"stable fileid" options, which the VFS module previously ignored.
+
+Final native validation passed the complete protocol gate without exclusions,
+64 cached CIFS write/fsync/rename/read/unlink cycles, and both disabled-option
+assertions. The 120-second advanced-mode soak passed 12,284 writes (4,611
+local, 4,835 NFS, 2,838 SMB); the 30-second configured-disabled soak passed
+3,188 writes. Owner-descriptor, concurrent-getattr and cache tests also pass
+with the restricted lease hook. Logs in VM 9221:
+/home/debian/smoothfs-final-protocol.log, smoothfs-vfs-regression.log,
+smoothfs-nonblock-soak.log and smoothfs-final-production-soak.log.

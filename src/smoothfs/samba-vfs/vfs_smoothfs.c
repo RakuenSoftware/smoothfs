@@ -110,6 +110,7 @@ struct smoothfs_connect_data {
 
 	/* Phase 5.8.4: (ino -> gen) cache. */
 	struct smoothfs_fileid_entry *fileid_head;
+	bool stable_fileid;
 };
 
 /*
@@ -312,8 +313,12 @@ static void smoothfs_setup_fanotify(vfs_handle_struct *handle,
 		return;
 	}
 
+	/* Event opens can break our own kernel lease. They must not wait for
+	 * smbd's event loop to acknowledge the break while inside this read.
+	 * The fanotify descriptor's O_NONBLOCK flag alone does not prevent it.
+	 */
 	d->fan_fd = fanotify_init(FAN_CLASS_NOTIF | FAN_CLOEXEC,
-				  O_RDONLY | O_LARGEFILE);
+				  O_RDONLY | O_LARGEFILE | O_NONBLOCK);
 	if (d->fan_fd < 0) {
 		DBG_NOTICE("smoothfs: fanotify_init failed (%s); "
 			   "forced-cutover lease-break falls back to "
@@ -380,12 +385,18 @@ static int smoothfs_connect(vfs_handle_struct *handle,
 	}
 	talloc_set_destructor(d, smoothfs_connect_data_destructor);
 	d->is_smoothfs = smoothfs_probe_lower(handle);
+	d->stable_fileid = lp_parm_bool(SNUM(handle->conn), "smoothfs",
+				       "stable fileid", true);
 
 	SMB_VFS_HANDLE_SET_DATA(handle, d, NULL,
 				struct smoothfs_connect_data,
 				return -1);
 
-	smoothfs_setup_fanotify(handle, d);
+	if (lp_parm_bool(SNUM(handle->conn), "smoothfs", "lease watcher", true)) {
+		smoothfs_setup_fanotify(handle, d);
+	} else {
+		d->fan_fd = -1;
+	}
 
 	DBG_NOTICE("smoothfs: VFS module loaded for service %s (user %s); "
 		   "lower is %s; fanotify %s\n",
@@ -535,7 +546,7 @@ static int smoothfs_fstat(vfs_handle_struct *handle,
 
 	SMB_VFS_HANDLE_GET_DATA(handle, d, struct smoothfs_connect_data,
 				return ret);
-	if (!d->is_smoothfs) {
+	if (!d->is_smoothfs || !d->stable_fileid) {
 		return ret;
 	}
 
@@ -568,7 +579,7 @@ static struct file_id smoothfs_file_id_create(vfs_handle_struct *handle,
 
 	SMB_VFS_HANDLE_GET_DATA(handle, d, struct smoothfs_connect_data,
 				return key);
-	if (!d->is_smoothfs) {
+	if (!d->is_smoothfs || !d->stable_fileid) {
 		return key;
 	}
 
