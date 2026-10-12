@@ -1813,6 +1813,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	si->cutover_gen = 0;
 	si->transaction_seq = 0;
 	atomic_set(&si->nlink_observed, 1);
+	spin_lock_init(&si->lower_path_lock);
 	mutex_init(&si->cache_mutation_lock);
 	mutex_init(&si->read_cache_lock);
 	si->read_cache_file = NULL;

@@ -357,9 +357,8 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 	 * setattr/movement paths that take inode_lock(inode), and the
 	 * cutover_srcu read-side lock taken by smoothfs_begin_data_change
 	 * keeps the placement-cutover writer drained. */
-	old_path = si->lower_path;
+	old_path = smoothfs_swap_lower_path(inode, &new_path);
 	old_tier = smoothfs_tier_of(sbi, old_path.mnt);
-	si->lower_path = new_path;
 	smoothfs_path_map_del(sbi, si);
 	kfree(si->rel_path);
 	si->rel_path = rel_dup;
@@ -818,20 +817,11 @@ static int smoothfs_getattr(struct mnt_idmap *idmap, const struct path *path,
 		return 0;
 	}
 
-	/* Snapshot the lower path under the inode lock and hold a reference
-	 * across the getattr, as open_lower_now does. A placement cutover
-	 * replaces si->lower_path and then, after dropping inode_lock, dputs
-	 * the old lower dentry and mntputs its vfsmount; tierd removes the
-	 * source-tier copy behind it. An unreferenced snapshot taken here
-	 * therefore races a migration two ways: vfs_getattr_nosec runs against
-	 * an unlinked lower and returns -ESTALE for a file that plainly exists,
-	 * or the cutover frees the dentry while it is still being dereferenced.
-	 * The lock is a shared rwsem acquisition on the stat fastpath; it
-	 * excludes only the exclusive cutover writer. */
-	inode_lock_shared(inode);
-	lower_path = si->lower_path;
-	path_get(&lower_path);
-	inode_unlock_shared(inode);
+	/* NFS calls ->getattr for pre-operation attributes with this inode's
+	 * i_rwsem already write-held. Reacquiring it here self-deadlocks mkdir
+	 * and setattr. Pin a consistent dentry/mount pair under the dedicated
+	 * publication lock, preserving lifetime safety across tier cutovers. */
+	smoothfs_get_lower_path(inode, &lower_path);
 
 	/* Direct passthrough to the lower. vfs_getattr_nosec skips the
 	 * security_inode_getattr hook because the VFS already ran it on

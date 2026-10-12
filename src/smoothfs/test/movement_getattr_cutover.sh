@@ -98,6 +98,7 @@ func main() {
 	} else {
 		must("move cutover", client.MoveCutover(poolUUID, oid, seq))
 	}
+	must("remove old source", os.Remove(os.Args[5]))
 }
 
 func copyFile(src, dst string) error {
@@ -142,7 +143,7 @@ import os
 import signal
 import sys
 
-target, result = sys.argv[1], sys.argv[2]
+targets, result = sys.argv[1:-1], sys.argv[-1]
 seen = collections.Counter()
 calls = 0
 running = True
@@ -157,12 +158,13 @@ signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 
 while running:
-    try:
-        os.stat(target)
-        calls += 1
-    except OSError as exc:
-        seen[exc.errno] += 1
-        calls += 1
+    for target in targets:
+        try:
+            os.stat(target)
+            calls += 1
+        except OSError as exc:
+            seen[exc.errno] += 1
+            calls += 1
 
 with open(result, "w") as handle:
     handle.write(f"{calls}\n")
@@ -170,34 +172,36 @@ with open(result, "w") as handle:
         handle.write(f"{code} {errno.errorcode.get(code, '?')} {count}\n")
 PY
 
-REL=movement/getattr-target.bin
-SERVER="$SPILL_ROOT/server/$REL"
-SRC="$SPILL_ROOT/fast/$REL"
-DST="$SPILL_ROOT/slow/$REL"
-
-mkdir -p "$(dirname "$SERVER")"
-spill_make_payload "$SERVER" 4
+SERVERS=() SOURCES=() DESTS=() OIDS=() SUMS=()
+# Each inode gets one complete cutover. A just-switched inode remains in its
+# transaction state until placement reconciliation; immediately planning it
+# again tests EBUSY rather than the getattr lifetime race.
+for round in $(seq 1 6); do
+	REL="movement/getattr-target-$round.bin"
+	SERVER="$SPILL_ROOT/server/$REL"
+	mkdir -p "$(dirname "$SERVER")"
+	spill_make_payload "$SERVER" 4
+	SERVERS+=("$SERVER")
+	SOURCES+=("$SPILL_ROOT/fast/$REL")
+	DESTS+=("$SPILL_ROOT/slow/$REL")
+	SUMS+=("$(spill_sha "$SERVER")")
+done
 sync
-OID=$(oid_for_path "$SERVER")
+for SERVER in "${SERVERS[@]}"; do OIDS+=("$(oid_for_path "$SERVER")"); done
 
 echo "=== hammering stat(2) across repeated cutovers ==="
 STATTERS=8
 for i in $(seq 1 "$STATTERS"); do
-	python3 "$STAT_HELPER" "$SERVER" "$SPILL_ROOT/stat-$i.txt" &
+	python3 "$STAT_HELPER" "${SERVERS[@]}" "$SPILL_ROOT/stat-$i.txt" &
 	STAT_PIDS+=("$!")
 done
 
-# Alternate tiers so each round is a real cutover rather than a no-op.
 seq_no=9100
 for round in $(seq 1 6); do
-	if [ $((round % 2)) -eq 1 ]; then
-		dest=1; from="$SRC"; to="$DST"
-	else
-		dest=0; from="$DST"; to="$SRC"
-	fi
-	if (cd "$REPO_ROOT" && go run "$MOVE_HELPER" "$UUID" "$OID" "$dest" \
-		"$seq_no" "$from" "$to" >/dev/null); then
-		echo "  ok    cutover round $round to tier $dest"
+	index=$((round - 1))
+	if (cd "$REPO_ROOT" && go run "$MOVE_HELPER" "$UUID" "${OIDS[$index]}" 1 \
+		"$seq_no" "${SOURCES[$index]}" "${DESTS[$index]}" >/dev/null); then
+		echo "  ok    cutover round $round to tier 1"
 	else
 		echo "  FAIL  cutover round $round to tier $dest"
 		spill_rc=1
@@ -231,8 +235,13 @@ for i in $(seq 1 "$STATTERS"); do
 done
 
 echo "  info  $total_calls stat calls across $STATTERS statters and 6 cutovers"
+spill_assert test "$total_calls" -gt 0
 spill_assert test "$stale" -eq 0
 spill_assert test "$other" -eq 0
+for index in $(seq 0 5); do
+	spill_assert test ! -e "${SOURCES[$index]}"
+	spill_assert test "$(spill_sha "${SERVERS[$index]}")" = "${SUMS[$index]}"
+done
 if [ "$stale" -ne 0 ]; then
 	echo "  FAIL  $stale ESTALE results: getattr raced a cutover on an unreferenced lower path"
 fi

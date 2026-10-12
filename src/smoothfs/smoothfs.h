@@ -406,6 +406,7 @@ struct smoothfs_inode_info {
 	/* The lower path this inode currently maps to. Re-resolved on
 	 * cutover. */
 	struct path     lower_path;
+	spinlock_t      lower_path_lock; /* snapshot refs / publication only */
 	struct mutex    cache_mutation_lock;
 	struct mutex    read_cache_lock;
 	struct file    *read_cache_file; /* anonymous disposable fast-tier copy */
@@ -473,6 +474,36 @@ static __always_inline struct smoothfs_sb_info *SMOOTHFS_SB(struct super_block *
 int smoothfs_write_staging_drain_inode(struct inode *inode);
 int smoothfs_cache_drain(struct smoothfs_sb_info *sbi);
 void smoothfs_read_cache_clear(struct smoothfs_inode_info *si);
+
+/* ->getattr may be called with the upper i_rwsem already write-held (NFS
+ * pre-operation attributes). Pin the backing path independently of that
+ * lock; never sleep or drop path references inside this critical section. */
+static inline void smoothfs_get_lower_path(struct inode *inode,
+					  struct path *path)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+
+	spin_lock(&si->lower_path_lock);
+	*path = si->lower_path;
+	path_get(path);
+	spin_unlock(&si->lower_path_lock);
+}
+
+/* Caller retains the usual inode/placement writer serialization. Transfer
+ * the new path's references to the inode and return its old owned refs for
+ * path_put() outside the spinlock. */
+static inline struct path smoothfs_swap_lower_path(struct inode *inode,
+						   const struct path *path)
+{
+	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
+	struct path old;
+
+	spin_lock(&si->lower_path_lock);
+	old = si->lower_path;
+	si->lower_path = *path;
+	spin_unlock(&si->lower_path_lock);
+	return old;
+}
 
 static inline int smoothfs_begin_data_change(struct inode *inode)
 {

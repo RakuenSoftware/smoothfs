@@ -107,6 +107,28 @@ for vers in 3 4.2; do
         continue
     fi
 
+    # nfsd collects pre-operation attributes while holding the exported
+    # inode's i_rwsem exclusively. A recursive read lock in ->getattr hangs
+    # mkdir (directory) and setattr (regular file). Exercise both before the
+    # legacy suites, with a short bound so this regression fails promptly.
+    if ! timeout -k 5 30 bash -euc '
+        probe=$1
+        mkdir "$probe"
+        printf "getattr-locking\n" > "$probe/file"
+        chmod 0640 "$probe/file"
+        truncate -s 0 "$probe/file"
+        chmod 0750 "$probe"
+        stat "$probe/file" >/dev/null
+        mv "$probe/file" "$probe/renamed"
+        rm "$probe/renamed"
+        rmdir "$probe"
+    ' _ "$ROOT/client/getattr-lock-v$vers"; then
+        echo "FAIL: NFSv$vers pre-operation getattr/metadata probe"
+        ps -eo pid,stat,wchan:32,comm
+        exit 1
+    fi
+    echo "NFSv$vers pre-operation getattr/metadata probe: PASS"
+
     for suite in basic general special; do
         echo
         echo "--- cthon04/$suite (NFSv$vers) ---"

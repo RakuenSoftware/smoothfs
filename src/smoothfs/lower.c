@@ -45,21 +45,15 @@ static int reissue_perm_mask(fmode_t flags)
 }
 
 static struct file *open_lower_now(struct inode *inode, fmode_t flags,
-				   const struct cred *cred)
+				   const struct cred *cred, bool reissue)
 {
-	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
 	struct path lower_path;
 	const struct cred *old_cred;
 	const struct cred *priv = SMOOTHFS_SB(inode->i_sb)->creator_cred;
 	struct file *f;
 	int err;
 
-	(void)cred;
-
-	inode_lock_shared(inode);
-	lower_path = si->lower_path;
-	path_get(&lower_path);
-	inode_unlock_shared(inode);
+	smoothfs_get_lower_path(inode, &lower_path);
 
 	/* dentry_open is a low-level helper that does NOT re-check
 	 * permissions on the path it's handed; the open-syscall fastpath
@@ -70,15 +64,21 @@ static struct file *open_lower_now(struct inode *inode, fmode_t flags,
 	 * scratch. inode_permission against the saved cred is the smallest
 	 * change that re-applies the access check that VFS would otherwise
 	 * have performed at open(2) time. */
-	old_cred = override_creds(priv);
-	err = inode_permission(&nop_mnt_idmap, d_inode(lower_path.dentry),
-			       reissue_perm_mask(flags));
-	revert_creds(old_cred);
-	if (err) {
-		path_put(&lower_path);
-		return ERR_PTR(err);
+	if (reissue) {
+		old_cred = override_creds(cred);
+		err = inode_permission(&nop_mnt_idmap, d_inode(lower_path.dentry),
+				       reissue_perm_mask(flags));
+		revert_creds(old_cred);
+		if (err) {
+			path_put(&lower_path);
+			return ERR_PTR(err);
+		}
 	}
 
+	/* Initial opens already passed the upper VFS permission check. The
+	 * uniform visible owner may differ from the root-owned backing object,
+	 * so lower IO itself uses the mount creator's credentials. A lazy
+	 * cutover reopen must additionally pass the saved caller check above. */
 	f = dentry_open(&lower_path,
 			flags & ~(O_CREAT | O_EXCL | O_NOCTTY), priv);
 	path_put(&lower_path);
@@ -99,7 +99,7 @@ int smoothfs_open_lower(struct file *file, struct inode *inode)
 	fi->open_flags = file->f_flags;
 	fi->open_cred  = get_cred(current_cred());
 
-	lower = open_lower_now(inode, fi->open_flags, fi->open_cred);
+	lower = open_lower_now(inode, fi->open_flags, fi->open_cred, false);
 	if (IS_ERR(lower)) {
 		put_cred(fi->open_cred);
 		kfree(fi);
@@ -150,7 +150,8 @@ int smoothfs_reissue_lower(struct file *file)
 		return 0;
 	}
 
-	new_lower = open_lower_now(&si->vfs_inode, fi->open_flags, fi->open_cred);
+	new_lower = open_lower_now(&si->vfs_inode, fi->open_flags, fi->open_cred,
+				  true);
 	if (IS_ERR(new_lower)) {
 		int err = PTR_ERR(new_lower);
 

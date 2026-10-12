@@ -12,6 +12,24 @@ spill_setup_pool cachemode "$SPILL_UUID"
 SYSFS="/sys/fs/smoothfs/$SPILL_UUID"
 export SYSFS
 spill_assert test "$(cat "$SYSFS/storage_mode")" = cache
+# The visible owner can access a mode-0600 file even though the permanent
+# backing inode is owned by the mount creator. Reopen permission enforcement
+# after tier cutover must not change this normal cache open/write path.
+printf 'owner-original' > "$SPILL_ROOT/server/owner-only.bin"
+chmod 0600 "$SPILL_ROOT/server/owner-only.bin"
+python3 - <<'PY'
+import os, pathlib
+path = pathlib.Path(os.environ['SPILL_ROOT']) / 'server/owner-only.bin'
+os.setgroups([])
+os.setgid(1000)
+os.setuid(1000)
+with path.open('r+b', buffering=0) as handle:
+    assert handle.read() == b'owner-original'
+    handle.seek(0)
+    handle.write(b'owner-updated!')
+    os.fsync(handle.fileno())
+PY
+spill_assert grep -qx 'owner-updated!' "$SPILL_ROOT/slow/owner-only.bin"
 python3 - <<'PY'
 import os, pathlib, mmap
 root = pathlib.Path(os.environ['SPILL_ROOT'])

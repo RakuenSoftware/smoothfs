@@ -229,8 +229,7 @@ bool smoothfs_relower_after_forget(struct smoothfs_sb_info *sbi,
 		return true;
 	}
 
-	old_path = si->lower_path;
-	si->lower_path = new_path;   /* transfers the resolver's refs */
+	old_path = smoothfs_swap_lower_path(inode, &new_path);
 	(void)smoothfs_lower_ino_map_insert(sbi, found_tier,
 					    d_inode(new_path.dentry)->i_ino,
 					    inode->i_ino);
@@ -462,8 +461,8 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 {
 	struct smoothfs_inode_info *si;
 	struct inode *inode;
-	struct dentry *src_dentry, *old_lower_dentry;
-	struct vfsmount *old_lower_mnt;
+	struct dentry *src_dentry;
+	struct path old_path;
 	struct path dest_path = {};
 	char *rel_path = NULL;
 	int err = 0;
@@ -599,10 +598,7 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 	/* Swap lower_path: keep refs balanced. The smoothfs dentry's
 	 * d_fsdata also points at the OLD lower dentry — update it too,
 	 * otherwise smoothfs_d_release dputs a freed pointer at umount. */
-	old_lower_dentry = si->lower_path.dentry;
-	old_lower_mnt    = si->lower_path.mnt;
-
-	si->lower_path = dest_path;     /* owns lookup/mnt refs from resolver */
+	old_path = smoothfs_swap_lower_path(inode, &dest_path);
 	if (rel_path) {
 		smoothfs_path_map_del(sbi, si);
 		kfree(si->rel_path);
@@ -647,8 +643,7 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 
 	/* Drop the iget-path_get ref on the old dentry/mnt after the
 	 * inode is unlocked. */
-	dput(old_lower_dentry);
-	mntput(old_lower_mnt);
+	path_put(&old_path);
 	return 0;
 
 out_fail:
