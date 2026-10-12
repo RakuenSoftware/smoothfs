@@ -331,7 +331,9 @@ static int smoothfs_stage_truncate_to_fast(struct mnt_idmap *idmap,
 		 * privileged creds — it may be root-owned. See smoothfs_mknod. */
 		const struct cred *old = override_creds(sbi->creator_cred);
 
+		inode_lock(d_inode(lower));
 		err = notify_change(idmap, lower, attr, NULL);
+		inode_unlock(d_inode(lower));
 		revert_creds(old);
 	}
 	if (err)
@@ -655,13 +657,13 @@ static struct dentry *smoothfs_lookup_inner(struct inode *dir,
 		mntget(lower_path.mnt);
 
 		inode = smoothfs_iget(dir->i_sb, &lower_path, false, false);
+		/* A cached inode may hold another hardlink's lower dentry.
+		 * Attach this alias before releasing our lookup reference. */
+		if (!IS_ERR(inode))
+			smoothfs_set_lower_dentry(dentry, lower);
 		path_put(&lower_path);
 		if (IS_ERR(inode))
 			return ERR_CAST(inode);
-		/* path_put consumed our lookup_one ref on lower; the inode
-		 * now holds its own via si->lower_path. The helper will
-		 * take d_fsdata's own ref below. */
-		smoothfs_set_lower_dentry(dentry, lower);
 		return d_splice_alias(inode, dentry);
 	}
 
@@ -1315,6 +1317,7 @@ static int smoothfs_unlink_inner(struct inode *dir, struct dentry *dentry)
 	}
 
 	if (!err) {
+		smoothfs_oid_wb_forget(SMOOTHFS_SB(dir->i_sb), d_inode(lower));
 		atomic_dec(&si->nlink_observed);
 		/* Clear hardlink pin once link-set returns to 1. */
 		if (atomic_read(&si->nlink_observed) <= 1 &&

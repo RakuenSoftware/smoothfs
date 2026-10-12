@@ -663,6 +663,8 @@ int  smoothfs_oid_wb_queue(struct smoothfs_sb_info *sbi,
 			   struct path *lower_path,
 			   const u8 oid[SMOOTHFS_OID_LEN]);
 void smoothfs_oid_wb_drain(struct smoothfs_sb_info *sbi);
+void smoothfs_oid_wb_forget(struct smoothfs_sb_info *sbi,
+			    struct inode *lower_inode);
 bool smoothfs_oid_wb_peek(struct smoothfs_sb_info *sbi, struct dentry *lower,
 			  u8 oid[SMOOTHFS_OID_LEN]);
 int  smoothfs_lower_ino_map_init(struct smoothfs_sb_info *sbi);

@@ -1695,6 +1695,33 @@ static void smoothfs_oid_wb_worker(struct work_struct *work)
 	}
 }
 
+/* Unlinked payloads must not stay allocated just to persist their OID.
+ * Open files retain their own lower path and in-memory identity. */
+void smoothfs_oid_wb_forget(struct smoothfs_sb_info *sbi,
+			    struct inode *lower_inode)
+{
+	LIST_HEAD(discard);
+	struct smoothfs_oid_wb_entry *e, *tmp;
+
+	if (!lower_inode || lower_inode->i_nlink ||
+	    !READ_ONCE(sbi->oid_wb_ready))
+		return;
+
+	spin_lock(&sbi->oid_wb_lock);
+	list_for_each_entry_safe(e, tmp, &sbi->oid_wb_pending, link) {
+		if (d_inode(e->lower_path.dentry) == lower_inode) {
+			list_move_tail(&e->link, &discard);
+			sbi->oid_wb_pending_count--;
+		}
+	}
+	spin_unlock(&sbi->oid_wb_lock);
+
+	list_for_each_entry_safe(e, tmp, &discard, link) {
+		path_put(&e->lower_path);
+		kfree(e);
+	}
+}
+
 int smoothfs_oid_wb_init(struct smoothfs_sb_info *sbi)
 {
 	spin_lock_init(&sbi->oid_wb_lock);
@@ -2463,10 +2490,8 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 						    lower_inode->i_ino);
 		if (ino_no) {
 			inode = ilookup(sb, ino_no);
-			if (inode) {
-				path_get(lower);
+			if (inode)
 				return inode;
-			}
 			/* Cache hit but inode was evicted — treat as miss
 			 * and rebuild state from xattrs. */
 		}
@@ -2545,13 +2570,9 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	if (!smoothfs_compat_inode_is_new(inode)) {
-		/*
-		 * The existing inode already has its own si->lower_path with
-		 * its own reference. Take a matching ref on the caller's
-		 * local lower_path so every caller can path_put() on return
-		 * without caring whether the inode was fresh or cached.
-		 */
-		path_get(lower);
+		/* The caller owns lower and releases it on return. A cached
+		 * inode already owns its backing path; no new path ref is
+		 * needed. Extra refs here pin unlinked lower files forever. */
 		return inode;
 	}
 
