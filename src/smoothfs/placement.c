@@ -1012,7 +1012,7 @@ out:
 	return err;
 }
 
-static int smoothfs_path_index_rebuild(struct smoothfs_sb_info *sbi)
+static int smoothfs_path_index_rebuild(struct smoothfs_sb_info *sbi, bool recover)
 {
 	LIST_HEAD(records);
 	struct hlist_head *index;
@@ -1034,7 +1034,8 @@ static int smoothfs_path_index_rebuild(struct smoothfs_sb_info *sbi)
 	if (err)
 		goto out;
 
-	for (tier = 0; tier < sbi->ntiers; tier++) {
+	for (tier = recover && sbi->cache_mode ? sbi->ntiers - 1 : 0;
+	     tier < sbi->ntiers; tier++) {
 		err = smoothfs_scan_tree(sbi, &records,
 					 &sbi->tiers[tier].lower_path,
 					 index, tier, "");
@@ -1043,6 +1044,12 @@ static int smoothfs_path_index_rebuild(struct smoothfs_sb_info *sbi)
 	}
 
 	err = smoothfs_path_index_write(sbi, &records);
+	if (!err && recover) {
+		/* Mount-time staging recovery has no external inode resolvers yet. */
+		smoothfs_recovery_destroy(sbi);
+		smoothfs_recovery_populate(sbi, &records, index);
+		return 0;
+	}
 out:
 	smoothfs_replay_free_records(&records);
 	kvfree(index);
@@ -1062,7 +1069,7 @@ static void smoothfs_path_index_workfn(struct work_struct *work)
 
 	pr_info("smoothfs: rebuilding path index for pool '%s' in background\n",
 		sbi->pool_name);
-	err = smoothfs_path_index_rebuild(sbi);
+	err = smoothfs_path_index_rebuild(sbi, false);
 	if (err == -ECANCELED)
 		return;
 	if (err)
@@ -1096,6 +1103,15 @@ void smoothfs_path_index_async_destroy(struct smoothfs_sb_info *sbi)
 	WRITE_ONCE(sbi->path_index_work_ready, false);
 	atomic_set(&sbi->path_index_stop, 1);
 	cancel_delayed_work_sync(&sbi->path_index_work);
+}
+
+/* Called only during fill_super, before the pool is exposed to callers.
+ * Dirty range records require resolvable paths even on a cold/absent index.
+ */
+int smoothfs_recovery_rebuild_for_staging(struct smoothfs_sb_info *sbi)
+{
+	cancel_delayed_work_sync(&sbi->path_index_work);
+	return smoothfs_path_index_rebuild(sbi, true);
 }
 
 int smoothfs_placement_replay(struct super_block *sb,

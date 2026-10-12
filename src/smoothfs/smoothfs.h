@@ -731,6 +731,7 @@ void smoothfs_placement_close(struct smoothfs_sb_info *sbi);
 int  smoothfs_placement_wb_init(struct smoothfs_sb_info *sbi);
 void smoothfs_path_index_async_init(struct smoothfs_sb_info *sbi);
 void smoothfs_path_index_async_destroy(struct smoothfs_sb_info *sbi);
+int smoothfs_recovery_rebuild_for_staging(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_wb_destroy(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_wb_drain(struct smoothfs_sb_info *sbi);
 void smoothfs_placement_wb_kick(struct smoothfs_sb_info *sbi);

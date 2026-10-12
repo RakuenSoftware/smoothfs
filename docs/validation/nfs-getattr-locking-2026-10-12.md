@@ -151,3 +151,25 @@ local, 4,835 NFS, 2,838 SMB); the 30-second configured-disabled soak passed
 with the restricted lease hook. Logs in VM 9221:
 /home/debian/smoothfs-final-protocol.log, smoothfs-vfs-regression.log,
 smoothfs-nonblock-soak.log and smoothfs-final-production-soak.log.
+
+## Cold-index staged-write recovery on the installed appliance
+
+Fresh SmoothNAS VM 9222 exposed a range replay failure: a dirty record's OID
+could not be resolved before the background path-index build. The stage and
+metadata files survived, but reads returned the old base bytes. Mount-time
+recovery now rebuilds paths once when a dirty record cannot be resolved;
+cache recovery scans only the authoritative base tier. Normal mounts retain
+the lazy index behavior. This can increase recovery mount time when the index
+is missing, but makes pending data reachable before exposing the pool.
+
+The replay regression explicitly removes path.idx before each remount and
+passes both pre-drain and mid-drain recovery. After rebuilding the installed
+DKMS module on Linux 7.2.10, cache, owner and concurrent-getattr tests pass,
+as does a 120-second local/NFS/SMB soak with 11,890 writes. Logs in VM 9222:
+/root/smoothnas-qa/range-replay-before-fix.log, range-replay-final.log and
+mixed-soak.log. Cache clean unmount correctly drains ranges to its base;
+the tier-mode dirty-replay counters do not apply to that clean cache case.
+
+The NFS conformance harness also waits for the server's normal recovery grace
+period before applying its 30-second metadata-operation timeout. The fresh
+host initially hit the 90-second grace period, with no blocked nfsd task.
