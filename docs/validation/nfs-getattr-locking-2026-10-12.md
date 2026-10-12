@@ -95,3 +95,28 @@ Logs: /home/debian/smoothfs-baseline-{truncate,unlink}.log,
 /home/debian/smoothfs-next-{protocol,cache,open-fd,getattr,truncate,unlink}.log,
 and /home/debian/smoothfs-final-soak.log. This remains disposable-VM runtime
 validation, not a long-duration or physical-hardware test.
+
+## Appliance-owner descriptor validation
+
+Additional integration testing reproduced EACCES for UID 1000 holding a
+mode-0600 descriptor across cutover. Initial VFS opens validate the visible
+uniform ownership; the old reissue check instead used the root-owned physical
+backing inode. Refresh attributes from the destination and check the saved
+caller against the presented SmoothFS inode, matching initial-open semantics.
+Current destination mode restrictions still apply, including changes after
+cutover; backing IO continues under the mount creator's credentials.
+
+The descriptor regression now defaults to UID/GID 1000 and mode 0600. Its copy
+helper explicitly preserves the source mode so umask cannot remove group
+access. On .253's 7.2.10 VM, clean module builds passed owner, UID 1001/GID 1000
+mode-0660 group and root cases. Mode-0000 destination access remained denied;
+UID 65534 with physical backing GID 0 was also denied a mode-0640 destination
+whose visible group is 1000. The old module failed the owner case at lseek
+with errno 13.
+
+After a clean rebuild, the full protocol gate and cache harness passed, and a
+120-second local/NFS/SMB soak passed 13,499 complete writes (5,049 local,
+5,276 NFS, 3,174 SMB). Logs remain in VM 9221 at
+/home/debian/movement-owner-probe.log, smoothfs-owner-fixed.log,
+smoothfs-group-fixed.log, smoothfs-root-fixed.log,
+smoothfs-owner-protocol.log and smoothfs-owner-soak.log.

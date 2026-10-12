@@ -65,8 +65,12 @@ static struct file *open_lower_now(struct inode *inode, fmode_t flags,
 	 * change that re-applies the access check that VFS would otherwise
 	 * have performed at open(2) time. */
 	if (reissue) {
+		/* Re-check the same presented ownership as an initial VFS open,
+		 * with fresh destination mode bits (which can change after cutover).
+		 * Lower backing objects can be root-owned even for the primary user. */
+		smoothfs_copy_attrs(inode, d_inode(lower_path.dentry));
 		old_cred = override_creds(cred);
-		err = inode_permission(&nop_mnt_idmap, d_inode(lower_path.dentry),
+		err = inode_permission(&nop_mnt_idmap, inode,
 				       reissue_perm_mask(flags));
 		revert_creds(old_cred);
 		if (err) {
