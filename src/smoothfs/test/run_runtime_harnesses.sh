@@ -41,6 +41,7 @@ core_tests=(
 	tier_spill_crash_replay.sh
 	metadata_tier_activity_gate.sh
 	write_staging_truncate.sh
+	unlink_reclaims_space.sh
 	write_staging_range.sh
 	write_staging_range_crash_replay.sh
 	write_staging_drain_mask.sh
