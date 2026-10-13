@@ -54,6 +54,7 @@ core_tests=(
 
 protocol_tests=(
 	cthon04.sh
+	nfs_multi_pool_identity.sh
 	smb_roundtrip.sh
 	smb_vfs_module.sh
 	smbtorture.sh
