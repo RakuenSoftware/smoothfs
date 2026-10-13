@@ -2204,6 +2204,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		WRITE_ONCE(sbi->write_staging_drain_active_tier_mask, BIT(sbi->ntiers) - 1);
 
 	sb->s_magic     = SMOOTHFS_MAGIC;
+	uuid_copy(&sb->s_uuid, &sbi->pool_uuid);
 	sb->s_op        = &smoothfs_super_ops;
 	sb->s_export_op = &smoothfs_export_ops;
 	smoothfs_compat_set_dentry_ops(sb, &smoothfs_dentry_ops);
@@ -2383,6 +2384,11 @@ static int smoothfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bsize   = PAGE_SIZE;
 	buf->f_namelen = NAME_MAX;
 	buf->f_frsize  = PAGE_SIZE;
+	/* mountd needs a stable identity for implicit NFSv4 ancestor exports.
+	 * Anonymous pools have no block-device UUID to fall back to. Hash the
+	 * whole UUID: test/operator UUIDs may share their first eight bytes. */
+	buf->f_fsid = u64_to_fsid(xxh64(sbi->pool_uuid.b,
+				     sizeof(sbi->pool_uuid.b), 0));
 
 	for (i = sbi->cache_mode ? sbi->ntiers - 1 : 0; i < sbi->ntiers; i++) {
 		err = vfs_statfs(&sbi->tiers[i].lower_path, &tmp);
