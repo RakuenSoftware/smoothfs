@@ -26,8 +26,11 @@ dkms)
     deb=$(ls src/smoothfs-dkms_*_all.deb)
     # Sanity: the source tree is where DKMS will look, and the maintainer
     # scripts run DKMS.
-    dpkg-deb -c "$deb" | grep -q "usr/src/smoothfs-${version}/dkms.conf"
-    dpkg-deb -c "$deb" | grep -q "usr/src/smoothfs-${version}/range_staging.c"
+    # (The listing is captured first: with pipefail, grep -q exiting early
+    # kills dpkg-deb with SIGPIPE and fails the check.)
+    contents=$(dpkg-deb -c "$deb")
+    grep -q "usr/src/smoothfs-${version}/dkms.conf" <<< "$contents"
+    grep -q "usr/src/smoothfs-${version}/range_staging.c" <<< "$contents"
     dpkg-deb -e "$deb" "$out/control-check"
     grep -q dkms "$out/control-check/postinst"
     rm -rf "$out/control-check"
@@ -49,7 +52,7 @@ samba-vfs)
     packaging/debian-changelog.sh src/smoothfs/samba-vfs/debian smoothfs-samba-vfs "$pkg_version"
     (cd src/smoothfs/samba-vfs && dpkg-buildpackage -us -uc -b)
     deb=$(ls src/smoothfs/smoothfs-samba-vfs_*.deb | head -1)
-    dpkg-deb -f "$deb" Depends | grep -q "samba (= ${samba_full})"
+    grep -q "samba (= ${samba_full})" <<< "$(dpkg-deb -f "$deb" Depends)"
     mv "$deb" "$out/"
     ;;
 *) echo "unknown package set: $what" >&2; exit 2 ;;
