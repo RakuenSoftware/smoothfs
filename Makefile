@@ -10,7 +10,7 @@ SHFILES := $(shell find . -path ./.git -prune -o -name '*.sh' -type f -print)
 
 DEBIAN_DKMS_IMAGE ?= debian:trixie
 
-.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check runtime-harnesses runtime-harnesses-list kernel-build kernel-build-debian dkms-package-debian
+.PHONY: test verify go-test go-vet go-race fmt-check script-check samba-vfs-package-check runtime-harnesses runtime-harnesses-list kernel-build kernel-build-debian dkms-package-debian samba-vfs-package-debian
 
 test: go-test
 
@@ -86,11 +86,8 @@ kernel-build-debian:
 #     installed; smoothfs-runtime CI exercises that side via the ops suite.
 dkms-package-debian:
 	$(CONTAINER) run --rm -v "$(CURDIR):/workspace" -w /workspace $(DEBIAN_DKMS_IMAGE) \
-		bash -euxo pipefail -c '\
-			apt-get update; \
-			apt-get install -y devscripts equivs debhelper dh-dkms; \
-			cd src/smoothfs; \
-			dpkg-buildpackage -us -uc -b -d; \
-			ls -la ../smoothfs-dkms_*_all.deb; \
-			dpkg-deb -c ../smoothfs-dkms_*_all.deb | grep -E "range_staging|smoothfs.h|Kbuild|module_signing|kernel_upgrade"; \
-		'
+		packaging/build-debs.sh dkms dist
+
+samba-vfs-package-debian:
+	$(CONTAINER) run --rm -v "$(CURDIR):/workspace" -w /workspace $(DEBIAN_DKMS_IMAGE) \
+		packaging/build-debs.sh samba-vfs dist

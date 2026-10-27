@@ -82,3 +82,17 @@ jobs:
 
       - name: Build smoothfs-dkms.deb in debian:trixie
         run: make dkms-package-debian
+
+  samba-vfs-package:
+    name: smoothfs-samba-vfs.deb build (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build smoothfs-samba-vfs.deb against Debian 13's Samba
+        run: make samba-vfs-package-debian
