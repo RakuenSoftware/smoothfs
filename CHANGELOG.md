@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.27...v0.3.0) (2026-10-27)
+
+
+### Features
+
+* publish smoothfs-dkms and smoothfs-samba-vfs as attested Debian packages ([50ab5bb](https://github.com/RakuenSoftware/smoothfs/commit/50ab5bbb16f43e327a19003ada1b12e2376c6309))
+* publish smoothfs-dkms and smoothfs-samba-vfs as attested Debian packages ([ad256c8](https://github.com/RakuenSoftware/smoothfs/commit/ad256c8e5660d0938756ce2ccf3cdc5780aca0b9))
+* separate cache base authority from tier placement ([#196](https://github.com/RakuenSoftware/smoothfs/issues/196)) ([f05305b](https://github.com/RakuenSoftware/smoothfs/commit/f05305bffedc3257c2ce4eb7505a807e5ef0443e))
+
 ## [0.2.27](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.26...v0.2.27) (2026-08-16)
 
 
