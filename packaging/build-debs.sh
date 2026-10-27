@@ -20,7 +20,7 @@ export DEBIAN_FRONTEND=noninteractive
 case $what in
 dkms)
     apt-get update -qq
-    apt-get install -y -qq --no-install-recommends debhelper dh-dkms dpkg-dev >/dev/null
+    apt-get install -y -qq --no-install-recommends build-essential debhelper dh-dkms dpkg-dev >/dev/null
     packaging/debian-changelog.sh src/smoothfs/debian smoothfs-dkms "${version}-1"
     (cd src/smoothfs && dpkg-buildpackage -us -uc -b)
     deb=$(ls src/smoothfs-dkms_*_all.deb)
