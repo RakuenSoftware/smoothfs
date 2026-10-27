@@ -1,17 +1,146 @@
 name: release-please
 
+# Releases, and the Debian packages smoothapt (updates.rakuensoftware.com)
+# publishes in the smoothnas suite:
+#
+# - smoothfs-dkms: the module source for DKMS, one package for every arch.
+# - smoothfs-samba-vfs: the Samba VFS module. It links against Samba's
+#   private ABI, so it is built against the exact Samba Debian 13 ships and
+#   depends on exactly that version. The daily run rebuilds it when Debian
+#   updates Samba (a security fix, typically), and publishes a release
+#   v<version>-samba<samba version> so the new Samba and a matching module
+#   arrive together; until then apt holds Samba back.
+#
+# Every package is attested (build provenance): smoothapt only takes packages
+# whose attestation names this workflow on main.
+#
+# It is all one workflow because releases created with GITHUB_TOKEN do not
+# trigger other workflows.
+
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
+  attestations: write
 
 jobs:
   release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Which release the packages go to: a new release-please release, or (daily
+  # and on demand) a v<version>-samba<samba> release when Debian's Samba has
+  # moved past the module in the latest release.
+  plan:
+    needs: release-please
+    if: always() && (needs.release-please.outputs.release_created == 'true' || github.event_name != 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      base: ${{ steps.plan.outputs.base }}
+      new: ${{ steps.plan.outputs.new }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CREATED: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          if [ -n "$CREATED" ]; then
+            echo "tag=$CREATED" >> "$GITHUB_OUTPUT"
+            echo "base=$CREATED" >> "$GITHUB_OUTPUT"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Debian 13's current Samba.
+          samba=$(docker run --rm debian:trixie sh -c \
+            'apt-get update -qq >/dev/null && apt-cache policy samba' | awk '/Candidate:/ {print $2}')
+          [ -n "$samba" ] || { echo "::error::could not read Debian 13's Samba version"; exit 1; }
+          samba=${samba#*:}
+          base=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 50 \
+            --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          if ! gh api "repos/$GITHUB_REPOSITORY/contents/packaging/build-debs.sh?ref=$base" >/dev/null 2>&1; then
+            echo "${base} predates the Debian packaging; the next release brings packages"; exit 0
+          fi
+          suffix=$(echo "$samba" | tr -- '-' '.')
+          if gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '.[].tagName' \
+              | grep -qx -e "${base}-samba${suffix}"; then
+            echo "Samba ${samba}: already published"; exit 0
+          fi
+          if gh release view "$base" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+              | grep -q "+samba${suffix}-1_"; then
+            echo "Samba ${samba}: ${base} already carries it"; exit 0
+          fi
+          echo "Samba ${samba} is new: publishing ${base}-samba${suffix}"
+          echo "tag=${base}-samba${suffix}" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "new=true" >> "$GITHUB_OUTPUT"
+
+  packages:
+    needs: plan
+    if: needs.plan.outputs.tag != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-latest, sets: "dkms samba-vfs"}
+          - {arch: arm64, runner: ubuntu-24.04-arm, sets: "samba-vfs"}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.plan.outputs.base }}
+      - name: Build
+        run: |
+          for set in ${{ matrix.sets }}; do
+            docker run --rm -v "$PWD:/workspace" -w /workspace debian:trixie \
+              packaging/build-debs.sh "$set" dist
+          done
+          sudo chown -R "$(id -u)" dist
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, packages]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          merge-multiple: true
+          path: dist
+      - name: Attach the packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          BASE: ${{ needs.plan.outputs.base }}
+          NEW: ${{ needs.plan.outputs.new }}
+        run: |
+          ls -l dist
+          if [ "$NEW" = true ]; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$(gh api "repos/$GITHUB_REPOSITORY/commits/$BASE" --jq .sha)" \
+              --title "$TAG" --notes "Rebuild of ${BASE}'s packages for Debian 13's current Samba." dist/*.deb
+          else
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*.deb
+          fi

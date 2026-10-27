@@ -1,34 +1,35 @@
 #!/usr/bin/make -f
 # Debian rules for smoothfs-dkms.
 #
-# dh-dkms takes the module source tree and the .dkms recipe
-# (debian/smoothfs-dkms.dkms) and builds a binary package whose
-# install path is /usr/src/smoothfs-<version>/. DKMS picks it up
-# there, rebuilds against every installed kernel-headers, and
-# installs smoothfs.ko into /lib/modules/<kernel>/updates/dkms/.
+# The package ships the module source tree in /usr/src/smoothfs-<version>/
+# with its dkms.conf; dh_dkms adds the DKMS add/build/install calls to the
+# maintainer scripts, so DKMS builds smoothfs.ko for every installed kernel
+# with headers and again on each kernel upgrade.
+#
+# <version> is the module's own (dkms.conf PACKAGE_VERSION, which
+# release-please bumps); debian/changelog must carry the same upstream
+# version (packaging/debian-changelog.sh writes it before a build).
+
+VERSION := $(shell sed -n 's/^PACKAGE_VERSION="\([^"]*\)".*/\1/p' dkms.conf)
+SRCDIR := debian/smoothfs-dkms/usr/src/smoothfs-$(VERSION)
 
 %:
-	dh $@ --with dkms --sourcedirectory=.
+	dh $@ --with dkms
 
-override_dh_auto_configure:
-	# No configure step — out-of-tree kernel module built by DKMS
-	# against the target kernel tree at install time.
+override_dh_auto_configure override_dh_auto_build override_dh_auto_test override_dh_auto_install override_dh_auto_clean:
+	# Nothing to build here: DKMS builds the module on the target, against
+	# the target's kernel. (The Makefile's targets need kernel headers.)
 
-override_dh_auto_build:
-	# Nothing to build at package-build time; the actual module
-	# build happens in the target's dkms run.
+override_dh_install:
+	@[ -n "$(VERSION)" ] || { echo "no PACKAGE_VERSION in dkms.conf" >&2; exit 1; }
+	@case "$$(dpkg-parsechangelog -S Version)" in "$(VERSION)"-*) ;; \
+	    *) echo "debian/changelog is $$(dpkg-parsechangelog -S Version), dkms.conf is $(VERSION)" >&2; exit 1 ;; esac
+	install -d $(SRCDIR)
+	install -m 644 Kbuild Makefile dkms.conf *.c *.h $(SRCDIR)/
+	# Operator tooling: documented and invokable, kept off $PATH.
+	install -D -m 755 scripts/enroll-signing-cert.sh debian/smoothfs-dkms/usr/share/smoothfs-dkms/enroll-signing-cert.sh
+	install -D -m 755 test/module_signing.sh debian/smoothfs-dkms/usr/share/smoothfs-dkms/module_signing.sh
+	install -D -m 755 test/kernel_upgrade.sh debian/smoothfs-dkms/usr/share/smoothfs-dkms/kernel_upgrade.sh
 
-override_dh_auto_test:
-	# Kernel tests are out-of-scope for the packaging step; see
-	# src/smoothfs/test/*.sh and go test ./...
-	# for the runtime validation suite.
-
-override_dh_auto_install:
-	# dh_dkms does the real install — don't let dh_auto_install
-	# rerun `make install` against the host kernel tree.
-
-override_dh_auto_clean:
-	# Avoid recursing into the Makefile's `clean` target at
-	# dpkg-buildpackage time (it requires kernel headers to be
-	# installed and isn't what we want anyway). dh_clean cleans
-	# debian/ itself.
+override_dh_dkms:
+	dh_dkms -V $(VERSION)
