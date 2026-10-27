@@ -31,8 +31,16 @@ dkms)
     contents=$(dpkg-deb -c "$deb")
     grep -q "usr/src/smoothfs-${version}/dkms.conf" <<< "$contents"
     grep -q "usr/src/smoothfs-${version}/range_staging.c" <<< "$contents"
+    # The maintainer scripts must call DKMS (dh_dkms adds that); comments
+    # mentioning "smoothfs-dkms" do not count.
     dpkg-deb -e "$deb" "$out/control-check"
-    grep -q dkms "$out/control-check/postinst"
+    for script in postinst prerm; do
+        grep -v '^[[:space:]]*#' "$out/control-check/$script" | grep -q dkms || {
+            echo "smoothfs-dkms $script does not call DKMS:" >&2
+            cat "$out/control-check/$script" >&2
+            exit 1
+        }
+    done
     rm -rf "$out/control-check"
     mv "$deb" "$out/"
     ;;
