@@ -81,7 +81,14 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build smoothfs-dkms.deb in debian:trixie
-        run: make dkms-package-debian
+        run: |
+          # Job logs need admin rights to read; on failure the tail goes into
+          # an annotation, which anyone can read.
+          set -o pipefail
+          make dkms-package-debian 2>&1 | tee build.log || {
+            echo "::error title=smoothfs-dkms package build failed::$(tail -n 40 build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
+            exit 1
+          }
 
   samba-vfs-package:
     name: smoothfs-samba-vfs.deb build (${{ matrix.runner }})
@@ -95,4 +102,11 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build smoothfs-samba-vfs.deb against Debian 13's Samba
-        run: make samba-vfs-package-debian
+        run: |
+          # Job logs need admin rights to read; on failure the tail goes into
+          # an annotation, which anyone can read.
+          set -o pipefail
+          make samba-vfs-package-debian 2>&1 | tee build.log || {
+            echo "::error title=smoothfs-samba-vfs package build failed::$(tail -n 40 build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
+            exit 1
+          }
