@@ -31,5 +31,9 @@ override_dh_install:
 	install -D -m 755 test/module_signing.sh debian/smoothfs-dkms/usr/share/smoothfs-dkms/module_signing.sh
 	install -D -m 755 test/kernel_upgrade.sh debian/smoothfs-dkms/usr/share/smoothfs-dkms/kernel_upgrade.sh
 
+# dh_dkms acts only on debian/<package>.dkms: generated from the module's own
+# dkms.conf, with the version left for dh_dkms to fill in, so it cannot drift.
 override_dh_dkms:
+	sed 's/^PACKAGE_VERSION=.*/PACKAGE_VERSION="#MODULE_VERSION#"/' dkms.conf > debian/smoothfs-dkms.dkms
 	dh_dkms -V $(VERSION)
+	rm -f debian/smoothfs-dkms.dkms
