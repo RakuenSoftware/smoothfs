@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.0...v0.3.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **packaging:** smoothfs-dkms registers the module with DKMS ([63aa024](https://github.com/RakuenSoftware/smoothfs/commit/63aa0245fb554ec187cc6c9ae464556c91f9ef23))
+* smoothfs-dkms registers with DKMS; readable CI failure annotations ([fc4cd51](https://github.com/RakuenSoftware/smoothfs/commit/fc4cd51cb6b28f3a99347547464d343b96ad089f))
+
 ## [0.3.0](https://github.com/RakuenSoftware/smoothfs/compare/v0.2.27...v0.3.0) (2026-10-27)
 
 
