@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.1...v0.3.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* ship the validated NFS and SMB locking fixes ([cf2cf24](https://github.com/RakuenSoftware/smoothfs/commit/cf2cf24380194586d5ef11ddcf507da7d94f238c))
+
 ## [0.3.1](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.0...v0.3.1) (2026-10-28)
 
 
