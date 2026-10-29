@@ -34,6 +34,9 @@ trap spill_cleanup EXIT
 
 remount_pool() {
 	umount "$SPILL_ROOT/server"
+	# Force the cold-index recovery path even if the background scan raced
+	# ahead. Staged ranges must remain reachable without a persisted index.
+	rm -f "$SPILL_ROOT/fast/.smoothfs/path.idx"
 	rmmod smoothfs
 	modprobe smoothfs
 	mount -t smoothfs \

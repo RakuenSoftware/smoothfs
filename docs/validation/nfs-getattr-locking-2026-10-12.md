@@ -1,0 +1,175 @@
+# NFS getattr locking and cache/tier regression validation
+
+SmoothNAS PR 471's protocol gate passed cache_mode.sh, then self-deadlocked
+on the first NFSv3 mkdir. Its stack was nfsd_create -> fh_fill_pre_attrs ->
+smoothfs_getattr: nfsd held the directory i_rwsem exclusively, and getattr
+tried to take that same rwsem for reading.
+
+The fix pins a consistent backing dentry/mount pair under a separate inode
+spinlock. Placement writers swap the pair under that lock and release old
+references outside it. Existing inode/placement writer serialization stays
+in place. The open path uses the same reference snapshot. A lazy reopen
+after cutover checks destination permissions with the saved caller's
+credentials; initial opens retain privileged backing IO after the upper VFS
+permission check, preserving the uniform visible owner contract.
+
+## Local reproduction and checks
+
+Executed on .253 in disposable Debian 13 VM 9221, booted with the freshly
+built 7.2.10-smoothkernel, GCC 14.2 and matching installed kernel headers.
+No production mount, module or pool was modified.
+
+- Original a7a713e module: the new 30-second NFS metadata probe failed on
+  mkdir, and an nfsd task remained blocked in smoothfs_getattr with the same
+  pre-operation attribute stack as CI. Reset the disposable VM to clear it.
+- Fixed module: bounded mkdir, file/directory chmod, truncate, stat, rename
+  and unlink probes passed over NFSv3 and NFSv4.2. Complete cthon04 suites
+  passed using exactly the legacy SIGSEGV exceptions already in SmoothNAS
+  CI; no additional known-failure exceptions were introduced.
+- movement_getattr_cutover.sh: six independent cutovers, eight concurrent
+  statters, 8,362,134 stat calls, zero ESTALE or other stat errors. All source
+  copies were removed and all destination-visible checksums matched.
+  The old harness immediately replanned the same switched inode, so its
+  subsequent rounds returned EBUSY rather than exercising another cutover.
+  The revised harness performs six real moves and verifies source cleanup.
+- cache_mode.sh: base authority, staged write drain, read-replica eviction,
+  cache-full fallback, truncate, mmap and namespace tests passed. Added a
+  uid/gid 1000 mode-0600 owner read/write/fsync case; permanent data matched.
+- movement_open_fd_cutover.sh: existing writable descriptor followed the
+  destination; an unprivileged reopen of an inaccessible destination failed
+  instead of using privileged credentials or falling back to stale source.
+- write_staging_truncate.sh and metadata_tier_activity_gate.sh passed.
+- Module build, shell syntax and diff whitespace checks passed.
+
+Logs remain in VM 9221 at /home/debian/smoothfs-nfs-before.log and
+/root/smoothfs-fixed-tests/*.log. This is targeted runtime validation, not
+a hardware or long-duration soak. SmoothNAS CI must still run its complete
+6.18 guest protocol and mixed-client gate against the new pinned commit.
+
+## Full Linux 7.2 follow-up
+
+The initial d758496 protocol/mixed-client CI run passed on Linux 6.18.
+The additional native 7.2.10 VM run found two failures that CI's slower
+emulated guest did not expose:
+
+- Truncate staging called notify_change on the new XFS inode without holding
+  that lower inode's i_rwsem. XFS reported xfs_break_layouts and
+  xfs_assert_ilocked warnings. Hold the new lower inode lock around the
+  attribute change; the upper inode remains locked by VFS as before.
+- Deferred OID entries retained deleted backing files until the five-second
+  writeback deadline. Fast create/unlink churn exhausted the two-tier pool
+  despite a bounded live set. Remove pending entries on last-link unlink,
+  releasing their path references outside the queue spinlock. Open files
+  retain their own backing references and in-memory identity. Entries already
+  handed to the worker are released when that worker completes.
+
+Also removed the unbalanced path_get in both cached-iget paths. Each caller
+already owns its input path and releases it; only a new inode needs an extra
+owned path. Attach a lookup alias before releasing that input reference, and
+remove get_parent's second dput after path_put has released its dget_parent
+reference.
+
+Rebuilt both the previous and fixed module against the installed 7.2 headers
+and ran the new regression scripts in VM 9221:
+
+- Previous d758496 module: write_staging_truncate failed on the XFS warnings;
+  unlink_reclaims_space failed ENOSPC on file 25.
+- Fixed module: truncate passed without new kernel warnings; 128 writes of
+  16 MiB into a 1 GiB pool with a 64 MiB live set passed without syncfs/sleeps.
+- Full protocol gate passed (NFSv3/v4.2 cthon04, smbtorture, spill, replay,
+  truncate, unlink-reclaim, metadata activity). The same existing legacy
+  cthon allowances and smb_vfs_module exclusion as hosted CI were used.
+- Cache mode, open-descriptor cutover/permission rejection and six concurrent
+  getattr cutovers passed again with the fixed module.
+- 120-second concurrent local/NFS/SMB soak passed: 3,484 local, 3,042 NFS,
+  1,879 SMB complete 16 MiB writes (8,405 total), with a bounded live set and
+  no incomplete workload payloads. No filesystem cache dropping or capacity
+  increase was used to make the soak pass.
+
+SmoothNAS's harness now propagates writer I/O failures explicitly (bash's
+conditional wait disables errexit inside the writer), validates workload
+payload sizes and surviving names, and excludes internal placement metadata
+from payload checks. Injected writer failure correctly returned nonzero.
+
+Logs: /home/debian/smoothfs-baseline-{truncate,unlink}.log,
+/home/debian/smoothfs-next-{protocol,cache,open-fd,getattr,truncate,unlink}.log,
+and /home/debian/smoothfs-final-soak.log. This remains disposable-VM runtime
+validation, not a long-duration or physical-hardware test.
+
+## Appliance-owner descriptor validation
+
+Additional integration testing reproduced EACCES for UID 1000 holding a
+mode-0600 descriptor across cutover. Initial VFS opens validate the visible
+uniform ownership; the old reissue check instead used the root-owned physical
+backing inode. Refresh attributes from the destination and check the saved
+caller against the presented SmoothFS inode, matching initial-open semantics.
+Current destination mode restrictions still apply, including changes after
+cutover; backing IO continues under the mount creator's credentials.
+
+The descriptor regression now defaults to UID/GID 1000 and mode 0600. Its copy
+helper explicitly preserves the source mode so umask cannot remove group
+access. On .253's 7.2.10 VM, clean module builds passed owner, UID 1001/GID 1000
+mode-0660 group and root cases. Mode-0000 destination access remained denied;
+UID 65534 with physical backing GID 0 was also denied a mode-0640 destination
+whose visible group is 1000. The old module failed the owner case at lseek
+with errno 13.
+
+After a clean rebuild, the full protocol gate and cache harness passed, and a
+120-second local/NFS/SMB soak passed 13,499 complete writes (5,049 local,
+5,276 NFS, 3,174 SMB). Logs remain in VM 9221 at
+/home/debian/movement-owner-probe.log, smoothfs-owner-fixed.log,
+smoothfs-group-fixed.log, smoothfs-root-fixed.log,
+smoothfs-owner-protocol.log and smoothfs-owner-soak.log.
+
+## Kernel lease operation (2026-10-12)
+
+The native SMB VFS conformance test failed because Samba's kernel-oplock
+request returned EINVAL. Linux 7.2's kernel_setlease rejects files without
+an explicit file_operations.setlease hook. SmoothFS now uses generic_setlease
+on its stable upper inode for ordinary file leases. Delegations and layouts
+remain rejected because their lower-IO coherency is not implemented.
+
+A clean rebuild on VM 9221 passed smb_vfs_module.sh without exclusions:
+passthrough, CIFS round trips, FileId cache, lease pin acquisition (01),
+foreign-modify lease break (00), and release (00). Before/after logs are
+/home/debian/smoothfs-deep-smb.log and smoothfs-deep-smb-fixed.log.
+Kernel reference: https://github.com/torvalds/linux/blob/v7.2/fs/locks.c.
+
+The mixed soak then exposed a fanotify self-lease deadlock: smbd waited in
+fanotify_read -> dentry_open_nonotify -> __break_lease while opening an event
+for its own leased file. Queued events retained deleted files, filling both
+2 GiB tiers. O_NONBLOCK on the fanotify descriptor did not protect the event
+opens. Set it on the event file flags as well so the event loop can service
+the lease break. Also honor the existing SmoothNAS "lease watcher" and
+"stable fileid" options, which the VFS module previously ignored.
+
+Final native validation passed the complete protocol gate without exclusions,
+64 cached CIFS write/fsync/rename/read/unlink cycles, and both disabled-option
+assertions. The 120-second advanced-mode soak passed 12,284 writes (4,611
+local, 4,835 NFS, 2,838 SMB); the 30-second configured-disabled soak passed
+3,188 writes. Owner-descriptor, concurrent-getattr and cache tests also pass
+with the restricted lease hook. Logs in VM 9221:
+/home/debian/smoothfs-final-protocol.log, smoothfs-vfs-regression.log,
+smoothfs-nonblock-soak.log and smoothfs-final-production-soak.log.
+
+## Cold-index staged-write recovery on the installed appliance
+
+Fresh SmoothNAS VM 9222 exposed a range replay failure: a dirty record's OID
+could not be resolved before the background path-index build. The stage and
+metadata files survived, but reads returned the old base bytes. Mount-time
+recovery now rebuilds paths once when a dirty record cannot be resolved;
+cache recovery scans only the authoritative base tier. Normal mounts retain
+the lazy index behavior. This can increase recovery mount time when the index
+is missing, but makes pending data reachable before exposing the pool.
+
+The replay regression explicitly removes path.idx before each remount and
+passes both pre-drain and mid-drain recovery. After rebuilding the installed
+DKMS module on Linux 7.2.10, cache, owner and concurrent-getattr tests pass,
+as does a 120-second local/NFS/SMB soak with 11,890 writes. Logs in VM 9222:
+/root/smoothnas-qa/range-replay-before-fix.log, range-replay-final.log and
+mixed-soak.log. Cache clean unmount correctly drains ranges to its base;
+the tier-mode dirty-replay counters do not apply to that clean cache case.
+
+The NFS conformance harness also waits for the server's normal recovery grace
+period before applying its 30-second metadata-operation timeout. The fresh
+host initially hit the 90-second grace period, with no blocked nfsd task.

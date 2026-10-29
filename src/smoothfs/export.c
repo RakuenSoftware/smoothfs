@@ -209,8 +209,8 @@ static struct dentry *smoothfs_get_parent(struct dentry *child)
 	mntget(lower_path.mnt);
 
 	inode = smoothfs_iget(sb, &lower_path, false, false);
+	/* path_put releases the dget_parent reference as well as mntget. */
 	path_put(&lower_path);
-	dput(lower_parent);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
