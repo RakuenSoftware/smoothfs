@@ -18,6 +18,7 @@
 #include <linux/falloc.h>
 #include <linux/splice.h>
 #include <linux/file.h>
+#include <linux/filelock.h>
 #include <linux/fdtable.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
@@ -974,6 +975,19 @@ static long smoothfs_compat_ioctl(struct file *file, unsigned int cmd,
 }
 #endif
 
+static int smoothfs_setlease(struct file *file, int arg,
+			     struct file_lease **lease, void **priv)
+{
+	/* Upper-inode file leases are stable across placement changes. NFS
+	 * delegations/layouts need additional lower-IO coherency guarantees;
+	 * keep rejecting them rather than implicitly enabling them here.
+	 */
+	if (arg != F_UNLCK &&
+	    (!lease || !*lease || !((*lease)->c.flc_flags & FL_LEASE)))
+		return -EINVAL;
+	return generic_setlease(file, arg, lease, priv);
+}
+
 const struct file_operations smoothfs_file_ops = {
 	.owner          = THIS_MODULE,
 	.open           = smoothfs_open,
@@ -992,6 +1006,8 @@ const struct file_operations smoothfs_file_ops = {
 	.compat_ioctl   = smoothfs_compat_ioctl,
 #endif
 	.flock          = NULL,  /* set in lock.c via override at mount */
+	/* Leases belong to the stable upper inode, including across cutovers. */
+	.setlease       = smoothfs_setlease,
 };
 
 /* address_space ops: page cache lives at the lower; smoothfs does not

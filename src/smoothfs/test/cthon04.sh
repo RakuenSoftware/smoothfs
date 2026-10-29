@@ -107,6 +107,43 @@ for vers in 3 4.2; do
         continue
     fi
 
+    # A fresh nfsd restart can retain its normal 90-second NFSv4 recovery
+    # grace period. OPEN retries during grace are not a getattr deadlock.
+    # Wait for recovery before applying the short filesystem-operation bound.
+    if [[ "$vers" == 4* && -r /proc/fs/nfsd/v4_end_grace ]]; then
+        echo "Waiting for NFSv4 recovery grace to end..."
+        for attempt in $(seq 1 120); do
+            grep -q '^Y' /proc/fs/nfsd/v4_end_grace && break
+            sleep 1
+        done
+        if ! grep -q '^Y' /proc/fs/nfsd/v4_end_grace; then
+            echo "FAIL: NFSv4 recovery grace exceeded 120 seconds"
+            exit 1
+        fi
+    fi
+
+    # nfsd collects pre-operation attributes while holding the exported
+    # inode's i_rwsem exclusively. A recursive read lock in ->getattr hangs
+    # mkdir (directory) and setattr (regular file). Exercise both before the
+    # legacy suites, with a short bound so this regression fails promptly.
+    if ! timeout -k 5 30 bash -euc '
+        probe=$1
+        mkdir "$probe"
+        printf "getattr-locking\n" > "$probe/file"
+        chmod 0640 "$probe/file"
+        truncate -s 0 "$probe/file"
+        chmod 0750 "$probe"
+        stat "$probe/file" >/dev/null
+        mv "$probe/file" "$probe/renamed"
+        rm "$probe/renamed"
+        rmdir "$probe"
+    ' _ "$ROOT/client/getattr-lock-v$vers"; then
+        echo "FAIL: NFSv$vers pre-operation getattr/metadata probe"
+        ps -eo pid,stat,wchan:32,comm
+        exit 1
+    fi
+    echo "NFSv$vers pre-operation getattr/metadata probe: PASS"
+
     for suite in basic general special; do
         echo
         echo "--- cthon04/$suite (NFSv$vers) ---"

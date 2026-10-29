@@ -442,7 +442,8 @@ static int smoothfs_range_replay_one(struct super_block *sb,
 				     struct file *f, const char *name,
 				     u64 *recovered_bytes_out,
 				     u64 *oldest_ns_out,
-				     u32 *tier_mask_out)
+				     u32 *tier_mask_out,
+				     bool *paths_rebuilt)
 {
 	u8 header[SMOOTHFS_RANGE_REC_HEADER];
 	struct smoothfs_inode_info *si;
@@ -479,6 +480,17 @@ static int smoothfs_range_replay_one(struct super_block *sb,
 		return -EINVAL;
 
 	si = smoothfs_lookup_oid_resolve(sbi, oid);
+	if (!si && !*paths_rebuilt) {
+		/* The lazy index may be absent or older than this staged write.
+		 * Resolve durable dirty data before mount returns, scanning at
+		 * most once regardless of how many range records are pending.
+		 */
+		*paths_rebuilt = true;
+		err = smoothfs_recovery_rebuild_for_staging(sbi);
+		if (err)
+			return err;
+		si = smoothfs_lookup_oid_resolve(sbi, oid);
+	}
 	if (!si) {
 		/* No corresponding inode in the OID map. The placement log
 		 * may not have caught up before the crash. Leave the .meta
@@ -586,6 +598,7 @@ int smoothfs_range_staging_replay(struct super_block *sb,
 	u64 oldest_ns = 0;
 	u32 tier_mask = 0;
 	u32 recovered_files = 0;
+	bool paths_rebuilt = false;
 	int err;
 
 	INIT_LIST_HEAD(&ctx.names);
@@ -642,7 +655,8 @@ int smoothfs_range_staging_replay(struct super_block *sb,
 		}
 		err = smoothfs_range_replay_one(sb, sbi, f, entry->name,
 						&recovered_bytes,
-						&oldest_ns, &tier_mask);
+						&oldest_ns, &tier_mask,
+						&paths_rebuilt);
 		fput(f);
 		if (err < 0)
 			break;

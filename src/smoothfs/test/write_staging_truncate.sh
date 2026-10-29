@@ -16,6 +16,8 @@ SPILL_ROOT=${SPILL_ROOT:-/tmp/smoothfs-write-staging}
 export SPILL_ROOT SPILL_UUID=$UUID
 trap spill_cleanup EXIT
 
+kernel_log_start=$(date '+%Y-%m-%d %H:%M:%S')
+
 echo "=== laying down 2-tier XFS smoothfs ==="
 spill_setup_pool writestage "$UUID"
 
@@ -84,5 +86,14 @@ else
 fi
 spill_assert test "$reason" = "staged-write"
 spill_assert test "$full_pct" = "98"
+
+# Rehoming a truncate must hold the new lower inode's i_rwsem before
+# notify_change; XFS asserts this even when the resulting data looks correct.
+kernel_log=$(dmesg --since "$kernel_log_start") || exit 1
+if printf '%s\n' "$kernel_log" | grep -Eq 'WARNING:|BUG:|Oops:'; then
+	echo "  FAIL  kernel warning during staged truncate"
+	printf '%s\n' "$kernel_log"
+	spill_rc=1
+fi
 
 spill_finish "write_staging_truncate"

@@ -136,6 +136,12 @@ func copyFile(srcPath, dstPath string) error {
 	if err != nil {
 		return err
 	}
+	// Preserve the source mode rather than letting the helper's umask
+	// remove group access from the destination.
+	if err := dst.Chmod(info.Mode().Perm()); err != nil {
+		_ = dst.Close()
+		return err
+	}
 	if _, err := io.Copy(dst, src); err != nil {
 		_ = dst.Close()
 		return err
@@ -164,16 +170,23 @@ SUCCESS_REL="openfd/success.txt"
 SUCCESS_SERVER="$SPILL_ROOT/server/$SUCCESS_REL"
 SUCCESS_SRC="$SPILL_ROOT/fast/$SUCCESS_REL"
 SUCCESS_DST="$SPILL_ROOT/slow/$SUCCESS_REL"
-SUCCESS_READY="$SPILL_ROOT/success.ready"
-SUCCESS_GO="$SPILL_ROOT/success.go"
-SUCCESS_RESULT="$SPILL_ROOT/success.result"
+SUCCESS_READY="$SPILL_ROOT/owner-ipc/success.ready"
+SUCCESS_GO="$SPILL_ROOT/owner-ipc/success.go"
+SUCCESS_RESULT="$SPILL_ROOT/owner-ipc/success.result"
 SUCCESS_INITIAL="open fd initial payload"
 SUCCESS_UPDATED="open fd post-cutover write"
 SUCCESS_STALE="stale source bytes"
 SUCCESS_SEQ=9001
+# The default is the appliance owner; overrides also exercise group/root IO.
+OPEN_FD_TEST_UID=${OPEN_FD_TEST_UID:-1000}
+OPEN_FD_TEST_GID=${OPEN_FD_TEST_GID:-1000}
+OPEN_FD_TEST_MODE=${OPEN_FD_TEST_MODE:-0600}
 
 mkdir -p "$(dirname "$SUCCESS_SERVER")"
+mkdir -p "$SPILL_ROOT/owner-ipc"
+chmod 0777 "$SPILL_ROOT/owner-ipc"
 printf '%s\n' "$SUCCESS_INITIAL" > "$SUCCESS_SERVER"
+chmod "$OPEN_FD_TEST_MODE" "$SUCCESS_SERVER"
 sync
 spill_assert test -f "$SUCCESS_SRC"
 spill_assert test ! -e "$SUCCESS_DST"
@@ -218,7 +231,7 @@ with open(path, "r+b", buffering=0) as handle:
 pathlib.Path(result).write_text("ok\n")
 PY
 
-python3 "$SUCCESS_HELPER" "$SUCCESS_SERVER" "$SUCCESS_READY" "$SUCCESS_GO" \
+setpriv --reuid="$OPEN_FD_TEST_UID" --regid="$OPEN_FD_TEST_GID" --clear-groups python3 "$SUCCESS_HELPER" "$SUCCESS_SERVER" "$SUCCESS_READY" "$SUCCESS_GO" \
 	"$SUCCESS_RESULT" "$SUCCESS_INITIAL" "$SUCCESS_UPDATED" &
 success_pid=$!
 if wait_for_marker "$SUCCESS_READY" "writable fd opener"; then
@@ -290,7 +303,7 @@ def drop_to_nobody():
         group = grp.getgrnam("nogroup")
         gid = group.gr_gid
     except KeyError:
-        gid = user.pw_gid
+        gid = int(os.environ.get("DENIED_FD_TEST_GID", user.pw_gid))
     os.setgroups([])
     os.setgid(gid)
     os.setuid(user.pw_uid)
@@ -336,7 +349,7 @@ if wait_for_marker "$FAIL_READY" "unprivileged fd opener"; then
 		echo "  FAIL  cutover with open unprivileged fd"
 		spill_rc=1
 	fi
-	chmod 0000 "$FAIL_DST"
+	chmod "${DENIED_FD_TEST_MODE:-0000}" "$FAIL_DST"
 	printf '%s\n' "$FAIL_STALE" > "$FAIL_SRC"
 	touch "$FAIL_GO"
 fi

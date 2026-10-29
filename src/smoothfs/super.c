@@ -1695,6 +1695,33 @@ static void smoothfs_oid_wb_worker(struct work_struct *work)
 	}
 }
 
+/* Unlinked payloads must not stay allocated just to persist their OID.
+ * Open files retain their own lower path and in-memory identity. */
+void smoothfs_oid_wb_forget(struct smoothfs_sb_info *sbi,
+			    struct inode *lower_inode)
+{
+	LIST_HEAD(discard);
+	struct smoothfs_oid_wb_entry *e, *tmp;
+
+	if (!lower_inode || lower_inode->i_nlink ||
+	    !READ_ONCE(sbi->oid_wb_ready))
+		return;
+
+	spin_lock(&sbi->oid_wb_lock);
+	list_for_each_entry_safe(e, tmp, &sbi->oid_wb_pending, link) {
+		if (d_inode(e->lower_path.dentry) == lower_inode) {
+			list_move_tail(&e->link, &discard);
+			sbi->oid_wb_pending_count--;
+		}
+	}
+	spin_unlock(&sbi->oid_wb_lock);
+
+	list_for_each_entry_safe(e, tmp, &discard, link) {
+		path_put(&e->lower_path);
+		kfree(e);
+	}
+}
+
 int smoothfs_oid_wb_init(struct smoothfs_sb_info *sbi)
 {
 	spin_lock_init(&sbi->oid_wb_lock);
@@ -1813,6 +1840,7 @@ static struct inode *smoothfs_alloc_inode(struct super_block *sb)
 	si->cutover_gen = 0;
 	si->transaction_seq = 0;
 	atomic_set(&si->nlink_observed, 1);
+	spin_lock_init(&si->lower_path_lock);
 	mutex_init(&si->cache_mutation_lock);
 	mutex_init(&si->read_cache_lock);
 	si->read_cache_file = NULL;
@@ -2176,6 +2204,7 @@ static int smoothfs_fill_super(struct super_block *sb, struct fs_context *fc)
 		WRITE_ONCE(sbi->write_staging_drain_active_tier_mask, BIT(sbi->ntiers) - 1);
 
 	sb->s_magic     = SMOOTHFS_MAGIC;
+	uuid_copy(&sb->s_uuid, &sbi->pool_uuid);
 	sb->s_op        = &smoothfs_super_ops;
 	sb->s_export_op = &smoothfs_export_ops;
 	smoothfs_compat_set_dentry_ops(sb, &smoothfs_dentry_ops);
@@ -2355,6 +2384,11 @@ static int smoothfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bsize   = PAGE_SIZE;
 	buf->f_namelen = NAME_MAX;
 	buf->f_frsize  = PAGE_SIZE;
+	/* mountd needs a stable identity for implicit NFSv4 ancestor exports.
+	 * Anonymous pools have no block-device UUID to fall back to. Hash the
+	 * whole UUID: test/operator UUIDs may share their first eight bytes. */
+	buf->f_fsid = u64_to_fsid(xxh64(sbi->pool_uuid.b,
+				     sizeof(sbi->pool_uuid.b), 0));
 
 	for (i = sbi->cache_mode ? sbi->ntiers - 1 : 0; i < sbi->ntiers; i++) {
 		err = vfs_statfs(&sbi->tiers[i].lower_path, &tmp);
@@ -2462,10 +2496,8 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 						    lower_inode->i_ino);
 		if (ino_no) {
 			inode = ilookup(sb, ino_no);
-			if (inode) {
-				path_get(lower);
+			if (inode)
 				return inode;
-			}
 			/* Cache hit but inode was evicted — treat as miss
 			 * and rebuild state from xattrs. */
 		}
@@ -2544,13 +2576,9 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	if (!smoothfs_compat_inode_is_new(inode)) {
-		/*
-		 * The existing inode already has its own si->lower_path with
-		 * its own reference. Take a matching ref on the caller's
-		 * local lower_path so every caller can path_put() on return
-		 * without caring whether the inode was fresh or cached.
-		 */
-		path_get(lower);
+		/* The caller owns lower and releases it on return. A cached
+		 * inode already owns its backing path; no new path ref is
+		 * needed. Extra refs here pin unlinked lower files forever. */
 		return inode;
 	}
 

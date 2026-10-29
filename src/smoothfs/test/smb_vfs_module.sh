@@ -330,7 +330,51 @@ v=$(getfattr -n trusted.smoothfs.lease --only-values -h \
     "$LEASE_FILE_LOWER" 2>/dev/null | od -An -tx1 | tr -d ' \n')
 assert test "$v" = "00"
 
+echo "=== cached CIFS writes must not block on their own fanotify lease ==="
+if timeout -k 5 60 python3 - "$CIFS_MNT" "$ROOT/server" <<'PY'
+import os
+import pathlib
+import sys
+client, server = map(pathlib.Path, sys.argv[1:])
+for n in range(64):
+    name = f'self-event-{n}.tmp'
+    payload = n.to_bytes(4, 'little') * 16384
+    with (client / name).open('wb') as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    renamed = f'self-event-{n}.bin'
+    (client / name).rename(client / renamed)
+    assert (client / renamed).read_bytes() == payload
+    assert (server / renamed).read_bytes() == payload
+    (client / renamed).unlink()
+PY
+then
+    echo "  ok    64 cached write/fsync/rename/read/unlink cycles"
+else
+    echo "  FAIL  cached CIFS self-event churn"
+    rc=1
+fi
+
 umount -l $CIFS_MNT
+
+echo "=== SmoothNAS VFS options disable watcher and FileId cache ==="
+printf '\n    smoothfs:lease watcher = no\n    smoothfs:stable fileid = no\n' >> "$ROOT/samba/smb.conf"
+kill -HUP "$SMBD_PID"
+sleep 1
+$SMBC -c "put /tmp/phase58.src options-disabled.txt; get options-disabled.txt /tmp/phase58-options.dst" >/tmp/smbvfs.options 2>&1
+assert cmp -s /tmp/phase58.src /tmp/phase58-options.dst
+assert grep -q 'lower is smoothfs; fanotify inactive' "$SMBD_LOG"
+OPTIONS_INO=$(getfattr -n trusted.smoothfs.fileid --only-values -h \
+    "$ROOT/server/options-disabled.txt" 2>/dev/null \
+    | python3 -c 'import sys,struct; print(struct.unpack("<Q",sys.stdin.buffer.read()[:8])[0])')
+assert test -n "$OPTIONS_INO"
+if grep -qE "smoothfs: file_id ino=$OPTIONS_INO " "$SMBD_LOG"; then
+    echo "  FAIL  FileId cache remained active with stable fileid = no"
+    rc=1
+else
+    echo "  ok    FileId cache disabled for new connection"
+fi
 
 echo
 if [ $rc -eq 0 ]; then
