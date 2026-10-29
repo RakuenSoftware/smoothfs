@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # Build the smoothfs Samba VFS module against a matching Samba
 # source tree and install it into the system's Samba modules
 # directory.

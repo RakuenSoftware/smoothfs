@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 /*
  * Phase 5.0 check for smoothfs's SMB-shaped control surface:
  *

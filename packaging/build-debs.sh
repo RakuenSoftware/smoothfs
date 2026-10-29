@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # Build smoothfs's Debian packages in a Debian 13 container (run inside
 # debian:trixie, as root, from the repository root):
 #

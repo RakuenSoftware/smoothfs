@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
 # Write a debian/changelog whose version is the one being packaged.
 #
 #   packaging/debian-changelog.sh <debian-dir> <package> <version>

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 /*
  * lease_break_agent — Phase 5.3 reference userspace listener.
  *

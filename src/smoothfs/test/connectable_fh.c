@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: AGPL-3.0-only
 /*
  * Phase 4.5 round-trip check for connectable file handles.
  *

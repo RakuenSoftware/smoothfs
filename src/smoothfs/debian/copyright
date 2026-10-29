@@ -4,12 +4,17 @@ Source: https://github.com/RakuenSoftware/smoothfs
 
 Files: *
 Copyright: 2026 RakuenSoftware
-License: GPL-2.0
+License: GPL-2.0+
 
-License: GPL-2.0
+Files: test/* scripts/*
+Copyright: 2026 RakuenSoftware
+License: AGPL-3.0
+
+License: GPL-2.0+
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
- the Free Software Foundation; version 2 of the License.
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
  .
  This program is distributed in the hope that it will be useful, but
  WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -18,3 +23,16 @@ License: GPL-2.0
  .
  On Debian systems, the complete text of the GNU General Public License
  version 2 can be found in "/usr/share/common-licenses/GPL-2".
+
+License: AGPL-3.0
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU Affero General Public License as published
+ by the Free Software Foundation, version 3 of the License.
+ .
+ This program is distributed in the hope that it will be useful, but
+ WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ Affero General Public License for more details.
+ .
+ The complete text of the GNU Affero General Public License version 3 is
+ in the LICENSE file at the root of the smoothfs source repository.
