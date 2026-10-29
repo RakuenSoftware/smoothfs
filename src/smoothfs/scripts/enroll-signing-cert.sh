@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # enroll-signing-cert.sh — Phase 7.2 operator helper.
 #
 # Enrolls DKMS's default MOK signing certificate into the shim

@@ -68,3 +68,14 @@ kernel-, bestandsysteem-, Samba- en iSCSI-vereisten.
 - `controlplane`: planner/worker/recovery servicelogica
 - `docs`: operator en ontwerpd documentatie
 - `tierd` uit SmoothNAS consumeert deze contracten
+
+## Licenties
+
+De kernelmodule in `src/smoothfs/` valt onder de GPL-2.0-or-later, omdat code
+die in de Linux-kernel draait GPLv2-compatibel moet zijn. De userspace-header
+`uapi_smoothfs.h` heeft de Linux syscall note. De volledige tekst staat in
+[`src/smoothfs/LICENSE`](src/smoothfs/LICENSE).
+
+Al het andere valt onder de [AGPL-3.0](LICENSE): het Go-controlplane en de
+client, de Samba VFS-module, de testprogramma's en de packagingscripts. Elk
+bronbestand vermeldt zijn licentie in een SPDX-header.

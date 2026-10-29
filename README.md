@@ -110,3 +110,14 @@ without a matching base entry. Cache mode exposes only the base namespace;
 stale named replicas above it do not resurrect deleted files. The fastest
 layer provides caching and the last layer provides permanent storage;
 intermediate configured layers are not used for cache admission.
+
+## Licensing
+
+The kernel module in `src/smoothfs/` is licensed under the GPL-2.0-or-later,
+because code that runs inside the Linux kernel must be GPLv2-compatible. Its
+userspace header `uapi_smoothfs.h` carries the Linux syscall note. The full
+text is in [`src/smoothfs/LICENSE`](src/smoothfs/LICENSE).
+
+Everything else is licensed under the [AGPL-3.0](LICENSE): the Go control
+plane and client, the Samba VFS module, the test programs and the packaging
+scripts. Each source file states its license in an SPDX header.

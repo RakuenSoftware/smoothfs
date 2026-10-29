@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
+/* SPDX-License-Identifier: GPL-2.0-or-later WITH Linux-syscall-note */
 /*
  * smoothfs uapi - shared types between kernel module and userspace tierd.
  *
