@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.4](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.3...v0.3.4) (2026-10-29)
+
+
+### Bug Fixes
+
+* **test:** read back the large-file case through a readable handle ([e1e2651](https://github.com/RakuenSoftware/smoothfs/commit/e1e2651abde768d8c64c8508651a8326a6347d65))
+* **test:** read back the large-file case through a readable handle ([2b6fb5d](https://github.com/RakuenSoftware/smoothfs/commit/2b6fb5dfb4f5123c0e421f9c805398575ab73eda))
+
 ## [0.3.3](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.2...v0.3.3) (2026-10-29)
 
 
