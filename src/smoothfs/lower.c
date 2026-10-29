@@ -83,8 +83,11 @@ static struct file *open_lower_now(struct inode *inode, fmode_t flags,
 	 * uniform visible owner may differ from the root-owned backing object,
 	 * so lower IO itself uses the mount creator's credentials. A lazy
 	 * cutover reopen must additionally pass the saved caller check above. */
+	/* O_LARGEFILE: kernel-internal callers (nfsd's file cache, the
+	 * cache-mode drain) do not all set it, and without it the lower file
+	 * refuses I/O past 2 GiB with EFBIG. */
 	f = dentry_open(&lower_path,
-			flags & ~(O_CREAT | O_EXCL | O_NOCTTY), priv);
+			(flags & ~(O_CREAT | O_EXCL | O_NOCTTY)) | O_LARGEFILE, priv);
 	path_put(&lower_path);
 	return f;
 }

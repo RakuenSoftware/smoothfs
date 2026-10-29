@@ -96,7 +96,7 @@ static int smoothfs_range_stage_open_locked(struct inode *inode)
 	{
 		const struct cred *old = override_creds(sbi->creator_cred);
 		stage = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
-				       name, O_RDWR | O_CREAT, 0600);
+				       name, O_RDWR | O_CREAT | O_LARGEFILE, 0600);
 		revert_creds(old);
 	}
 	kfree(name);
@@ -174,7 +174,7 @@ static ssize_t smoothfs_range_stage_write(struct kiocb *iocb,
 		mutex_unlock(&si->range_staging_lock);
 		return err;
 	}
-	stage = dentry_open(&si->range_staged_path, O_RDWR,
+	stage = dentry_open(&si->range_staged_path, O_RDWR | O_LARGEFILE,
 			    SMOOTHFS_SB(inode->i_sb)->creator_cred);
 	if (IS_ERR(stage)) {
 		mutex_unlock(&si->range_staging_lock);
@@ -249,7 +249,7 @@ static ssize_t smoothfs_range_stage_overlay_locked(struct inode *inode,
 	if (!smoothfs_range_overlaps(si, pos, pos + len))
 		return 0;
 
-	stage = dentry_open(&si->range_staged_path, O_RDONLY,
+	stage = dentry_open(&si->range_staged_path, O_RDONLY | O_LARGEFILE,
 			    SMOOTHFS_SB(inode->i_sb)->creator_cred);
 	if (IS_ERR(stage))
 		return PTR_ERR(stage);
@@ -387,7 +387,7 @@ static ssize_t smoothfs_cached_read_iter(struct kiocb *iocb, struct iov_iter *to
 					const struct cred *old = override_creds(sbi->creator_cred);
 					struct file *cache = file_open_root(
 						&sbi->tiers[sbi->fastest_tier].lower_path,
-						".smoothfs", O_TMPFILE | O_RDWR, 0600);
+						".smoothfs", O_TMPFILE | O_RDWR | O_LARGEFILE, 0600);
 					revert_creds(old);
 					if (!IS_ERR(cache)) si->read_cache_file = cache;
 				}

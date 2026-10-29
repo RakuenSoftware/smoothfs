@@ -98,6 +98,29 @@ a.unlink()
 assert not a.exists(), 'deletion resurrected a disposable replica'
 (fast / 'append.txt').unlink()
 PY
+# Files past 2 GiB: staged writes, merged reads and the drain all go through
+# files smoothfs opens itself, which refused I/O beyond 2 GiB with EFBIG
+# without O_LARGEFILE (a 2.5 GB rsync over NFS failed on close). Sparse, so
+# the small test tiers hold it.
+python3 - <<'PY'
+import os, pathlib
+root = pathlib.Path(os.environ['SPILL_ROOT'])
+p, base = root / 'server/large.bin', root / 'slow/large.bin'
+offset = (2 << 30) + 4096
+marker = b'past two GiB\n'
+with p.open('wb', buffering=0) as f:
+    f.seek(offset)
+    assert f.write(marker) == len(marker)
+    assert p.stat().st_size == offset + len(marker), 'staged size past 2 GiB'
+    f.seek(offset)
+    assert f.read(len(marker)) == marker, 'staged read past 2 GiB'
+    os.fsync(f.fileno())
+assert base.stat().st_size == offset + len(marker), 'drained size past 2 GiB'
+with base.open('rb') as f:
+    f.seek(offset)
+    assert f.read() == marker, 'drained data past 2 GiB'
+p.unlink()
+PY
 # Force cache admission off using actual occupancy, then write through to base.
 echo 1 > "$SYSFS/write_staging_full_pct"
 spill_fill_fast_tier 32
