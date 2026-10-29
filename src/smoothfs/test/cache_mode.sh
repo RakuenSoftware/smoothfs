@@ -108,7 +108,7 @@ root = pathlib.Path(os.environ['SPILL_ROOT'])
 p, base = root / 'server/large.bin', root / 'slow/large.bin'
 offset = (2 << 30) + 4096
 marker = b'past two GiB\n'
-with p.open('wb', buffering=0) as f:
+with p.open('w+b', buffering=0) as f:
     f.seek(offset)
     assert f.write(marker) == len(marker)
     assert p.stat().st_size == offset + len(marker), 'staged size past 2 GiB'
