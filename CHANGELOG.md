@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.3](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.2...v0.3.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* open internal files with O_LARGEFILE ([03dc46c](https://github.com/RakuenSoftware/smoothfs/commit/03dc46c65f416fd1c29256616c21c2221509bc50))
+* open internal files with O_LARGEFILE ([3b09f6d](https://github.com/RakuenSoftware/smoothfs/commit/3b09f6d6c4b6f18561767282bdddc1bb9c173489))
+
 ## [0.3.2](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.1...v0.3.2) (2026-10-29)
 
 
