@@ -648,12 +648,12 @@ int smoothfs_placement_open(struct smoothfs_sb_info *sbi)
 		 * mount root. */
 		f = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
 				   SMOOTHFS_PLACEMENT_FILE,
-				   O_RDWR | O_CREAT | O_APPEND, 0600);
+				   O_RDWR | O_CREAT | O_APPEND | O_LARGEFILE, 0600);
 	} else if (err) {
 		kfree(path_buf);
 		return err;
 	} else {
-		f = dentry_open(&full, O_RDWR | O_APPEND, current_cred());
+		f = dentry_open(&full, O_RDWR | O_APPEND | O_LARGEFILE, current_cred());
 		path_put(&full);
 	}
 	kfree(path_buf);
@@ -851,7 +851,7 @@ static int smoothfs_path_index_write(struct smoothfs_sb_info *sbi,
 
 	f = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
 			   SMOOTHFS_PATH_INDEX_FILE,
-			   O_RDWR | O_CREAT | O_TRUNC, 0600);
+			   O_RDWR | O_CREAT | O_TRUNC | O_LARGEFILE, 0600);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 
@@ -918,7 +918,7 @@ static int smoothfs_path_index_read(struct smoothfs_sb_info *sbi,
 	int err;
 
 	f = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
-			   SMOOTHFS_PATH_INDEX_FILE, O_RDONLY, 0);
+			   SMOOTHFS_PATH_INDEX_FILE, O_RDONLY | O_LARGEFILE, 0);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 

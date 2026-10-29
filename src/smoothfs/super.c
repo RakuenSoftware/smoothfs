@@ -1236,13 +1236,13 @@ static int smoothfs_write_staging_drain_one_range(struct smoothfs_sb_info *sbi,
 	lower_path = si->lower_path;
 	path_get(&lower_path);
 
-	stage = dentry_open(&stage_path, O_RDONLY, current_cred());
+	stage = dentry_open(&stage_path, O_RDONLY | O_LARGEFILE, current_cred());
 	if (IS_ERR(stage)) {
 		err = PTR_ERR(stage);
 		stage = NULL;
 		goto out_unlock;
 	}
-	dest = dentry_open(&lower_path, O_RDWR, current_cred());
+	dest = dentry_open(&lower_path, O_RDWR | O_LARGEFILE, current_cred());
 	if (IS_ERR(dest)) {
 		err = PTR_ERR(dest);
 		dest = NULL;

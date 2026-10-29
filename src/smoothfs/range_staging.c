@@ -232,7 +232,7 @@ int smoothfs_range_staging_persist(struct smoothfs_sb_info *sbi,
 
 	fast_root = sbi->tiers[sbi->fastest_tier].lower_path;
 	f = file_open_root(&fast_root, tmp_rel,
-			   O_WRONLY | O_CREAT | O_TRUNC, 0600);
+			   O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0600);
 	if (IS_ERR(f)) {
 		err = PTR_ERR(f);
 		f = NULL;
@@ -420,7 +420,7 @@ static int smoothfs_range_open_stage(struct smoothfs_sb_info *sbi,
 	if (!rel)
 		return -ENOMEM;
 
-	stage = file_open_root(&fast_root, rel, O_RDWR, 0);
+	stage = file_open_root(&fast_root, rel, O_RDWR | O_LARGEFILE, 0);
 	kfree(rel);
 	if (IS_ERR(stage))
 		return PTR_ERR(stage);
@@ -646,7 +646,7 @@ int smoothfs_range_staging_replay(struct super_block *sb,
 			break;
 		}
 		f = file_open_root(&sbi->tiers[sbi->fastest_tier].lower_path,
-				   rel, O_RDONLY, 0);
+				   rel, O_RDONLY | O_LARGEFILE, 0);
 		kfree(rel);
 		if (IS_ERR(f)) {
 			pr_warn_ratelimited("smoothfs: range-staging meta open %s failed: %ld\n",
