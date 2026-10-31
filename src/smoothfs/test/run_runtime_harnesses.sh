@@ -24,6 +24,7 @@ FAIL_FAST=${SMOOTHFS_RUNTIME_FAIL_FAST:-0}
 
 core_tests=(
 	cache_mode.sh
+	directory_fsync.sh
 	netlink_receive_close.sh
 	tier_spill_basic_create.sh
 	tier_spill_nested_parent.sh
