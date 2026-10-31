@@ -136,11 +136,10 @@ smoothfs_compat_create(struct mnt_idmap *idmap, struct inode *dir,
  *
  * Helper does the now-canonical "may-replace-dentry" dance: returns
  * the dentry the caller should use (either input or replacement),
- * or ERR_PTR on failure. NOTE: vfs_mkdir() itself dput()s the
- * passed-in dentry whenever it returns a *different* pointer
- * (a replacement OR an ERR_PTR), and additionally unlocks the parent
- * on error. Callers must therefore NOT dput the original on
- * replacement/error, and must not unlock the parent again on error.
+ * or ERR_PTR on failure. vfs_mkdir() consumes the original on replacement
+ * or error. Starting with 6.19 it also unlocks the parent on error; this
+ * helper supplies that unlock on 6.18 to keep one caller contract. Callers
+ * must not dput the original on replacement/error, or unlock on error.
  */
 static inline struct dentry *
 smoothfs_compat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
@@ -153,8 +152,16 @@ smoothfs_compat_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	struct dentry *new_d = vfs_mkdir(idmap, dir, dentry, mode);
 #endif
 
-	if (IS_ERR(new_d))
+	/* Normalize mkdir's error contract: the child is consumed and the parent
+	 * unlocked. v6.18 consumes only the child; v6.19+ also calls end_creating.
+	 * Success always leaves the caller's parent lock held.
+	 */
+	if (IS_ERR(new_d)) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)
+		inode_unlock(dir);
+#endif
 		return new_d;
+	}
 	if (new_d && new_d != dentry)
 		return new_d;
 	return dentry;

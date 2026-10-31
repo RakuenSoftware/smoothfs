@@ -501,16 +501,10 @@ static int smoothfs_materialize_parent_on_tier(struct mnt_idmap *idmap,
 			revert_creds(old_cred);
 			if (IS_ERR(new_child)) {
 				err = PTR_ERR(new_child);
-				/*
-				 * vfs_mkdir() (6.15+) already dput()s the
-				 * passed-in dentry when it returns an error
-				 * pointer — a second dput here corrupts the
-				 * dcache (dput() WARN at fs/dcache.c). It does
-				 * NOT unlock the parent: that stays with us
-				 * (see do_mkdirat, where end_creating_path()
-				 * unlocks even on vfs_mkdir error).
+				/* The compat helper consumed child and released the
+				 * parent lock. Unlocking again underflows i_rwsem on
+				 * v6.19+, hanging later lookups after ENOSPC.
 				 */
-				inode_unlock(d_inode(cur.dentry));
 				goto out_err;
 			}
 			if (new_child != child) {
@@ -1441,7 +1435,7 @@ static struct dentry *smoothfs_mkdir_inner(struct mnt_idmap *idmap,
 			if (IS_ERR(new_lower)) {
 				err = PTR_ERR(new_lower);
 				/*
-				 * vfs_mkdir() already dput()'d lower and
+				 * The compat helper already consumed lower and
 				 * unlocked the parent on error; do not repeat.
 				 */
 				path_put(&parent_path);
