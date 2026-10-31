@@ -8,8 +8,16 @@ import (
 )
 
 // Recover scans smoothfs_objects for interrupted movement states and failed
-// LUN resume rows that need destination placement reconciliation.
-func Recover(ctx context.Context, db *sql.DB) error {
+// LUN resume rows that need destination placement reconciliation. A running
+// service must pass its kernel client; omitting it retains the historical
+// database-only repair for offline callers.
+func Recover(ctx context.Context, db *sql.DB, clients ...movementClient) error {
+	if len(clients) > 0 {
+		return recoverLive(ctx, db, clients[0])
+	}
+	// Historical database-only reconciliation, retained for offline callers.
+	// A running service must supply its kernel client.
+
 	rows, err := db.QueryContext(ctx, `
 		SELECT object_id, current_tier_id, intended_tier_id, movement_state, transaction_seq, pin_state,
 		       namespace_id, rel_path

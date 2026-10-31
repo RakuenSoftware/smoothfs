@@ -35,12 +35,26 @@ func main(){
   from,to:=round%2,1-round%2;seq:=uint64(500+round)
   before,e:=c.Inspect(pool,oid);must(e)
   if before.CurrentTier!=uint8(from)||before.MovementState!=smoothfs.StatePlaced{panic("object was not ready for the next movement")}
+  // A crash before cutover must discard only the partial destination and
+  // restore movement readiness on the original source.
+  rollbackSeq:=seq+1000
+  must(c.MovePlan(pool,oid,uint8(to),rollbackSeq))
+  if e=c.MoveRollback(pool,oid,rollbackSeq+1);!errors.Is(e,unix.ESTALE){panic(fmt.Sprintf("stale rollback: %v",e))}
+  partial:=filepath.Join(root,tiers[to],"chunk")
+  must(os.WriteFile(partial,payload[:128],0600));must(os.Remove(partial))
+  parent,e:=os.Open(filepath.Dir(partial));must(e);must(parent.Sync());must(parent.Close())
+  must(c.MoveRollback(pool,oid,rollbackSeq));must(c.MoveRollback(pool,oid,rollbackSeq))
+  rolledBack,e:=c.Inspect(pool,oid);must(e)
+  if rolledBack.CurrentTier!=uint8(from)||rolledBack.MovementState!=smoothfs.StatePlaced{panic("rollback changed authoritative placement")}
   must(c.MovePlan(pool,oid,uint8(to),seq))
   if e=c.MoveComplete(pool,oid,seq);!errors.Is(e,unix.EBUSY){panic(fmt.Sprintf("premature completion: %v",e))}
   src:=filepath.Join(root,tiers[from],"chunk");dst:=filepath.Join(root,tiers[to],"chunk")
   in,e:=os.Open(src);must(e);out,e:=os.Create(dst);must(e)
   _,e=io.Copy(out,in);must(e);must(out.Sync());must(out.Close());must(in.Close())
-  if before.HasWriteSeq{must(c.MoveCutoverVerifyWriteSeq(pool,oid,seq,before.WriteSeq))}else{must(c.MoveCutover(pool,oid,seq))}
+  planned,e:=c.Inspect(pool,oid);must(e)
+  fmt.Printf("round=%d seq=%d kernel_seq=%d write_before=%d write_after_rollback=%d write_planned=%d\n",round,seq,planned.TransactionSeq,before.WriteSeq,rolledBack.WriteSeq,planned.WriteSeq)
+  if rolledBack.HasWriteSeq{must(c.MoveCutoverVerifyWriteSeq(pool,oid,seq,rolledBack.WriteSeq))}else{must(c.MoveCutover(pool,oid,seq))}
+  if e=c.MoveRollback(pool,oid,seq);!errors.Is(e,unix.EBUSY){panic(fmt.Sprintf("rollback accepted after cutover: %v",e))}
   if e=c.MovePlan(pool,oid,uint8(from),seq+100);!errors.Is(e,unix.EBUSY){panic(fmt.Sprintf("new movement before cleanup ack: %v",e))}
   if e=c.MoveComplete(pool,oid,seq+1);!errors.Is(e,unix.ESTALE){panic(fmt.Sprintf("stale completion: %v",e))}
   must(os.Remove(src));dir,e:=os.Open(filepath.Dir(src));must(e);must(dir.Sync());must(dir.Close())
@@ -50,7 +64,7 @@ func main(){
   _,e=held.Seek(0,0);must(e);actual,e:=io.ReadAll(held);must(e)
   if !bytes.Equal(actual,payload){panic("held file changed after roundtrip")}
  }
- fmt.Println("movement_roundtrip: PASS (four moves, held descriptor, premature/stale/idempotent acknowledgements)")
+ fmt.Println("movement_roundtrip: PASS (four moves and rollbacks, held descriptor, premature/stale/idempotent acknowledgements)")
 }
 GO
 go -C "$REPO_ROOT" run "$SPILL_ROOT/probe.go" "$SPILL_ROOT" "$SPILL_UUID"

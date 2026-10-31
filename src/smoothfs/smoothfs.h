@@ -817,6 +817,9 @@ int  smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 int  smoothfs_movement_complete(struct smoothfs_sb_info *sbi,
 				const u8 oid[SMOOTHFS_OID_LEN],
 				u64 transaction_seq);
+int  smoothfs_movement_rollback(struct smoothfs_sb_info *sbi,
+				const u8 oid[SMOOTHFS_OID_LEN],
+				u64 transaction_seq);
 int  smoothfs_movement_abort(struct smoothfs_sb_info *sbi,
 			     const u8 oid[SMOOTHFS_OID_LEN],
 			     u64 transaction_seq, const char *reason);

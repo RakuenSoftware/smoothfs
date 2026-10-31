@@ -788,6 +788,55 @@ out:
 	inode_unlock(inode);
 	return err;
 }
+/* Recovery may discard a partial destination only before cutover. The
+ * sequence guard rejects an old recovery task after a newer movement began.
+ * Unlike the informational abort transition, this acknowledgement durably
+ * returns the authoritative source to PLACED so movement can resume.
+ */
+int smoothfs_movement_rollback(struct smoothfs_sb_info *sbi,
+			       const u8 oid[SMOOTHFS_OID_LEN],
+			       u64 transaction_seq)
+{
+	struct smoothfs_inode_info *si = smoothfs_lookup_oid_resolve(sbi, oid);
+	struct inode *inode;
+	int err = 0;
+
+	if (!si)
+		return -ENOENT;
+	inode = &si->vfs_inode;
+	inode_lock(inode);
+	if (si->transaction_seq != transaction_seq) {
+		err = -ESTALE;
+		goto out;
+	}
+	switch (si->movement_state) {
+	case SMOOTHFS_MS_PLACED:
+		goto out;
+	case SMOOTHFS_MS_PLAN_ACCEPTED:
+	case SMOOTHFS_MS_DESTINATION_RESERVED:
+	case SMOOTHFS_MS_COPY_IN_PROGRESS:
+	case SMOOTHFS_MS_COPY_COMPLETE:
+	case SMOOTHFS_MS_COPY_VERIFIED:
+	case SMOOTHFS_MS_FAILED:
+		break;
+	default:
+		err = -EBUSY;
+		goto out;
+	}
+	err =
+	    smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_PLACED,
+				      si->current_tier, si->current_tier, true);
+	if (!err) {
+		si->movement_state = SMOOTHFS_MS_PLACED;
+		si->intended_tier = si->current_tier;
+		smoothfs_netlink_emit_move_state(sbi, oid, SMOOTHFS_MS_PLACED,
+						 transaction_seq);
+	}
+out:
+	inode_unlock(inode);
+	return err;
+}
+
 int smoothfs_movement_abort(struct smoothfs_sb_info *sbi,
 			    const u8 oid[SMOOTHFS_OID_LEN],
 			    u64 transaction_seq, const char *reason)

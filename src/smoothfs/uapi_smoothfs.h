@@ -54,6 +54,7 @@ enum {
 	SMOOTHFS_CMD_REVOKE_MAPPINGS      = 14,
 	SMOOTHFS_EVENT_SPILL              = 15,
 	SMOOTHFS_CMD_MOVE_COMPLETE        = 16, /* userspace cleanup durable */
+	SMOOTHFS_CMD_MOVE_ROLLBACK        = 17, /* partial destination removed */
 	__SMOOTHFS_CMD_MAX,
 };
 #define SMOOTHFS_CMD_MAX (__SMOOTHFS_CMD_MAX - 1)
