@@ -157,7 +157,7 @@ static int smoothfs_collect_one_dir(struct smoothfs_dir_cache *cache,
 	return collect.err;
 }
 
-static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
+static struct smoothfs_dir_cache *smoothfs_build_dir_cache_inner(struct file *file)
 {
 	struct inode *inode = file_inode(file);
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
@@ -198,14 +198,40 @@ static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
 			continue;
 		}
 		err = smoothfs_resolve_rel_path_on_tier(sbi, tier, rel_path, &tier_path);
-		if (err)
+		if (err == -ENOENT || err == -ENOTDIR)
 			continue;
+		if (err)
+			goto fail;
 		if (d_is_dir(tier_path.dentry))
-			(void)smoothfs_collect_one_dir(cache, &tier_path, sbi->creator_cred);
+			err = smoothfs_collect_one_dir(cache, &tier_path, sbi->creator_cred);
 		path_put(&tier_path);
+		if (err)
+			goto fail;
 	}
 
 	kfree(rel_path);
+	return cache;
+fail:
+	/* Partial enumeration can make a backup collector delete live chunks.
+	 * Only a genuinely absent replica is safe to omit.
+	 */
+	kfree(rel_path);
+	smoothfs_dir_cache_free(cache);
+	return ERR_PTR(err);
+}
+
+/* VFS already checked the caller against the presented upper directory.
+ * Backing traversal must use the mounter's credentials on every tier, just
+ * like lookup. Otherwise root-owned private backing parents make readdir
+ * silently omit spill-tier entries for the presented owner (e.g. PBS).
+ */
+static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(file_inode(file)->i_sb);
+	const struct cred *old = override_creds(sbi->creator_cred);
+	struct smoothfs_dir_cache *cache = smoothfs_build_dir_cache_inner(file);
+
+	revert_creds(old);
 	return cache;
 }
 
