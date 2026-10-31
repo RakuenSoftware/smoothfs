@@ -25,6 +25,7 @@ FAIL_FAST=${SMOOTHFS_RUNTIME_FAIL_FAST:-0}
 core_tests=(
 	cache_mode.sh
 	directory_fsync.sh
+	syncfs_lower.sh
 	readdir_backing_permissions.sh
 	mkdir_enospc.sh
 	netlink_receive_close.sh

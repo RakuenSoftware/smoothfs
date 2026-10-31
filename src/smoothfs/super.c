@@ -2421,32 +2421,53 @@ static int smoothfs_show_options(struct seq_file *m, struct dentry *root)
 }
 
 /*
- * sync_fs: drain deferred SmoothFS metadata so `sync` / `syncfs` /
- * the periodic writeback pass all see up-to-date on-disk state.
- * Called with wait=1 for "make it durable", wait=0 for "kick it".
- * We flush synchronously when asked to wait and just nudge workers
- * when we aren't.
+ * File data lives in the backing superblocks' address spaces. Draining only
+ * SmoothFS metadata is not a syncfs durability barrier (PBS uses syncfs when
+ * completing a backup). Flush each distinct backing FS when VFS asks to wait.
  */
 static int smoothfs_sync_fs(struct super_block *sb, int wait)
 {
 	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(sb);
+	int err = 0, ret;
+	u8 tier, prior;
 
 	if (!sbi)
 		return 0;
 	if (wait) {
-		int err = smoothfs_cache_drain(sbi);
-		if (err)
-			return err;
+		ret = smoothfs_cache_drain(sbi);
+		if (ret)
+			err = ret;
 		smoothfs_oid_wb_drain(sbi);
 		smoothfs_placement_wb_drain(sbi);
-		if (sbi->placement_log)
-			vfs_fsync(sbi->placement_log, 0);
+		if (sbi->placement_log) {
+			ret = vfs_fsync(sbi->placement_log, 0);
+			if (ret && !err)
+				err = ret;
+		}
+		for (tier = 0; tier < sbi->ntiers; tier++) {
+			struct super_block *lower =
+			    sbi->tiers[tier].lower_path.mnt->mnt_sb;
+
+			for (prior = 0; prior < tier; prior++)
+				if (sbi->tiers[prior].lower_path.mnt->mnt_sb ==
+				    lower)
+					break;
+			if (prior != tier)
+				continue;
+			/* Match the stacked-filesystem lock contract used by
+			 * overlayfs. */
+			down_read(&lower->s_umount);
+			ret = sync_filesystem(lower);
+			up_read(&lower->s_umount);
+			if (ret && !err)
+				err = ret;
+		}
 	} else {
 		smoothfs_placement_wb_kick(sbi);
 		if (sbi->oid_wb_ready)
 			mod_delayed_work(sbi->oid_wb_wq, &sbi->oid_wb_work, 0);
 	}
-	return 0;
+	return err;
 }
 
 const struct super_operations smoothfs_super_ops = {
