@@ -2496,8 +2496,24 @@ struct inode *smoothfs_iget(struct super_block *sb, struct path *lower,
 						    lower_inode->i_ino);
 		if (ino_no) {
 			inode = ilookup(sb, ino_no);
-			if (inode)
-				return inode;
+			if (inode) {
+				struct path cached;
+				bool matches;
+
+				/* Numeric lower inode numbers can be reused. Validate
+				 * the cached upper's actual backing before returning it;
+				 * never attach a fresh file to a moved object's inode.
+				 */
+				smoothfs_get_lower_path(inode, &cached);
+				matches = cached.mnt == lower->mnt && cached.dentry &&
+					d_inode(cached.dentry) == lower_inode;
+				path_put(&cached);
+				if (matches)
+					return inode;
+				smoothfs_lower_ino_map_remove(sbi, tier_idx,
+							    lower_inode->i_ino);
+				iput(inode);
+			}
 			/* Cache hit but inode was evicted — treat as miss
 			 * and rebuild state from xattrs. */
 		}
