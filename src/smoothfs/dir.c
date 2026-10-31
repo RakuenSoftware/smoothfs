@@ -273,11 +273,79 @@ static loff_t smoothfs_dir_llseek(struct file *file, loff_t offset, int whence)
 	return ret;
 }
 
+/* A directory can have entries on several tiers. Making only its canonical
+ * lower durable would miss names created by spill or movement on another tier.
+ * Resolve and sync every contributing lower directory; an explicit durability
+ * request must not silently skip an unavailable tier or a lower fsync error.
+ */
+static int smoothfs_dir_fsync(struct file *file, loff_t start, loff_t end,
+			      int datasync)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(file_inode(file)->i_sb);
+	struct file *lower = smoothfs_lower_file(file);
+	char *rel_path;
+	unsigned int tier;
+	int err;
+
+	if (IS_ERR(lower))
+		return PTR_ERR(lower);
+	if (!lower)
+		return -EBADF;
+
+	rel_path = smoothfs_rel_path_from_dentry(file->f_path.dentry);
+	if (!rel_path)
+		return -ENOMEM;
+
+	/* Persist deferred identities and placement records before acknowledging
+	 * the namespace barrier. Propagate the placement log's fsync failure too.
+	 */
+	smoothfs_oid_wb_drain(sbi);
+	smoothfs_placement_wb_drain(sbi);
+	err = vfs_fsync(lower, datasync);
+	if (err)
+		goto out;
+
+	for (tier = 0; tier < sbi->ntiers; tier++) {
+		struct path path;
+		struct file *dir;
+
+		err = smoothfs_resolve_rel_path_on_tier(sbi, tier, rel_path, &path);
+		if (err == -ENOENT || err == -ENOTDIR) {
+			err = 0;
+			continue;
+		}
+		if (err)
+			goto out;
+		if (!d_is_dir(path.dentry) ||
+		    (path.mnt == lower->f_path.mnt &&
+		     path.dentry == lower->f_path.dentry)) {
+			path_put(&path);
+			continue;
+		}
+		dir = dentry_open(&path, O_RDONLY | O_DIRECTORY, sbi->creator_cred);
+		path_put(&path);
+		if (IS_ERR(dir)) {
+			err = PTR_ERR(dir);
+			goto out;
+		}
+		err = vfs_fsync(dir, datasync);
+		fput(dir);
+		if (err)
+			goto out;
+	}
+	if (sbi->placement_log)
+		err = vfs_fsync(sbi->placement_log, 0);
+out:
+	kfree(rel_path);
+	return err;
+}
+
 const struct file_operations smoothfs_dir_ops = {
 	.owner          = THIS_MODULE,
 	.open           = smoothfs_opendir,
 	.release        = smoothfs_releasedir,
 	.iterate_shared = smoothfs_iterate_shared,
+	.fsync          = smoothfs_dir_fsync,
 	.llseek         = smoothfs_dir_llseek,
 	.read           = generic_read_dir,
 };
