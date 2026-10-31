@@ -40,6 +40,7 @@ func testDB(t *testing.T) *sql.DB {
 			placement_domain TEXT NOT NULL,
 			backend_kind TEXT NOT NULL,
 			backend_ref TEXT NOT NULL DEFAULT '',
+			exposed_path TEXT NOT NULL DEFAULT '',
 			FOREIGN KEY(placement_domain) REFERENCES placement_domains(id)
 		);`,
 		`CREATE TABLE smoothfs_objects (

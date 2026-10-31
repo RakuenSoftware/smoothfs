@@ -76,6 +76,10 @@ type writeSeqCutoverClient interface {
 	MoveCutoverVerifyWriteSeq(poolUUID uuid.UUID, oid [OIDLen]byte, seq, writeSeq uint64) error
 }
 
+type movementCompletionClient interface {
+	MoveComplete(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error
+}
+
 type LUNTargetResumer interface {
 	Resume(ctx context.Context, targetID string) error
 }
@@ -195,11 +199,18 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 	srcPath := filepath.Join(p.SourceLowerDir, p.RelPath)
 	dstPath := filepath.Join(p.DestLowerDir, p.RelPath)
 
+	// Leave an existing interrupted kernel transaction and its SQL record intact.
+	if ins.MovementState != "" && ins.MovementState != StatePlaced {
+		return fmt.Errorf("kernel movement requires recovery: %s", ins.MovementState)
+	}
+	// Persist the intent before the first kernel transition. A process may exit
+	// inside MovePlan, or after cutover but before any later SQL transition.
+	if err := w.persistIntent(ctx, oid, p); err != nil {
+		return fmt.Errorf("persist movement intent: %w", err)
+	}
 	if err := w.client.MovePlan(p.PoolUUID, p.ObjectID, p.DestTierRank, p.TransactionSeq); err != nil {
 		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("move_plan: %w", err))
 	}
-	w.logTransition(ctx, p, "", string(StatePlanAccepted), "")
-	w.persistObject(ctx, oid, p, StatePlanAccepted)
 
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return w.rollbackLUNBeforeSwitch(ctx, p, srcPath, oid, fmt.Errorf("mkdir dest parent: %w", err))
@@ -302,8 +313,32 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		}
 	}
 
-	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
+	// A new movement must not begin until old-source cleanup is durable. Never
+	// report placed after a failed unlink, directory barrier, or kernel ack.
+	cleanupFailed := func(err error) error {
 		w.logTransition(ctx, p, string(StateSwitched), string(StateCleanupInProgress), err.Error())
+		w.persistObject(ctx, oid, p, StateCleanupInProgress)
+		return err
+	}
+	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
+		return cleanupFailed(fmt.Errorf("cleanup source: %w", err))
+	}
+	dir, err := os.Open(filepath.Dir(srcPath))
+	if err != nil {
+		return cleanupFailed(fmt.Errorf("open source parent: %w", err))
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err != nil {
+		return cleanupFailed(fmt.Errorf("sync source cleanup: %w", err))
+	}
+	if closeErr != nil {
+		return cleanupFailed(fmt.Errorf("close source parent: %w", closeErr))
+	}
+	if client, ok := w.client.(movementCompletionClient); ok {
+		if err := client.MoveComplete(p.PoolUUID, p.ObjectID, p.TransactionSeq); err != nil {
+			return cleanupFailed(fmt.Errorf("move_complete: %w", err))
+		}
 	}
 	w.logTransition(ctx, p, string(StateSwitched), string(StateCleanupComplete), "")
 	w.finalize(ctx, oid, p)
@@ -671,4 +706,52 @@ func fileSHA256(path string) ([32]byte, error) {
 	}
 	copy(out[:], h.Sum(nil))
 	return out, nil
+}
+
+// An intent must survive a host crash, including on WAL connections configured
+// with NORMAL synchronous mode. Use a dedicated connection for this barrier.
+func (w *Worker) persistIntent(ctx context.Context, oid string, p MovementPlan) error {
+	conn, err := w.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var synchronous int
+	if err = conn.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.Background(), fmt.Sprintf("PRAGMA synchronous=%d", synchronous))
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO smoothfs_objects
+ (object_id,namespace_id,current_tier_id,intended_tier_id,movement_state,transaction_seq,rel_path,updated_at)
+ VALUES(?,?,?,?,'plan_accepted',?,?,datetime('now'))
+ ON CONFLICT(object_id) DO UPDATE SET intended_tier_id=excluded.intended_tier_id,
+ movement_state=excluded.movement_state,transaction_seq=excluded.transaction_seq,
+ rel_path=excluded.rel_path,updated_at=excluded.updated_at
+ WHERE smoothfs_objects.movement_state IN ('placed','cleanup_complete','failed')`,
+		oid, p.NamespaceID, p.SourceTierID, p.DestTierID, p.TransactionSeq, p.RelPath)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return errors.New("object already has an interrupted movement")
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO smoothfs_movement_log
+ (object_id,transaction_seq,from_state,to_state,source_tier,dest_tier,payload_json)
+ VALUES(?,?,NULL,'plan_accepted',?,?,'{"reason":"intent persisted before kernel plan"}')`, oid, p.TransactionSeq, p.SourceTierID, p.DestTierID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

@@ -136,6 +136,20 @@ func (c *Client) MoveCutoverVerifyWriteSeq(poolUUID uuid.UUID, oid [OIDLen]byte,
 	return err
 }
 
+// MoveComplete acknowledges durable source cleanup after cutover. Until this
+// handshake, the kernel keeps the object switched and rejects another move.
+func (c *Client) MoveComplete(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error {
+	_, err := c.send(CmdMoveComplete, cutoverAttrs(poolUUID, oid, seq, nil))
+	return err
+}
+
+// MoveRollback acknowledges durable removal of an interrupted pre-cutover copy.
+// It cannot roll back a switched object.
+func (c *Client) MoveRollback(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error {
+	_, err := c.send(CmdMoveRollback, cutoverAttrs(poolUUID, oid, seq, nil))
+	return err
+}
+
 func cutoverAttrs(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64, writeSeq *uint64) []netlink.Attribute {
 	attrs := []netlink.Attribute{
 		{Type: AttrPoolUUID, Data: poolUUID[:]},

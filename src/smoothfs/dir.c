@@ -157,7 +157,7 @@ static int smoothfs_collect_one_dir(struct smoothfs_dir_cache *cache,
 	return collect.err;
 }
 
-static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
+static struct smoothfs_dir_cache *smoothfs_build_dir_cache_inner(struct file *file)
 {
 	struct inode *inode = file_inode(file);
 	struct smoothfs_inode_info *si = SMOOTHFS_I(inode);
@@ -198,14 +198,40 @@ static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
 			continue;
 		}
 		err = smoothfs_resolve_rel_path_on_tier(sbi, tier, rel_path, &tier_path);
-		if (err)
+		if (err == -ENOENT || err == -ENOTDIR)
 			continue;
+		if (err)
+			goto fail;
 		if (d_is_dir(tier_path.dentry))
-			(void)smoothfs_collect_one_dir(cache, &tier_path, sbi->creator_cred);
+			err = smoothfs_collect_one_dir(cache, &tier_path, sbi->creator_cred);
 		path_put(&tier_path);
+		if (err)
+			goto fail;
 	}
 
 	kfree(rel_path);
+	return cache;
+fail:
+	/* Partial enumeration can make a backup collector delete live chunks.
+	 * Only a genuinely absent replica is safe to omit.
+	 */
+	kfree(rel_path);
+	smoothfs_dir_cache_free(cache);
+	return ERR_PTR(err);
+}
+
+/* VFS already checked the caller against the presented upper directory.
+ * Backing traversal must use the mounter's credentials on every tier, just
+ * like lookup. Otherwise root-owned private backing parents make readdir
+ * silently omit spill-tier entries for the presented owner (e.g. PBS).
+ */
+static struct smoothfs_dir_cache *smoothfs_build_dir_cache(struct file *file)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(file_inode(file)->i_sb);
+	const struct cred *old = override_creds(sbi->creator_cred);
+	struct smoothfs_dir_cache *cache = smoothfs_build_dir_cache_inner(file);
+
+	revert_creds(old);
 	return cache;
 }
 
@@ -273,11 +299,79 @@ static loff_t smoothfs_dir_llseek(struct file *file, loff_t offset, int whence)
 	return ret;
 }
 
+/* A directory can have entries on several tiers. Making only its canonical
+ * lower durable would miss names created by spill or movement on another tier.
+ * Resolve and sync every contributing lower directory; an explicit durability
+ * request must not silently skip an unavailable tier or a lower fsync error.
+ */
+static int smoothfs_dir_fsync(struct file *file, loff_t start, loff_t end,
+			      int datasync)
+{
+	struct smoothfs_sb_info *sbi = SMOOTHFS_SB(file_inode(file)->i_sb);
+	struct file *lower = smoothfs_lower_file(file);
+	char *rel_path;
+	unsigned int tier;
+	int err;
+
+	if (IS_ERR(lower))
+		return PTR_ERR(lower);
+	if (!lower)
+		return -EBADF;
+
+	rel_path = smoothfs_rel_path_from_dentry(file->f_path.dentry);
+	if (!rel_path)
+		return -ENOMEM;
+
+	/* Persist deferred identities and placement records before acknowledging
+	 * the namespace barrier. Propagate the placement log's fsync failure too.
+	 */
+	smoothfs_oid_wb_drain(sbi);
+	smoothfs_placement_wb_drain(sbi);
+	err = vfs_fsync(lower, datasync);
+	if (err)
+		goto out;
+
+	for (tier = 0; tier < sbi->ntiers; tier++) {
+		struct path path;
+		struct file *dir;
+
+		err = smoothfs_resolve_rel_path_on_tier(sbi, tier, rel_path, &path);
+		if (err == -ENOENT || err == -ENOTDIR) {
+			err = 0;
+			continue;
+		}
+		if (err)
+			goto out;
+		if (!d_is_dir(path.dentry) ||
+		    (path.mnt == lower->f_path.mnt &&
+		     path.dentry == lower->f_path.dentry)) {
+			path_put(&path);
+			continue;
+		}
+		dir = dentry_open(&path, O_RDONLY | O_DIRECTORY, sbi->creator_cred);
+		path_put(&path);
+		if (IS_ERR(dir)) {
+			err = PTR_ERR(dir);
+			goto out;
+		}
+		err = vfs_fsync(dir, datasync);
+		fput(dir);
+		if (err)
+			goto out;
+	}
+	if (sbi->placement_log)
+		err = vfs_fsync(sbi->placement_log, 0);
+out:
+	kfree(rel_path);
+	return err;
+}
+
 const struct file_operations smoothfs_dir_ops = {
 	.owner          = THIS_MODULE,
 	.open           = smoothfs_opendir,
 	.release        = smoothfs_releasedir,
 	.iterate_shared = smoothfs_iterate_shared,
+	.fsync          = smoothfs_dir_fsync,
 	.llseek         = smoothfs_dir_llseek,
 	.read           = generic_read_dir,
 };

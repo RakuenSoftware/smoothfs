@@ -150,7 +150,7 @@ func DiscoverPoolFromDB(ctx context.Context, db *sql.DB, ev *Event) (*Pool, erro
 }
 
 func (s *Service) Run(ctx context.Context) error {
-	if err := Recover(ctx, s.db); err != nil {
+	if err := Recover(ctx, s.db, s.client); err != nil {
 		log.Printf("smoothfs: recovery failed: %v", err)
 	}
 

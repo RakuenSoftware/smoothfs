@@ -595,10 +595,55 @@ int smoothfs_movement_cutover(struct smoothfs_sb_info *sbi,
 		goto out_fail;
 	}
 
+	/* The userspace mover copies bytes, not trusted identity xattrs. Persist
+	 * the same object identity on the new backing before making it
+	 * authoritative, so eviction or remount cannot mint a second identity.
+	 */
+	{
+		const struct cred *old = override_creds(sbi->creator_cred);
+		struct file *dest;
+
+		err = smoothfs_write_oid_xattr(dest_path.dentry, si->oid);
+		if (err == -EEXIST) {
+			u8 existing[SMOOTHFS_OID_LEN];
+
+			err = smoothfs_read_oid_xattr(dest_path.dentry, existing);
+			if (!err && memcmp(existing, si->oid, sizeof(existing)))
+				err = -ESTALE;
+		}
+		if (!err)
+			err = smoothfs_write_gen_xattr(dest_path.dentry, si->gen);
+		if (!err) {
+			dest = dentry_open(&dest_path, O_RDONLY | O_LARGEFILE,
+					   sbi->creator_cred);
+			if (IS_ERR(dest)) {
+				err = PTR_ERR(dest);
+			} else {
+				err = vfs_fsync(dest, 0);
+				fput(dest);
+			}
+		}
+		revert_creds(old);
+		if (err) {
+			path_put(&dest_path);
+			goto out_fail;
+		}
+	}
+
 	/* Swap lower_path: keep refs balanced. The smoothfs dentry's
 	 * d_fsdata also points at the OLD lower dentry — update it too,
 	 * otherwise smoothfs_d_release dputs a freed pointer at umount. */
+	/* Cleanup will free the source lower inode. Its numeric inode may be
+	 * reused immediately by an unrelated file (for example an RRD journal).
+	 * Leaving the old fast-path key mapped to this upper inode redirects
+	 * writes to that unrelated file into the moved object's destination.
+	 */
+	smoothfs_lower_ino_map_remove(sbi, si->current_tier,
+				    d_inode(src_dentry)->i_ino);
 	old_path = smoothfs_swap_lower_path(inode, &dest_path);
+	(void)smoothfs_lower_ino_map_insert(sbi, si->intended_tier,
+					 d_inode(dest_path.dentry)->i_ino,
+					 inode->i_ino);
 	if (rel_path) {
 		smoothfs_path_map_del(sbi, si);
 		kfree(si->rel_path);
@@ -700,6 +745,96 @@ void smoothfs_clear_pool_mapping_quiesce(struct smoothfs_sb_info *sbi)
 	list_for_each_entry(si, &sbi->inode_list, sb_link)
 		WRITE_ONCE(si->mappings_quiesced, false);
 	up_read(&sbi->inode_lock);
+}
+
+/* Only userspace knows when the old source has been removed durably. Keep
+ * SWITCHED until that acknowledgement; resetting during cutover would let a
+ * second move race the first mover's source cleanup. The transaction sequence
+ * also makes retries idempotent without accepting a stale mover's completion.
+ */
+int smoothfs_movement_complete(struct smoothfs_sb_info *sbi,
+			       const u8 oid[SMOOTHFS_OID_LEN],
+			       u64 transaction_seq)
+{
+	struct smoothfs_inode_info *si;
+	struct inode *inode;
+	int err = 0;
+
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
+	if (!si)
+		return -ENOENT;
+	inode = &si->vfs_inode;
+	inode_lock(inode);
+	if (si->transaction_seq != transaction_seq) {
+		err = -ESTALE;
+		goto out;
+	}
+	if (si->movement_state == SMOOTHFS_MS_PLACED)
+		goto out;
+	if (si->movement_state != SMOOTHFS_MS_SWITCHED) {
+		err = -EBUSY;
+		goto out;
+	}
+	err =
+	    smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_PLACED,
+				      si->current_tier, si->current_tier, true);
+	if (err)
+		goto out;
+	si->movement_state = SMOOTHFS_MS_PLACED;
+	si->intended_tier = si->current_tier;
+	smoothfs_netlink_emit_move_state(sbi, oid, SMOOTHFS_MS_PLACED,
+					 transaction_seq);
+out:
+	inode_unlock(inode);
+	return err;
+}
+/* Recovery may discard a partial destination only before cutover. The
+ * sequence guard rejects an old recovery task after a newer movement began.
+ * Unlike the informational abort transition, this acknowledgement durably
+ * returns the authoritative source to PLACED so movement can resume.
+ */
+int smoothfs_movement_rollback(struct smoothfs_sb_info *sbi,
+			       const u8 oid[SMOOTHFS_OID_LEN],
+			       u64 transaction_seq)
+{
+	struct smoothfs_inode_info *si = smoothfs_lookup_oid_resolve(sbi, oid);
+	struct inode *inode;
+	int err = 0;
+
+	if (!si)
+		return -ENOENT;
+	inode = &si->vfs_inode;
+	inode_lock(inode);
+	if (si->transaction_seq != transaction_seq) {
+		err = -ESTALE;
+		goto out;
+	}
+	switch (si->movement_state) {
+	case SMOOTHFS_MS_PLACED:
+		goto out;
+	case SMOOTHFS_MS_PLAN_ACCEPTED:
+	case SMOOTHFS_MS_DESTINATION_RESERVED:
+	case SMOOTHFS_MS_COPY_IN_PROGRESS:
+	case SMOOTHFS_MS_COPY_COMPLETE:
+	case SMOOTHFS_MS_COPY_VERIFIED:
+	case SMOOTHFS_MS_FAILED:
+		break;
+	default:
+		err = -EBUSY;
+		goto out;
+	}
+	err =
+	    smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_PLACED,
+				      si->current_tier, si->current_tier, true);
+	if (!err) {
+		si->movement_state = SMOOTHFS_MS_PLACED;
+		si->intended_tier = si->current_tier;
+		smoothfs_netlink_emit_move_state(sbi, oid, SMOOTHFS_MS_PLACED,
+						 transaction_seq);
+	}
+out:
+	inode_unlock(inode);
+	return err;
 }
 
 int smoothfs_movement_abort(struct smoothfs_sb_info *sbi,

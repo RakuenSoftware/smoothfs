@@ -24,6 +24,10 @@ FAIL_FAST=${SMOOTHFS_RUNTIME_FAIL_FAST:-0}
 
 core_tests=(
 	cache_mode.sh
+	directory_fsync.sh
+	syncfs_lower.sh
+	readdir_backing_permissions.sh
+	mkdir_enospc.sh
 	netlink_receive_close.sh
 	tier_spill_basic_create.sh
 	tier_spill_nested_parent.sh
@@ -48,6 +52,8 @@ core_tests=(
 	movement_nested_cutover.sh
 	movement_open_fd_cutover.sh
 	movement_getattr_cutover.sh
+	movement_inode_reuse.sh
+	movement_roundtrip.sh
 	write_staging_direct_cutover.sh
 	odirect.sh
 )

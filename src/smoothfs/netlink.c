@@ -241,6 +241,40 @@ static int doit_move_cutover(struct sk_buff *skb, struct genl_info *info)
 					 expected_write_seq, check_write_seq);
 }
 
+static int doit_move_complete(struct sk_buff *skb, struct genl_info *info)
+{
+	struct smoothfs_sb_info *sbi;
+	const u8 *oid;
+	u64 seq;
+
+	(void)skb;
+	sbi = resolve_pool(info);
+	if (IS_ERR(sbi))
+		return PTR_ERR(sbi);
+	if (!info->attrs[SMOOTHFS_ATTR_OBJECT_ID] ||
+	    !info->attrs[SMOOTHFS_ATTR_TRANSACTION_SEQ])
+		return -EINVAL;
+	oid = nla_data(info->attrs[SMOOTHFS_ATTR_OBJECT_ID]);
+	seq = nla_get_u64(info->attrs[SMOOTHFS_ATTR_TRANSACTION_SEQ]);
+	return smoothfs_movement_complete(sbi, oid, seq);
+}
+static int doit_move_rollback(struct sk_buff *skb, struct genl_info *info)
+{
+	struct smoothfs_sb_info *sbi;
+	const u8 *oid;
+	u64 seq;
+
+	(void)skb;
+	sbi = resolve_pool(info);
+	if (IS_ERR(sbi))
+		return PTR_ERR(sbi);
+	if (!info->attrs[SMOOTHFS_ATTR_OBJECT_ID] ||
+	    !info->attrs[SMOOTHFS_ATTR_TRANSACTION_SEQ])
+		return -EINVAL;
+	oid = nla_data(info->attrs[SMOOTHFS_ATTR_OBJECT_ID]);
+	seq = nla_get_u64(info->attrs[SMOOTHFS_ATTR_TRANSACTION_SEQ]);
+	return smoothfs_movement_rollback(sbi, oid, seq);
+}
 static int doit_inspect(struct sk_buff *skb, struct genl_info *info)
 {
 	struct smoothfs_sb_info *sbi;
@@ -382,6 +416,10 @@ static const struct genl_multicast_group smoothfs_genl_mcgrps[] = {
 };
 
 static const struct genl_small_ops smoothfs_genl_ops[] = {
+	{ .cmd = SMOOTHFS_CMD_MOVE_ROLLBACK, .flags = GENL_ADMIN_PERM,
+	  .doit = doit_move_rollback },
+	{ .cmd = SMOOTHFS_CMD_MOVE_COMPLETE, .flags = GENL_ADMIN_PERM,
+	  .doit = doit_move_complete },
 	{ .cmd = SMOOTHFS_CMD_REGISTER_POOL, .flags = GENL_ADMIN_PERM,
 	  .doit = doit_register_pool },
 	{ .cmd = SMOOTHFS_CMD_POLICY_PUSH,   .flags = GENL_ADMIN_PERM,
