@@ -747,6 +747,47 @@ void smoothfs_clear_pool_mapping_quiesce(struct smoothfs_sb_info *sbi)
 	up_read(&sbi->inode_lock);
 }
 
+/* Only userspace knows when the old source has been removed durably. Keep
+ * SWITCHED until that acknowledgement; resetting during cutover would let a
+ * second move race the first mover's source cleanup. The transaction sequence
+ * also makes retries idempotent without accepting a stale mover's completion.
+ */
+int smoothfs_movement_complete(struct smoothfs_sb_info *sbi,
+			       const u8 oid[SMOOTHFS_OID_LEN],
+			       u64 transaction_seq)
+{
+	struct smoothfs_inode_info *si;
+	struct inode *inode;
+	int err = 0;
+
+	si = smoothfs_lookup_oid_resolve(sbi, oid);
+	if (!si)
+		return -ENOENT;
+	inode = &si->vfs_inode;
+	inode_lock(inode);
+	if (si->transaction_seq != transaction_seq) {
+		err = -ESTALE;
+		goto out;
+	}
+	if (si->movement_state == SMOOTHFS_MS_PLACED)
+		goto out;
+	if (si->movement_state != SMOOTHFS_MS_SWITCHED) {
+		err = -EBUSY;
+		goto out;
+	}
+	err =
+	    smoothfs_placement_record(sbi, oid, SMOOTHFS_MS_PLACED,
+				      si->current_tier, si->current_tier, true);
+	if (err)
+		goto out;
+	si->movement_state = SMOOTHFS_MS_PLACED;
+	si->intended_tier = si->current_tier;
+	smoothfs_netlink_emit_move_state(sbi, oid, SMOOTHFS_MS_PLACED,
+					 transaction_seq);
+out:
+	inode_unlock(inode);
+	return err;
+}
 int smoothfs_movement_abort(struct smoothfs_sb_info *sbi,
 			    const u8 oid[SMOOTHFS_OID_LEN],
 			    u64 transaction_seq, const char *reason)

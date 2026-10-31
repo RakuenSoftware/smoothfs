@@ -50,6 +50,7 @@ core_tests=(
 	movement_open_fd_cutover.sh
 	movement_getattr_cutover.sh
 	movement_inode_reuse.sh
+	movement_roundtrip.sh
 	write_staging_direct_cutover.sh
 	odirect.sh
 )

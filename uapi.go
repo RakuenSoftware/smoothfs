@@ -31,6 +31,7 @@ const (
 	CmdMoveCutover    uint8 = 13
 	CmdRevokeMappings uint8 = 14
 	EventSpill        uint8 = 15
+	CmdMoveComplete   uint8 = 16
 )
 
 // Generic netlink attributes. Keep in sync with src/smoothfs/uapi_smoothfs.h.

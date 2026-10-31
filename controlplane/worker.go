@@ -76,6 +76,10 @@ type writeSeqCutoverClient interface {
 	MoveCutoverVerifyWriteSeq(poolUUID uuid.UUID, oid [OIDLen]byte, seq, writeSeq uint64) error
 }
 
+type movementCompletionClient interface {
+	MoveComplete(poolUUID uuid.UUID, oid [OIDLen]byte, seq uint64) error
+}
+
 type LUNTargetResumer interface {
 	Resume(ctx context.Context, targetID string) error
 }
@@ -302,8 +306,32 @@ func (w *Worker) execute(ctx context.Context, p MovementPlan) error {
 		}
 	}
 
-	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
+	// A new movement must not begin until old-source cleanup is durable. Never
+	// report placed after a failed unlink, directory barrier, or kernel ack.
+	cleanupFailed := func(err error) error {
 		w.logTransition(ctx, p, string(StateSwitched), string(StateCleanupInProgress), err.Error())
+		w.persistObject(ctx, oid, p, StateCleanupInProgress)
+		return err
+	}
+	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
+		return cleanupFailed(fmt.Errorf("cleanup source: %w", err))
+	}
+	dir, err := os.Open(filepath.Dir(srcPath))
+	if err != nil {
+		return cleanupFailed(fmt.Errorf("open source parent: %w", err))
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err != nil {
+		return cleanupFailed(fmt.Errorf("sync source cleanup: %w", err))
+	}
+	if closeErr != nil {
+		return cleanupFailed(fmt.Errorf("close source parent: %w", closeErr))
+	}
+	if client, ok := w.client.(movementCompletionClient); ok {
+		if err := client.MoveComplete(p.PoolUUID, p.ObjectID, p.TransactionSeq); err != nil {
+			return cleanupFailed(fmt.Errorf("move_complete: %w", err))
+		}
 	}
 	w.logTransition(ctx, p, string(StateSwitched), string(StateCleanupComplete), "")
 	w.finalize(ctx, oid, p)

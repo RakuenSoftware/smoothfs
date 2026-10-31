@@ -53,6 +53,7 @@ enum {
 	SMOOTHFS_CMD_MOVE_CUTOVER         = 13,
 	SMOOTHFS_CMD_REVOKE_MAPPINGS      = 14,
 	SMOOTHFS_EVENT_SPILL              = 15,
+	SMOOTHFS_CMD_MOVE_COMPLETE        = 16, /* userspace cleanup durable */
 	__SMOOTHFS_CMD_MAX,
 };
 #define SMOOTHFS_CMD_MAX (__SMOOTHFS_CMD_MAX - 1)
