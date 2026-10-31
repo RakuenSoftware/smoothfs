@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.5](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.4...v0.3.5) (2026-10-31)
+
+
+### Bug Fixes
+
+* complete durable movement cleanup before allowing another move ([e2d838d](https://github.com/RakuenSoftware/smoothfs/commit/e2d838d1fe8f68c85a30199ce6771d052a9d4b5e))
+* enumerate every backing tier with the mount credentials ([65794ec](https://github.com/RakuenSoftware/smoothfs/commit/65794ec7eba28487c52365aeef6a12639b9c3b79))
+* flush every backing filesystem on syncfs ([e85ea3a](https://github.com/RakuenSoftware/smoothfs/commit/e85ea3a251262e4bea95efa8862d91258e76f880))
+* normalize mkdir error cleanup across supported kernels ([13b3b03](https://github.com/RakuenSoftware/smoothfs/commit/13b3b03983c7d42a0b04cafe0de70b42d70cadd6))
+* prevent inode reuse from corrupting moved files ([c1392cc](https://github.com/RakuenSoftware/smoothfs/commit/c1392ccd1bde24dc89d5166d5d9b403497ca3dda))
+* reconcile interrupted movement with kernel placement ([bbf0346](https://github.com/RakuenSoftware/smoothfs/commit/bbf034674eeaa5e4e2cb18ed4a6b381c77d5289f))
+* support fsync on merged directories ([ffbe646](https://github.com/RakuenSoftware/smoothfs/commit/ffbe6463ee39739b5e4ec95c97b75887a104e037))
+
 ## [0.3.4](https://github.com/RakuenSoftware/smoothfs/compare/v0.3.3...v0.3.4) (2026-10-29)
 
 
